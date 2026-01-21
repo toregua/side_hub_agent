@@ -11,12 +11,13 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
             rid: osx-arm64
             artifact: sidehub-agent-osx-arm64
-          - os: macos-13
+          - os: macos-latest
             rid: osx-x64
             artifact: sidehub-agent-osx-x64
           - os: windows-latest
