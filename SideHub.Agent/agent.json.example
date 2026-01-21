@@ -1,0 +1,9 @@
+{
+  "sidehubUrl": "wss://www.sidehub.io/ws/agent",
+  "agentId": "your-agent-uuid",
+  "workspaceId": "your-workspace-uuid",
+  "repositoryId": "your-repository-uuid",
+  "agentToken": "sh_agent_xxx",
+  "workingDirectory": ".",
+  "capabilities": ["shell", "claude-code"]
+}
