@@ -73,9 +73,9 @@ public class CommandExecutor
     {
         return shell.ToLowerInvariant() switch
         {
-            "bash" => ("/bin/bash", $"-c \"{EscapeForShell(command)}\""),
-            "sh" => ("/bin/sh", $"-c \"{EscapeForShell(command)}\""),
-            "zsh" => ("/bin/zsh", $"-c \"{EscapeForShell(command)}\""),
+            "bash" => ("/bin/bash", $"-l -c \"{EscapeForShell(command)}\""),
+            "sh" => ("/bin/sh", $"-l -c \"{EscapeForShell(command)}\""),
+            "zsh" => ("/bin/zsh", $"-l -c \"{EscapeForShell(command)}\""),
             "powershell" or "pwsh" => ("pwsh", $"-Command \"{EscapeForPowerShell(command)}\""),
             "cmd" => ("cmd.exe", $"/c {command}"),
             _ => throw new ArgumentException($"Unsupported shell: {shell}")
