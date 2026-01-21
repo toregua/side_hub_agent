@@ -1,57 +1,49 @@
 using SideHub.Agent;
 
-const string ConfigFileName = "agent.json";
-
 var cts = new CancellationTokenSource();
 
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
-    Console.WriteLine("\n[Agent] Received shutdown signal...");
+    Console.WriteLine("\n[SideHub] Received shutdown signal...");
     cts.Cancel();
 };
 
 try
 {
-    var configPath = Path.Combine(Directory.GetCurrentDirectory(), ConfigFileName);
-    Console.WriteLine($"[Agent] Loading configuration from {configPath}");
+    var baseDirectory = Directory.GetCurrentDirectory();
+    var configs = AgentConfig.LoadAll(baseDirectory);
 
-    var config = AgentConfig.Load(configPath);
-    var workingDir = config.GetAbsoluteWorkingDirectory(Directory.GetCurrentDirectory());
+    Console.WriteLine($"[SideHub] Found {configs.Count} agent(s) in .sidehub/");
 
-    Console.WriteLine($"[Agent] Agent ID: {config.AgentId}");
-    Console.WriteLine($"[Agent] Workspace ID: {config.WorkspaceId}");
-    Console.WriteLine($"[Agent] Repository ID: {config.RepositoryId}");
-    Console.WriteLine($"[Agent] Working directory: {workingDir}");
-    Console.WriteLine($"[Agent] Capabilities: {string.Join(", ", config.Capabilities!)}");
-
-    if (!Directory.Exists(workingDir))
+    var tasks = configs.Select(config =>
     {
-        Console.WriteLine($"[Agent] Error: Working directory does not exist: {workingDir}");
-        return 1;
-    }
+        var runner = new AgentRunner(config, baseDirectory);
+        return runner.RunAsync(cts.Token);
+    }).ToList();
 
-    var executor = new CommandExecutor(workingDir);
-    await using var client = new WebSocketClient(config, executor);
+    await Task.WhenAll(tasks);
 
-    await client.RunAsync(cts.Token);
-
-    Console.WriteLine("[Agent] Shutdown complete");
+    Console.WriteLine("[SideHub] All agents shut down");
     return 0;
+}
+catch (DirectoryNotFoundException ex)
+{
+    Console.WriteLine($"[SideHub] Error: {ex.Message}");
+    return 1;
 }
 catch (FileNotFoundException ex)
 {
-    Console.WriteLine($"[Agent] Error: {ex.Message}");
-    Console.WriteLine($"[Agent] Please create an {ConfigFileName} file in the current directory.");
+    Console.WriteLine($"[SideHub] Error: {ex.Message}");
     return 1;
 }
 catch (InvalidOperationException ex)
 {
-    Console.WriteLine($"[Agent] Configuration error: {ex.Message}");
+    Console.WriteLine($"[SideHub] Configuration error: {ex.Message}");
     return 1;
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[Agent] Unexpected error: {ex.Message}");
+    Console.WriteLine($"[SideHub] Unexpected error: {ex.Message}");
     return 1;
 }

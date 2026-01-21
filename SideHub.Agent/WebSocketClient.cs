@@ -10,6 +10,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly AgentConfig _config;
     private readonly CommandExecutor _executor;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly string _displayName;
     private ClientWebSocket? _ws;
     private Timer? _heartbeatTimer;
 
@@ -18,16 +19,19 @@ public class WebSocketClient : IAsyncDisposable
     private const double BackoffMultiplier = 1.5;
     private const int HeartbeatIntervalMs = 30000;
 
-    public WebSocketClient(AgentConfig config, CommandExecutor executor)
+    public WebSocketClient(AgentConfig config, CommandExecutor executor, string? displayName = null)
     {
         _config = config;
         _executor = executor;
+        _displayName = displayName ?? config.GetDisplayName();
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
     }
+
+    private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -40,32 +44,32 @@ public class WebSocketClient : IAsyncDisposable
                 _ws = new ClientWebSocket();
                 _ws.Options.SetRequestHeader("Authorization", $"Bearer {_config.AgentToken}");
 
-                Console.WriteLine($"[SideHub] Connecting to {_config.SidehubUrl}...");
+                Log($"Connecting to {_config.SidehubUrl}...");
                 await _ws.ConnectAsync(new Uri(_config.SidehubUrl!), ct);
-                Console.WriteLine("[SideHub] Connected");
+                Log("Connected");
 
                 reconnectAttempts = 0;
 
                 await SendConnectedMessageAsync(ct);
                 StartHeartbeat(ct);
 
-                Console.WriteLine("[Agent] Waiting for command...");
+                Log("Waiting for commands...");
                 await ReceiveLoopAsync(ct);
             }
             catch (OperationCanceledException)
             {
-                Console.WriteLine("[SideHub] Shutting down...");
+                Log("Shutting down...");
                 break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[SideHub] Error: {ex.Message}");
+                Log($"Error: {ex.Message}");
                 StopHeartbeat();
 
                 var delay = CalculateReconnectDelay(reconnectAttempts);
                 reconnectAttempts++;
 
-                Console.WriteLine($"[SideHub] Reconnecting in {delay}ms...");
+                Log($"Reconnecting in {delay}ms...");
                 try
                 {
                     await Task.Delay(delay, ct);
@@ -150,7 +154,7 @@ public class WebSocketClient : IAsyncDisposable
 
             if (result.MessageType == WebSocketMessageType.Close)
             {
-                Console.WriteLine("[SideHub] Server closed connection");
+                Log("Server closed connection");
                 break;
             }
 
@@ -181,13 +185,13 @@ public class WebSocketClient : IAsyncDisposable
                     await HandleCommandExecuteAsync(message, ct);
                     break;
                 default:
-                    Console.WriteLine($"[SideHub] Unknown message type: {message.Type}");
+                    Log($"Unknown message type: {message.Type}");
                     break;
             }
         }
         catch (JsonException ex)
         {
-            Console.WriteLine($"[SideHub] Invalid JSON received: {ex.Message}");
+            Log($"Invalid JSON received: {ex.Message}");
         }
     }
 
@@ -197,18 +201,18 @@ public class WebSocketClient : IAsyncDisposable
             string.IsNullOrEmpty(message.Command) ||
             string.IsNullOrEmpty(message.Shell))
         {
-            Console.WriteLine("[Command] Invalid command message received");
+            Log("Invalid command message received");
             return;
         }
 
         if (_executor.IsBusy)
         {
-            Console.WriteLine($"[Command] Busy, rejecting command {message.CommandId}");
+            Log($"Busy, rejecting command {message.CommandId}");
             await SendAsync(new CommandBusyMessage { CommandId = message.CommandId }, ct);
             return;
         }
 
-        Console.WriteLine($"[Command] Executing: {message.Command}");
+        Log($"Executing: {message.Command}");
 
         try
         {
@@ -217,7 +221,7 @@ public class WebSocketClient : IAsyncDisposable
                 message.Shell,
                 async (stream, data) =>
                 {
-                    Console.WriteLine($"[Command] [{stream}] {data}");
+                    Log($"[{stream}] {data}");
                     await SendAsync(new CommandOutputMessage
                     {
                         CommandId = message.CommandId,
@@ -228,7 +232,7 @@ public class WebSocketClient : IAsyncDisposable
                 ct
             );
 
-            Console.WriteLine($"[Command] Completed (exit code {exitCode})");
+            Log($"Completed (exit code {exitCode})");
             await SendAsync(new CommandCompletedMessage
             {
                 CommandId = message.CommandId,
@@ -237,7 +241,7 @@ public class WebSocketClient : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Command] Failed: {ex.Message}");
+            Log($"Failed: {ex.Message}");
             await SendAsync(new CommandFailedMessage
             {
                 CommandId = message.CommandId,

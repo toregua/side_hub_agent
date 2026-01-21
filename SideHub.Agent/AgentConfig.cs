@@ -5,6 +5,8 @@ namespace SideHub.Agent;
 
 public class AgentConfig
 {
+    private const string ConfigFolder = ".sidehub";
+
     [JsonPropertyName("sidehubUrl")]
     public string? SidehubUrl { get; init; }
 
@@ -26,6 +28,43 @@ public class AgentConfig
     [JsonPropertyName("capabilities")]
     public string[]? Capabilities { get; init; }
 
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonIgnore]
+    public string? ConfigFilePath { get; private set; }
+
+    public static List<AgentConfig> LoadAll(string baseDirectory)
+    {
+        var configDir = Path.Combine(baseDirectory, ConfigFolder);
+
+        if (!Directory.Exists(configDir))
+        {
+            throw new DirectoryNotFoundException(
+                $"Configuration directory not found: {configDir}\n" +
+                $"Please create a .sidehub folder with agent configuration files (*.json)");
+        }
+
+        var configFiles = Directory.GetFiles(configDir, "*.json");
+
+        if (configFiles.Length == 0)
+        {
+            throw new FileNotFoundException(
+                $"No agent configuration files found in {configDir}\n" +
+                "Please create at least one .json configuration file");
+        }
+
+        var configs = new List<AgentConfig>();
+
+        foreach (var file in configFiles)
+        {
+            var config = Load(file);
+            configs.Add(config);
+        }
+
+        return configs;
+    }
+
     public static AgentConfig Load(string path)
     {
         if (!File.Exists(path))
@@ -38,9 +77,10 @@ public class AgentConfig
 
         if (config == null)
         {
-            throw new InvalidOperationException("Failed to parse agent.json");
+            throw new InvalidOperationException($"Failed to parse {Path.GetFileName(path)}");
         }
 
+        config.ConfigFilePath = path;
         config.Validate();
         return config;
     }
@@ -85,5 +125,16 @@ public class AgentConfig
             return WorkingDirectory!;
         }
         return Path.GetFullPath(Path.Combine(basePath, WorkingDirectory!));
+    }
+
+    public string GetDisplayName()
+    {
+        if (!string.IsNullOrWhiteSpace(Name))
+            return Name;
+
+        if (!string.IsNullOrWhiteSpace(ConfigFilePath))
+            return Path.GetFileNameWithoutExtension(ConfigFilePath);
+
+        return AgentId ?? "unknown";
     }
 }

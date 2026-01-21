@@ -4,7 +4,7 @@ Ce document décrit comment implémenter les endpoints de distribution dans l'AP
 
 ## Endpoints à implémenter
 
-### GET /api/agent/releases
+### GET /agent/releases
 
 Liste toutes les versions disponibles.
 
@@ -27,7 +27,7 @@ Liste toutes les versions disponibles.
 }
 ```
 
-### GET /api/agent/releases/latest
+### GET /agent/releases/latest
 
 Retourne la dernière version stable.
 
@@ -53,7 +53,7 @@ Retourne la dernière version stable.
 }
 ```
 
-### GET /api/agent/download/{platform}
+### GET /agent/download/{platform}
 
 Redirige vers le binaire de la dernière version pour la plateforme spécifiée.
 
@@ -66,11 +66,11 @@ Redirige vers le binaire de la dernière version pour la plateforme spécifiée.
 
 **Réponse**: HTTP 302 redirect vers l'URL GitHub Release
 
-### GET /api/agent/download/{platform}/{version}
+### GET /agent/download/{platform}/{version}
 
 Redirige vers une version spécifique.
 
-### GET /api/agent/install.sh
+### GET /agent/install.sh
 
 Retourne le script d'installation bash.
 
@@ -78,7 +78,7 @@ Retourne le script d'installation bash.
 Content-Type: text/plain
 ```
 
-### GET /api/agent/install.ps1
+### GET /agent/install.ps1
 
 Retourne le script d'installation PowerShell.
 
@@ -86,17 +86,53 @@ Retourne le script d'installation PowerShell.
 Content-Type: text/plain
 ```
 
+## Authentification GitHub (repo privé)
+
+Le repo `side_hub_agent` étant privé, l'API SideHub doit s'authentifier via une GitHub App.
+
+### Configuration de la GitHub App
+
+Une GitHub App "SideHub Agent Distribution" a été créée et installée sur le repo.
+
+**Identifiants :**
+- **App ID** : `1234567`
+- **Installation ID** : `12345678`
+- **Private Key** : Fichier `.pem` généré lors de la création de l'App
+
+### Variables d'environnement
+
+```env
+GITHUB_APP_ID=1234567
+GITHUB_INSTALLATION_ID=12345678
+GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+
+AGENT_REPO_OWNER=toregua
+AGENT_REPO_NAME=side_hub_agent
+```
+
+> **Note** : Pour `GITHUB_PRIVATE_KEY`, copier le contenu du fichier `.pem` en remplaçant les sauts de ligne par `\n`.
+
 ## Exemple d'implémentation (Node.js/Express)
 
 ```typescript
 import { Router } from 'express';
 import { Octokit } from '@octokit/rest';
+import { createAppAuth } from '@octokit/auth-app';
 
 const router = Router();
-const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
-const REPO_OWNER = 'votre-org';
-const REPO_NAME = 'side_hub_agent';
+// Authentification via GitHub App (repo privé)
+const octokit = new Octokit({
+  authStrategy: createAppAuth,
+  auth: {
+    appId: process.env.GITHUB_APP_ID,
+    privateKey: process.env.GITHUB_PRIVATE_KEY,
+    installationId: process.env.GITHUB_INSTALLATION_ID,
+  },
+});
+
+const REPO_OWNER = process.env.AGENT_REPO_OWNER || 'toregua';
+const REPO_NAME = process.env.AGENT_REPO_NAME || 'side_hub_agent';
 
 const PLATFORM_ALIASES: Record<string, string> = {
   'macos': 'osx-arm64',
@@ -104,7 +140,7 @@ const PLATFORM_ALIASES: Record<string, string> = {
   'linux': 'linux-x64',
 };
 
-// GET /api/agent/releases
+// GET /agent/releases
 router.get('/releases', async (req, res) => {
   const { data: releases } = await octokit.repos.listReleases({
     owner: REPO_OWNER,
@@ -124,7 +160,7 @@ router.get('/releases', async (req, res) => {
   res.json({ releases: formatted });
 });
 
-// GET /api/agent/releases/latest
+// GET /agent/releases/latest
 router.get('/releases/latest', async (req, res) => {
   const { data: release } = await octokit.repos.getLatestRelease({
     owner: REPO_OWNER,
@@ -153,7 +189,7 @@ router.get('/releases/latest', async (req, res) => {
   });
 });
 
-// GET /api/agent/download/:platform
+// GET /agent/download/:platform
 router.get('/download/:platform', async (req, res) => {
   let platform = req.params.platform;
 
@@ -186,7 +222,7 @@ router.get('/download/:platform', async (req, res) => {
   res.redirect(asset.browser_download_url);
 });
 
-// GET /api/agent/download/:platform/:version
+// GET /agent/download/:platform/:version
 router.get('/download/:platform/:version', async (req, res) => {
   let { platform, version } = req.params;
 
@@ -216,7 +252,7 @@ router.get('/download/:platform/:version', async (req, res) => {
   res.redirect(asset.browser_download_url);
 });
 
-// GET /api/agent/install.sh
+// GET /agent/install.sh
 router.get('/install.sh', async (req, res) => {
   const { data: file } = await octokit.repos.getContent({
     owner: REPO_OWNER,
@@ -228,7 +264,7 @@ router.get('/install.sh', async (req, res) => {
   res.type('text/plain').send(content);
 });
 
-// GET /api/agent/install.ps1
+// GET /agent/install.ps1
 router.get('/install.ps1', async (req, res) => {
   const { data: file } = await octokit.repos.getContent({
     owner: REPO_OWNER,
@@ -268,24 +304,13 @@ export default router;
 │     └── checksums.sha256                                            │
 │                                                                      │
 │  4. API SideHub                                                      │
-│     └─→ /api/agent/download/macos → redirect GitHub                 │
+│     └─→ /agent/download/macos → redirect GitHub                     │
 │                                                                      │
 │  5. Utilisateur                                                      │
 │     └─→ curl ... | bash                                             │
 │     └─→ Binary téléchargé et installé                               │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
-```
-
-## Variables d'environnement requises
-
-```env
-# API SideHub
-GITHUB_TOKEN=ghp_xxx  # Token avec accès read aux releases
-
-# Optionnel: override du repo
-AGENT_REPO_OWNER=votre-org
-AGENT_REPO_NAME=side_hub_agent
 ```
 
 ## Sécurité

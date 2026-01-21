@@ -74,10 +74,23 @@ dotnet publish SideHub.Agent -c Release -r win-x64 --self-contained -o ./dist
 
 ## Configuration
 
-Créer un fichier `agent.json` dans le répertoire de travail :
+Créer un dossier `.sidehub/` à la racine de votre repository avec un ou plusieurs fichiers de configuration JSON :
+
+```
+mon-repo/
+└── .sidehub/
+    ├── agent-dev.json
+    ├── agent-prod.json
+    └── ...
+```
+
+Chaque fichier `.json` dans le dossier `.sidehub/` représente un agent qui sera lancé en parallèle.
+
+### Format de configuration
 
 ```json
 {
+  "name": "mon-agent",
   "sidehubUrl": "wss://www.sidehub.io/ws/agent",
   "agentId": "votre-agent-uuid",
   "workspaceId": "votre-workspace-uuid",
@@ -88,25 +101,37 @@ Créer un fichier `agent.json` dans le répertoire de travail :
 }
 ```
 
-Tous les champs sont obligatoires. Le token et les IDs sont disponibles dans votre dashboard SideHub.
+| Champ | Obligatoire | Description |
+|-------|-------------|-------------|
+| `name` | Non | Nom d'affichage de l'agent (sinon utilise le nom du fichier) |
+| `sidehubUrl` | Oui | URL WebSocket du serveur SideHub |
+| `agentId` | Oui | UUID de l'agent |
+| `workspaceId` | Oui | UUID du workspace |
+| `repositoryId` | Oui | UUID du repository |
+| `agentToken` | Oui | Token d'authentification (`sh_agent_xxx`) |
+| `workingDirectory` | Oui | Répertoire de travail (relatif ou absolu) |
+| `capabilities` | Oui | Capacités de l'agent (`shell`, `claude-code`) |
+
+Les tokens et IDs sont disponibles dans votre dashboard SideHub.
 
 ## Utilisation
 
 ```bash
-# Lancer l'agent
+# Lancer tous les agents configurés
 sidehub-agent
 
-# Ou depuis le dossier contenant agent.json
+# Depuis le dossier contenant .sidehub/
 ./sidehub-agent
 ```
 
 L'agent :
-1. Charge la configuration depuis `agent.json`
-2. Se connecte au serveur SideHub via WebSocket
-3. Envoie des heartbeats toutes les 30 secondes
-4. Exécute les commandes reçues et stream les résultats
+1. Charge toutes les configurations depuis `.sidehub/*.json`
+2. Lance chaque agent en parallèle
+3. Chaque agent se connecte au serveur SideHub via WebSocket
+4. Envoie des heartbeats toutes les 30 secondes
+5. Exécute les commandes reçues et stream les résultats
 
-Arrêt propre avec `Ctrl+C`.
+Arrêt propre avec `Ctrl+C` (arrête tous les agents).
 
 ## Architecture des releases
 
