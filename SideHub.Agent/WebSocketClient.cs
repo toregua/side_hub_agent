@@ -9,23 +9,24 @@ public class WebSocketClient : IAsyncDisposable
 {
     private readonly AgentConfig _config;
     private readonly CommandExecutor _executor;
-    private readonly PtyExecutor _ptyExecutor;
+    private readonly string _workingDirectory;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly string _displayName;
     private ClientWebSocket? _ws;
     private Timer? _heartbeatTimer;
     private string? _currentPtyShell;
+    private PtyExecutor? _ptyExecutor;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
     private const double BackoffMultiplier = 1.5;
     private const int HeartbeatIntervalMs = 30000;
 
-    public WebSocketClient(AgentConfig config, CommandExecutor executor, PtyExecutor ptyExecutor, string? displayName = null)
+    public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null)
     {
         _config = config;
         _executor = executor;
-        _ptyExecutor = ptyExecutor;
+        _workingDirectory = workingDirectory;
         _displayName = displayName ?? config.GetDisplayName();
         _jsonOptions = new JsonSerializerOptions
         {
@@ -277,7 +278,7 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
-        if (_ptyExecutor.IsRunning)
+        if (_ptyExecutor?.IsRunning == true)
         {
             Log("PTY session already running");
             return;
@@ -291,6 +292,8 @@ public class WebSocketClient : IAsyncDisposable
 
         try
         {
+            // Create fresh PtyExecutor for each session
+            _ptyExecutor = new PtyExecutor(_workingDirectory);
             await _ptyExecutor.StartAsync(
                 shell,
                 async output =>
@@ -320,7 +323,7 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandlePtyInputAsync(IncomingMessage message, CancellationToken ct)
     {
-        if (!_ptyExecutor.IsRunning || string.IsNullOrEmpty(message.Input))
+        if (_ptyExecutor?.IsRunning != true || string.IsNullOrEmpty(message.Input))
             return;
 
         try
@@ -335,7 +338,7 @@ public class WebSocketClient : IAsyncDisposable
 
     private void HandlePtyResize(IncomingMessage message)
     {
-        if (!_ptyExecutor.IsRunning)
+        if (_ptyExecutor?.IsRunning != true)
             return;
 
         var columns = message.Columns ?? 120;
@@ -347,12 +350,24 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandlePtyStopAsync()
     {
-        if (!_ptyExecutor.IsRunning)
+        if (_ptyExecutor?.IsRunning != true)
+        {
+            Log("PTY session not running, ignoring stop");
             return;
+        }
 
         Log("Stopping PTY session");
-        await _ptyExecutor.StopAsync();
+        try
+        {
+            await _ptyExecutor.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            Log($"Error stopping PTY: {ex.Message}");
+        }
+        _ptyExecutor = null;
         _currentPtyShell = null;
+        Log("PTY session stopped");
     }
 
     private static int CalculateReconnectDelay(int attempts)
@@ -364,7 +379,11 @@ public class WebSocketClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopHeartbeat();
-        await _ptyExecutor.DisposeAsync();
+        if (_ptyExecutor != null)
+        {
+            await _ptyExecutor.DisposeAsync();
+            _ptyExecutor = null;
+        }
         if (_ws != null)
         {
             if (_ws.State == WebSocketState.Open)

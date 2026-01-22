@@ -13,6 +13,7 @@ public class PtyExecutor : IAsyncDisposable
     private Func<int, Task>? _onExit;
     private readonly object _lock = new();
     private bool _hasExited;
+    private bool _isStopping;
 
     public bool IsRunning
     {
@@ -43,6 +44,7 @@ public class PtyExecutor : IAsyncDisposable
             if (_pty != null)
                 throw new InvalidOperationException("PTY session already running");
             _hasExited = false;
+            _isStopping = false;
         }
 
         _onOutput = onOutput;
@@ -78,6 +80,8 @@ public class PtyExecutor : IAsyncDisposable
             lock (_lock)
             {
                 _hasExited = true;
+                // Don't notify if we're stopping manually (avoids deadlock)
+                if (_isStopping) return;
             }
             // Fire and forget the async callback
             _ = _onExit?.Invoke(args.ExitCode);
@@ -175,27 +179,50 @@ public class PtyExecutor : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        _readCts?.Cancel();
-
-        if (_readTask != null)
+        // Set stopping flag first to prevent ProcessExited from notifying
+        lock (_lock)
         {
-            try
-            {
-                await _readTask;
-            }
-            catch
-            {
-                // Ignore
-            }
+            _isStopping = true;
         }
 
+        _readCts?.Cancel();
+
+        // Kill PTY first to unblock the read task
         lock (_lock)
         {
             if (_pty != null)
             {
-                _pty.Kill();
-                _pty.Dispose();
+                try
+                {
+                    _pty.Kill();
+                }
+                catch
+                {
+                    // Ignore kill errors (process may already be dead)
+                }
+                try
+                {
+                    _pty.Dispose();
+                }
+                catch
+                {
+                    // Ignore dispose errors
+                }
                 _pty = null;
+            }
+            _hasExited = true;
+        }
+
+        // Now wait for read task to complete (should be quick since PTY is killed)
+        if (_readTask != null)
+        {
+            try
+            {
+                await _readTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch
+            {
+                // Ignore timeout or other errors
             }
         }
 

@@ -30,8 +30,7 @@ public class AgentRunner
         }
 
         var executor = new CommandExecutor(workingDir);
-        var ptyExecutor = new PtyExecutor(workingDir);
-        await using var client = new WebSocketClient(_config, executor, ptyExecutor, _displayName);
+        await using var client = new WebSocketClient(_config, executor, workingDir, _displayName);
 
         await client.RunAsync(ct);
 
