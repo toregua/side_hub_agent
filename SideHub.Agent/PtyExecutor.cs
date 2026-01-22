@@ -63,6 +63,9 @@ public class PtyExecutor : IAsyncDisposable
 
         _pty = await PtyProvider.SpawnAsync(options, ct);
 
+        // Force resize immediately after spawn (workaround for Pty.Net not applying initial dimensions on macOS)
+        _pty.Resize(columns, rows);
+
         // Subscribe to exit event
         _pty.ProcessExited += (sender, args) =>
         {
