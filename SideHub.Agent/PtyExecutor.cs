@@ -162,7 +162,8 @@ public class PtyExecutor : IAsyncDisposable
             };
 
             // Use login shell (-l) to load profile
-            return (shellPath, new[] { "-l" }, env);
+            // -o NO_PROMPT_SP disables the partial line indicator that fills width with spaces
+            return (shellPath, new[] { "-l", "-o", "NO_PROMPT_SP" }, env);
         }
     }
 
