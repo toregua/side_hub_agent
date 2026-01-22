@@ -8,8 +8,10 @@
     <AssemblyName>sidehub-agent</AssemblyName>
   </PropertyGroup>
 
+  <!-- Include pty-helper Node.js files (node_modules must be installed separately via npm install) -->
   <ItemGroup>
-    <PackageReference Include="PTY" Version="1.0.3" />
+    <None Include="pty-helper\index.js" CopyToOutputDirectory="PreserveNewest" Link="pty-helper\index.js" />
+    <None Include="pty-helper\package.json" CopyToOutputDirectory="PreserveNewest" Link="pty-helper\package.json" />
   </ItemGroup>
 
 </Project>

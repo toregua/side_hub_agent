@@ -2,9 +2,21 @@
 set -e
 
 # SideHub Agent Installer for macOS/Linux
+# Requires: Node.js (for PTY terminal support)
 
 SIDEHUB_API="${SIDEHUB_API:-https://www.sidehub.io/api}"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/sidehub-agent}"
+BIN_LINK="/usr/local/bin/sidehub-agent"
+
+# Check Node.js
+check_nodejs() {
+    if ! command -v node &> /dev/null; then
+        echo "❌ Node.js is required but not installed."
+        echo "   Install it from https://nodejs.org or via your package manager."
+        exit 1
+    fi
+    echo "✓ Node.js $(node --version) found"
+}
 
 # Detect platform
 detect_platform() {
@@ -28,6 +40,8 @@ detect_platform() {
 
 # Download and install
 install() {
+    check_nodejs
+
     local platform=$(detect_platform)
     local version="${1:-latest}"
     local url
@@ -38,26 +52,42 @@ install() {
         url="${SIDEHUB_API}/agent/download/${platform}/${version}"
     fi
 
-    echo "Téléchargement de SideHub Agent (${platform})..."
+    echo "📦 Téléchargement de SideHub Agent (${platform})..."
 
-    local tmp_file=$(mktemp)
-    if ! curl -fsSL "$url" -o "$tmp_file"; then
+    local tmp_dir=$(mktemp -d)
+    local archive_file="$tmp_dir/agent.tar.gz"
+
+    if ! curl -fsSL "$url" -o "$archive_file"; then
         echo "Erreur: Impossible de télécharger depuis $url"
-        rm -f "$tmp_file"
+        rm -rf "$tmp_dir"
         exit 1
     fi
 
-    chmod +x "$tmp_file"
+    echo "📁 Extraction..."
+    tar -xzf "$archive_file" -C "$tmp_dir"
 
-    echo "Installation dans ${INSTALL_DIR}..."
-    if [ -w "$INSTALL_DIR" ]; then
-        mv "$tmp_file" "${INSTALL_DIR}/sidehub-agent"
+    echo "📦 Installation des dépendances Node.js..."
+    cd "$tmp_dir/pty-helper" && npm install --silent
+
+    echo "🔧 Installation dans ${INSTALL_DIR}..."
+    if [ -w "$(dirname "$INSTALL_DIR")" ]; then
+        rm -rf "$INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR"
+        cp -r "$tmp_dir/"* "$INSTALL_DIR/"
+        rm -f "$BIN_LINK"
+        ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
     else
-        sudo mv "$tmp_file" "${INSTALL_DIR}/sidehub-agent"
+        sudo rm -rf "$INSTALL_DIR"
+        sudo mkdir -p "$INSTALL_DIR"
+        sudo cp -r "$tmp_dir/"* "$INSTALL_DIR/"
+        sudo rm -f "$BIN_LINK"
+        sudo ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
     fi
 
+    rm -rf "$tmp_dir"
+
     echo ""
-    echo "SideHub Agent installé avec succès!"
+    echo "✅ SideHub Agent installé avec succès!"
     echo ""
     echo "Pour commencer:"
     echo "  1. Créez un fichier agent.json avec votre configuration"

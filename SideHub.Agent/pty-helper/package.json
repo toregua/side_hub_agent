@@ -1,0 +1,9 @@
+{
+  "name": "pty-helper",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "node-pty": "^1.2.0-beta.7"
+  }
+}

@@ -15,7 +15,7 @@ public class WebSocketClient : IAsyncDisposable
     private ClientWebSocket? _ws;
     private Timer? _heartbeatTimer;
     private string? _currentPtyShell;
-    private PtyExecutor? _ptyExecutor;
+    private NodePtyExecutor? _ptyExecutor;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -292,8 +292,8 @@ public class WebSocketClient : IAsyncDisposable
 
         try
         {
-            // Create fresh PtyExecutor for each session
-            _ptyExecutor = new PtyExecutor(_workingDirectory);
+            // Create fresh NodePtyExecutor for each session (uses node-pty for correct terminal dimensions)
+            _ptyExecutor = new NodePtyExecutor(_workingDirectory);
             await _ptyExecutor.StartAsync(
                 shell,
                 async output =>
