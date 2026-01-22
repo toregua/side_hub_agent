@@ -34,8 +34,8 @@ public class PtyExecutor : IAsyncDisposable
         string shell,
         Func<string, Task> onOutput,
         Func<int, Task> onExit,
-        int columns = 120,
-        int rows = 30,
+        int columns = 80,
+        int rows = 24,
         CancellationToken ct = default)
     {
         lock (_lock)
