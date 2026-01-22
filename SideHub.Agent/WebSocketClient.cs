@@ -9,20 +9,23 @@ public class WebSocketClient : IAsyncDisposable
 {
     private readonly AgentConfig _config;
     private readonly CommandExecutor _executor;
+    private readonly PtyExecutor _ptyExecutor;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly string _displayName;
     private ClientWebSocket? _ws;
     private Timer? _heartbeatTimer;
+    private string? _currentPtyShell;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
     private const double BackoffMultiplier = 1.5;
     private const int HeartbeatIntervalMs = 30000;
 
-    public WebSocketClient(AgentConfig config, CommandExecutor executor, string? displayName = null)
+    public WebSocketClient(AgentConfig config, CommandExecutor executor, PtyExecutor ptyExecutor, string? displayName = null)
     {
         _config = config;
         _executor = executor;
+        _ptyExecutor = ptyExecutor;
         _displayName = displayName ?? config.GetDisplayName();
         _jsonOptions = new JsonSerializerOptions
         {
@@ -184,6 +187,18 @@ public class WebSocketClient : IAsyncDisposable
                 case "command.execute":
                     await HandleCommandExecuteAsync(message, ct);
                     break;
+                case "pty.start":
+                    await HandlePtyStartAsync(message, ct);
+                    break;
+                case "pty.input":
+                    await HandlePtyInputAsync(message, ct);
+                    break;
+                case "pty.resize":
+                    HandlePtyResize(message);
+                    break;
+                case "pty.stop":
+                    await HandlePtyStopAsync();
+                    break;
                 default:
                     Log($"Unknown message type: {message.Type}");
                     break;
@@ -260,6 +275,86 @@ public class WebSocketClient : IAsyncDisposable
         await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
     }
 
+    private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (_ptyExecutor.IsRunning)
+        {
+            Log("PTY session already running");
+            return;
+        }
+
+        var shell = message.Shell ?? "zsh";
+        var columns = message.Columns ?? 120;
+        var rows = message.Rows ?? 30;
+
+        Log($"Starting PTY session with {shell} ({columns}x{rows})");
+
+        try
+        {
+            await _ptyExecutor.StartAsync(
+                shell,
+                async output =>
+                {
+                    await SendAsync(new PtyOutputMessage { Data = output }, ct);
+                },
+                async exitCode =>
+                {
+                    Log($"PTY exited with code {exitCode}");
+                    _currentPtyShell = null;
+                    await SendAsync(new PtyExitedMessage { ExitCode = exitCode }, ct);
+                },
+                columns,
+                rows,
+                ct
+            );
+
+            _currentPtyShell = shell;
+            await SendAsync(new PtyStartedMessage { Shell = shell }, ct);
+            Log("PTY session started");
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to start PTY: {ex.Message}");
+        }
+    }
+
+    private async Task HandlePtyInputAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (!_ptyExecutor.IsRunning || string.IsNullOrEmpty(message.Input))
+            return;
+
+        try
+        {
+            await _ptyExecutor.WriteAsync(message.Input, ct);
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to write to PTY: {ex.Message}");
+        }
+    }
+
+    private void HandlePtyResize(IncomingMessage message)
+    {
+        if (!_ptyExecutor.IsRunning)
+            return;
+
+        var columns = message.Columns ?? 120;
+        var rows = message.Rows ?? 30;
+
+        Log($"Resizing PTY to {columns}x{rows}");
+        _ptyExecutor.Resize(columns, rows);
+    }
+
+    private async Task HandlePtyStopAsync()
+    {
+        if (!_ptyExecutor.IsRunning)
+            return;
+
+        Log("Stopping PTY session");
+        await _ptyExecutor.StopAsync();
+        _currentPtyShell = null;
+    }
+
     private static int CalculateReconnectDelay(int attempts)
     {
         var delay = (int)(MinReconnectDelayMs * Math.Pow(BackoffMultiplier, attempts));
@@ -269,6 +364,7 @@ public class WebSocketClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopHeartbeat();
+        await _ptyExecutor.DisposeAsync();
         if (_ws != null)
         {
             if (_ws.State == WebSocketState.Open)

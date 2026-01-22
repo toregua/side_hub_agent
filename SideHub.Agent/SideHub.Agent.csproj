@@ -8,4 +8,8 @@
     <AssemblyName>sidehub-agent</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="PTY" Version="1.0.3" />
+  </ItemGroup>
+
 </Project>
