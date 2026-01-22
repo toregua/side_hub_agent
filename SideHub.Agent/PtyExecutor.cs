@@ -50,6 +50,12 @@ public class PtyExecutor : IAsyncDisposable
 
         var (app, args, env) = GetShellConfig(shell);
 
+        // Set terminal dimensions via environment variables
+        env["COLUMNS"] = columns.ToString();
+        env["LINES"] = rows.ToString();
+        // Disable zsh PROMPT_SP (partial line indicator that fills width with spaces)
+        env["PROMPT_EOL_MARK"] = "";
+
         var options = new PtyOptions
         {
             Name = "SideHub Terminal",
