@@ -93,6 +93,9 @@ public class IncomingMessage
 
     [JsonPropertyName("rows")]
     public int? Rows { get; init; }
+
+    [JsonPropertyName("requestId")]
+    public string? RequestId { get; init; }
 }
 
 public class PtyOutputMessage
@@ -120,4 +123,19 @@ public class PtyExitedMessage
 
     [JsonPropertyName("exitCode")]
     public required int ExitCode { get; init; }
+}
+
+public class PtyHistoryMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.history";
+
+    [JsonPropertyName("data")]
+    public required string Data { get; init; }
+
+    [JsonPropertyName("bufferSize")]
+    public required int BufferSize { get; init; }
+
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
 }

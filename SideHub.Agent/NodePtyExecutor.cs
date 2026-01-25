@@ -17,6 +17,7 @@ public class NodePtyExecutor : IAsyncDisposable
     private Task? _readTask;
     private int _columns;
     private int _rows;
+    private readonly PtyOutputBuffer _outputBuffer = new();
 
     public bool IsRunning
     {
@@ -28,6 +29,16 @@ public class NodePtyExecutor : IAsyncDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Gets all buffered PTY output history.
+    /// </summary>
+    public string GetBufferedOutput() => _outputBuffer.GetAll();
+
+    /// <summary>
+    /// Gets the current buffer size in bytes.
+    /// </summary>
+    public int BufferSize => _outputBuffer.Size;
 
     public NodePtyExecutor(string workingDirectory)
     {
@@ -174,9 +185,13 @@ public class NodePtyExecutor : IAsyncDisposable
 
                         case "output":
                             var data = root.GetProperty("data").GetString();
-                            if (data != null && _onOutput != null)
+                            if (data != null)
                             {
-                                await _onOutput(data);
+                                _outputBuffer.Write(data);
+                                if (_onOutput != null)
+                                {
+                                    await _onOutput(data);
+                                }
                             }
                             break;
 
@@ -265,6 +280,8 @@ public class NodePtyExecutor : IAsyncDisposable
                 // Ignore
             }
         }
+
+        _outputBuffer.Clear();
     }
 
     public async ValueTask DisposeAsync()

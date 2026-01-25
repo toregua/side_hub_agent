@@ -200,6 +200,9 @@ public class WebSocketClient : IAsyncDisposable
                 case "pty.stop":
                     await HandlePtyStopAsync();
                     break;
+                case "pty.history.request":
+                    await HandlePtyHistoryRequestAsync(message, ct);
+                    break;
                 default:
                     Log($"Unknown message type: {message.Type}");
                     break;
@@ -368,6 +371,34 @@ public class WebSocketClient : IAsyncDisposable
         _ptyExecutor = null;
         _currentPtyShell = null;
         Log("PTY session stopped");
+    }
+
+    private async Task HandlePtyHistoryRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        var requestId = message.RequestId ?? Guid.NewGuid().ToString();
+
+        if (_ptyExecutor?.IsRunning != true)
+        {
+            Log("PTY history requested but no session running");
+            await SendAsync(new PtyHistoryMessage
+            {
+                Data = "",
+                BufferSize = 0,
+                RequestId = requestId
+            }, ct);
+            return;
+        }
+
+        var history = _ptyExecutor.GetBufferedOutput();
+        var bufferSize = _ptyExecutor.BufferSize;
+        Log($"Sending PTY history ({bufferSize} bytes)");
+
+        await SendAsync(new PtyHistoryMessage
+        {
+            Data = history,
+            BufferSize = bufferSize,
+            RequestId = requestId
+        }, ct);
     }
 
     private static int CalculateReconnectDelay(int attempts)
