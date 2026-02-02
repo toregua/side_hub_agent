@@ -47,9 +47,23 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
         "logs" => await HandleLogs(args, baseDirectory),
         "status" => Commands.Status(baseDirectory),
         "help" or "--help" or "-h" => ShowHelp(),
-        "--foreground-daemon" => await Commands.RunForegroundDaemon(baseDirectory, ct),
+        "--foreground-daemon" => await HandleForegroundDaemon(args, baseDirectory, ct),
         _ => await HandleStart(args, baseDirectory, ct) // Default: treat unknown as start with possible flags
     };
+}
+
+static async Task<int> HandleForegroundDaemon(string[] args, string baseDirectory, CancellationToken ct)
+{
+    // Expected: --foreground-daemon <logFile> <pidFile>
+    if (args.Length < 3)
+    {
+        Console.WriteLine("[SideHub] Error: Missing log file and pid file arguments");
+        return 1;
+    }
+
+    var logFile = args[1];
+    var pidFile = args[2];
+    return await Commands.RunForegroundDaemon(baseDirectory, logFile, pidFile, ct);
 }
 
 static async Task<int> HandleStart(string[] args, string baseDirectory, CancellationToken ct)

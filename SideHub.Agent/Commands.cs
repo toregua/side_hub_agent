@@ -35,16 +35,24 @@ public static class Commands
 
         manager.EnsureRunDirectory();
 
+        // Pass the log file path to the daemon process
+        var logFile = manager.LogFile;
+        var pidFile = manager.PidFile;
+
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath,
-            Arguments = "start --foreground-daemon",
+            Arguments = $"--foreground-daemon \"{logFile}\" \"{pidFile}\"",
             WorkingDirectory = baseDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            RedirectStandardInput = false,
         };
+
+        // Set environment to prevent terminal attachment
+        startInfo.Environment["DOTNET_RUNNING_IN_CONTAINER"] = "true";
 
         try
         {
@@ -55,30 +63,27 @@ public static class Commands
                 return 1;
             }
 
-            // Write PID immediately
-            manager.WritePidFile(process.Id);
+            // Give it a moment to start and write its PID
+            Thread.Sleep(1000);
 
-            // Redirect output to log file in background
-            _ = Task.Run(async () =>
+            // Check if process started successfully by reading PID file
+            var pid = manager.ReadPid();
+            if (pid == null)
             {
-                using var logWriter = manager.CreateLogWriter();
-                var outputTask = RedirectStreamToLog(process.StandardOutput, logWriter);
-                var errorTask = RedirectStreamToLog(process.StandardError, logWriter);
-                await Task.WhenAll(outputTask, errorTask);
-            });
-
-            // Give it a moment to start
-            Thread.Sleep(500);
+                Console.WriteLine("[SideHub] Error: Daemon process failed to start");
+                return 1;
+            }
 
             if (process.HasExited)
             {
                 Console.WriteLine("[SideHub] Error: Daemon process exited immediately");
+                Console.WriteLine("[SideHub] Check logs for details: " + logFile);
                 manager.RemovePidFile();
                 return 1;
             }
 
-            Console.WriteLine($"[SideHub] Agent started in background (PID: {process.Id})");
-            Console.WriteLine($"[SideHub] Logs: {manager.LogFile}");
+            Console.WriteLine($"[SideHub] Agent started in background (PID: {pid})");
+            Console.WriteLine($"[SideHub] Logs: {logFile}");
             Console.WriteLine($"[SideHub] Use 'sidehub-agent logs' to view logs");
             Console.WriteLine($"[SideHub] Use 'sidehub-agent stop' to stop");
 
@@ -88,16 +93,6 @@ public static class Commands
         {
             Console.WriteLine($"[SideHub] Error starting daemon: {ex.Message}");
             return 1;
-        }
-    }
-
-    private static async Task RedirectStreamToLog(StreamReader reader, StreamWriter logWriter)
-    {
-        string? line;
-        while ((line = await reader.ReadLineAsync()) != null)
-        {
-            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            await logWriter.WriteLineAsync($"{timestamp} {line}");
         }
     }
 
@@ -119,10 +114,76 @@ public static class Commands
         return 0;
     }
 
-    public static async Task<int> RunForegroundDaemon(string baseDirectory, CancellationToken ct)
+    public static async Task<int> RunForegroundDaemon(string baseDirectory, string logFile, string pidFile, CancellationToken ct)
     {
-        // Same as foreground but we're already in the detached process
-        return await RunForeground(baseDirectory, ct);
+        // Write our PID to the file
+        File.WriteAllText(pidFile, Environment.ProcessId.ToString());
+
+        // Redirect console output to log file
+        using var logWriter = new StreamWriter(logFile, append: true) { AutoFlush = true };
+        var originalOut = Console.Out;
+        var originalErr = Console.Error;
+
+        var timestampWriter = new TimestampTextWriter(logWriter);
+        Console.SetOut(timestampWriter);
+        Console.SetError(timestampWriter);
+
+        try
+        {
+            return await RunForeground(baseDirectory, ct);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Console.SetError(originalErr);
+
+            // Clean up PID file on exit
+            if (File.Exists(pidFile))
+            {
+                File.Delete(pidFile);
+            }
+        }
+    }
+
+    /// <summary>
+    /// TextWriter that prefixes each line with a timestamp.
+    /// </summary>
+    private class TimestampTextWriter : TextWriter
+    {
+        private readonly TextWriter _inner;
+        private bool _atLineStart = true;
+
+        public TimestampTextWriter(TextWriter inner) => _inner = inner;
+
+        public override System.Text.Encoding Encoding => _inner.Encoding;
+
+        public override void Write(char value)
+        {
+            if (_atLineStart && value != '\r' && value != '\n')
+            {
+                _inner.Write($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} ");
+                _atLineStart = false;
+            }
+
+            _inner.Write(value);
+
+            if (value == '\n')
+            {
+                _atLineStart = true;
+            }
+        }
+
+        public override void WriteLine(string? value)
+        {
+            if (_atLineStart)
+            {
+                _inner.Write($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} ");
+            }
+            _inner.WriteLine(value);
+            _atLineStart = true;
+        }
+
+        public override void Flush() => _inner.Flush();
     }
 
     public static async Task<int> Logs(string baseDirectory, bool follow)
