@@ -18,6 +18,12 @@ public class AgentConnectedMessage
 
     [JsonPropertyName("capabilities")]
     public required string[] Capabilities { get; init; }
+
+    [JsonPropertyName("defaultShell")]
+    public required string DefaultShell { get; init; }
+
+    [JsonPropertyName("availableShells")]
+    public required string[] AvailableShells { get; init; }
 }
 
 public class AgentHeartbeatMessage

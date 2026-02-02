@@ -108,12 +108,18 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task SendConnectedMessageAsync(CancellationToken ct)
     {
+        var defaultShell = SystemInfoProvider.GetDefaultShell();
+        var availableShells = SystemInfoProvider.GetAvailableShells();
+        Log($"OS: {SystemInfoProvider.GetOsPlatform()}, Default shell: {defaultShell}, Available: [{string.Join(", ", availableShells)}]");
+
         var message = new AgentConnectedMessage
         {
             AgentId = _config.AgentId!,
             WorkspaceId = _config.WorkspaceId!,
             RepositoryId = _config.RepositoryId!,
-            Capabilities = _config.Capabilities!
+            Capabilities = _config.Capabilities!,
+            DefaultShell = defaultShell,
+            AvailableShells = availableShells
         };
         await SendAsync(message, ct);
     }
