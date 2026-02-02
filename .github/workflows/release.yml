@@ -47,23 +47,32 @@ jobs:
         run: |
           dotnet publish SideHub.Agent -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
 
-      - name: Rename artifact (Unix)
+      - name: Create tar.gz archive (Unix)
         if: runner.os != 'Windows'
         run: |
           cd publish
-          mv sidehub-agent ${{ matrix.artifact }}
+          mv sidehub-agent sidehub-agent-binary
+          mkdir -p package
+          mv sidehub-agent-binary package/sidehub-agent
+          cp -r pty-helper package/
+          cd package
+          tar -czvf ../${{ matrix.artifact }}.tar.gz *
 
-      - name: Rename artifact (Windows)
+      - name: Create zip archive (Windows)
         if: runner.os == 'Windows'
         run: |
           cd publish
-          ren sidehub-agent.exe ${{ matrix.artifact }}.exe
+          mkdir package
+          move sidehub-agent.exe package\sidehub-agent.exe
+          xcopy pty-helper package\pty-helper\ /E /I
+          cd package
+          Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ./publish/${{ matrix.artifact }}*
+          path: ./publish/${{ matrix.artifact }}.*
 
   release:
     needs: build
