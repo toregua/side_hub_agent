@@ -71,11 +71,14 @@ public class CommandExecutor
 
     private static (string fileName, string arguments) GetShellCommand(string shell, string command)
     {
+        // Note: Don't use -i (interactive) flag for non-interactive command execution.
+        // It requires a real TTY for job control and produces warnings like:
+        // "bash: initialize_job_control: no job control in background: Bad file descriptor"
         return shell.ToLowerInvariant() switch
         {
-            "bash" => ("/bin/bash", $"-i -l -c \"{EscapeForShell(command)}\""),
+            "bash" => ("/bin/bash", $"-l -c \"{EscapeForShell(command)}\""),
             "sh" => ("/bin/sh", $"-l -c \"{EscapeForShell(command)}\""),
-            "zsh" => ("/bin/zsh", $"-i -l -c \"{EscapeForShell(command)}\""),
+            "zsh" => ("/bin/zsh", $"-l -c \"{EscapeForShell(command)}\""),
             "powershell" or "pwsh" => ("pwsh", $"-Command \"{EscapeForPowerShell(command)}\""),
             "cmd" => ("cmd.exe", $"/c {command}"),
             _ => throw new ArgumentException($"Unsupported shell: {shell}")
