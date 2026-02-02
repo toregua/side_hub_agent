@@ -212,6 +212,9 @@ public class WebSocketClient : IAsyncDisposable
                 case "agent.heartbeat.ack":
                     // Acknowledgement from server, no action needed
                     break;
+                case "agent.connected":
+                    // Connection confirmed by server, no action needed
+                    break;
                 default:
                     Log($"Unknown message type: {message.Type}");
                     break;
