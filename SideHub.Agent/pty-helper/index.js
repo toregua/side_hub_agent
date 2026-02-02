@@ -46,7 +46,7 @@ function startPty(config) {
     return;
   }
 
-  const shell = config.shell || process.env.SHELL || '/bin/zsh';
+  const shell = config.shell || process.env.SHELL || '/bin/bash';
   const cwd = config.cwd || process.cwd();
   const cols = config.cols || 80;
   const rows = config.rows || 24;

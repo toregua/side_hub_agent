@@ -296,11 +296,11 @@ public class WebSocketClient : IAsyncDisposable
         if (_ptyExecutor?.IsRunning == true)
         {
             Log("PTY session already running, sending started event for reconnection");
-            await SendAsync(new PtyStartedMessage { Shell = _currentPtyShell ?? "zsh" }, ct);
+            await SendAsync(new PtyStartedMessage { Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell() }, ct);
             return;
         }
 
-        var shell = message.Shell ?? "zsh";
+        var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
         var columns = message.Columns ?? 120;
         var rows = message.Rows ?? 30;
 
