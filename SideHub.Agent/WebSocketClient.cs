@@ -209,6 +209,9 @@ public class WebSocketClient : IAsyncDisposable
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
                     break;
+                case "agent.heartbeat.ack":
+                    // Acknowledgement from server, no action needed
+                    break;
                 default:
                     Log($"Unknown message type: {message.Type}");
                     break;
@@ -289,7 +292,8 @@ public class WebSocketClient : IAsyncDisposable
     {
         if (_ptyExecutor?.IsRunning == true)
         {
-            Log("PTY session already running");
+            Log("PTY session already running, sending started event for reconnection");
+            await SendAsync(new PtyStartedMessage { Shell = _currentPtyShell ?? "zsh" }, ct);
             return;
         }
 
