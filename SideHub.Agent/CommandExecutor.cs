@@ -7,6 +7,9 @@ public class CommandExecutor
     private readonly string _workingDirectory;
     private bool _isBusy;
     private readonly object _lock = new();
+    private Process? _currentProcess;
+
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromHours(1);
 
     public bool IsBusy
     {
@@ -33,6 +36,10 @@ public class CommandExecutor
             _isBusy = true;
         }
 
+        using var timeoutCts = new CancellationTokenSource(CommandTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        var linkedToken = linkedCts.Token;
+
         try
         {
             var (fileName, arguments) = GetShellCommand(shell, command);
@@ -49,23 +56,49 @@ public class CommandExecutor
             };
 
             using var process = new Process { StartInfo = psi };
+            _currentProcess = process;
 
             process.Start();
 
-            var stdoutTask = ReadStreamAsync(process.StandardOutput, "stdout", onOutput, ct);
-            var stderrTask = ReadStreamAsync(process.StandardError, "stderr", onOutput, ct);
+            var stdoutTask = ReadStreamAsync(process.StandardOutput, "stdout", onOutput, linkedToken);
+            var stderrTask = ReadStreamAsync(process.StandardError, "stderr", onOutput, linkedToken);
 
-            await Task.WhenAll(stdoutTask, stderrTask);
-            await process.WaitForExitAsync(ct);
-
-            return process.ExitCode;
+            try
+            {
+                await Task.WhenAll(stdoutTask, stderrTask);
+                await process.WaitForExitAsync(linkedToken);
+                return process.ExitCode;
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                Console.WriteLine($"[CommandExecutor] Command timed out after {CommandTimeout.TotalMinutes} minutes, killing process");
+                await onOutput("stderr", $"\n[TIMEOUT] Command exceeded {CommandTimeout.TotalMinutes} minute limit and was terminated.");
+                KillProcess(process);
+                return -1;
+            }
         }
         finally
         {
+            _currentProcess = null;
             lock (_lock)
             {
                 _isBusy = false;
             }
+        }
+    }
+
+    private static void KillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CommandExecutor] Failed to kill process: {ex.Message}");
         }
     }
 

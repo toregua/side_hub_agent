@@ -34,6 +34,9 @@ function handleMessage(line) {
       case 'stop':
         stopPty();
         break;
+      case 'ping':
+        send({ type: 'pong', id: msg.id, ptyRunning: ptyProcess !== null });
+        break;
     }
   } catch (e) {
     send({ type: 'error', message: e.message });

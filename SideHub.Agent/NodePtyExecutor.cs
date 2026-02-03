@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -18,6 +19,7 @@ public class NodePtyExecutor : IAsyncDisposable
     private int _columns;
     private int _rows;
     private readonly PtyOutputBuffer _outputBuffer = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingPings = new();
 
     public bool IsRunning
     {
@@ -39,6 +41,39 @@ public class NodePtyExecutor : IAsyncDisposable
     /// Gets the current buffer size in bytes.
     /// </summary>
     public int BufferSize => _outputBuffer.Size;
+
+    /// <summary>
+    /// Checks if the Node helper is responding (health check).
+    /// </summary>
+    public async Task<bool> IsHealthyAsync(TimeSpan? timeout = null)
+    {
+        if (_nodeProcess == null || _hasExited)
+            return false;
+
+        timeout ??= TimeSpan.FromSeconds(2);
+        var pingId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<bool>();
+        _pendingPings[pingId] = tcs;
+
+        try
+        {
+            var cmd = new { type = "ping", id = pingId };
+            await SendCommandAsync(cmd, CancellationToken.None);
+
+            using var cts = new CancellationTokenSource(timeout.Value);
+            cts.Token.Register(() => tcs.TrySetResult(false));
+
+            return await tcs.Task;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            _pendingPings.TryRemove(pingId, out _);
+        }
+    }
 
     public NodePtyExecutor(string workingDirectory)
     {
@@ -212,6 +247,17 @@ public class NodePtyExecutor : IAsyncDisposable
                         case "error":
                             var message = root.GetProperty("message").GetString();
                             Console.WriteLine($"[NodePty] Error: {message}");
+                            break;
+
+                        case "pong":
+                            if (root.TryGetProperty("id", out var idProp))
+                            {
+                                var pongId = idProp.GetString();
+                                if (pongId != null && _pendingPings.TryGetValue(pongId, out var tcs))
+                                {
+                                    tcs.TrySetResult(true);
+                                }
+                            }
                             break;
                     }
                 }

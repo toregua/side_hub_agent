@@ -20,7 +20,10 @@ public class WebSocketClient : IAsyncDisposable
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
     private const double BackoffMultiplier = 1.5;
-    private const int HeartbeatIntervalMs = 30000;
+    private const int HeartbeatIntervalMs = 15000;
+    private const int MaxMissedHeartbeatAcks = 3;
+
+    private int _missedHeartbeatAcks;
 
     public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null)
     {
@@ -126,6 +129,8 @@ public class WebSocketClient : IAsyncDisposable
 
     private void StartHeartbeat(CancellationToken ct)
     {
+        _missedHeartbeatAcks = 0;
+
         _heartbeatTimer = new Timer(
             async _ =>
             {
@@ -133,11 +138,19 @@ public class WebSocketClient : IAsyncDisposable
                 {
                     try
                     {
+                        _missedHeartbeatAcks++;
+                        if (_missedHeartbeatAcks > MaxMissedHeartbeatAcks)
+                        {
+                            Log($"No heartbeat ACK received for {MaxMissedHeartbeatAcks} consecutive heartbeats, forcing reconnection");
+                            _ws?.Abort();
+                            return;
+                        }
+
                         await SendAsync(new AgentHeartbeatMessage(), ct);
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Ignore heartbeat errors
+                        Log($"Heartbeat failed: {ex.Message}");
                     }
                 }
             },
@@ -210,7 +223,7 @@ public class WebSocketClient : IAsyncDisposable
                     await HandlePtyHistoryRequestAsync(message, ct);
                     break;
                 case "agent.heartbeat.ack":
-                    // Acknowledgement from server, no action needed
+                    _missedHeartbeatAcks = 0;
                     break;
                 case "agent.connected":
                     // Connection confirmed by server, no action needed
@@ -295,9 +308,18 @@ public class WebSocketClient : IAsyncDisposable
     {
         if (_ptyExecutor?.IsRunning == true)
         {
-            Log("PTY session already running, sending started event for reconnection");
-            await SendAsync(new PtyStartedMessage { Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell() }, ct);
-            return;
+            var isHealthy = await _ptyExecutor.IsHealthyAsync();
+            if (isHealthy)
+            {
+                Log("PTY session already running and healthy, sending started event for reconnection");
+                await SendAsync(new PtyStartedMessage { Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell() }, ct);
+                return;
+            }
+
+            Log("PTY session exists but is not healthy, stopping and creating new session");
+            await _ptyExecutor.DisposeAsync();
+            _ptyExecutor = null;
+            _currentPtyShell = null;
         }
 
         var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
