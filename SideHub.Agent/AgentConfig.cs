@@ -98,8 +98,7 @@ public class AgentConfig
         if (string.IsNullOrWhiteSpace(WorkspaceId))
             errors.Add("workspaceId is required");
 
-        if (string.IsNullOrWhiteSpace(RepositoryId))
-            errors.Add("repositoryId is required");
+        // repositoryId is optional (agents are now at workspace level)
 
         if (string.IsNullOrWhiteSpace(AgentToken))
             errors.Add("agentToken is required");

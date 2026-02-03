@@ -119,7 +119,6 @@ public class WebSocketClient : IAsyncDisposable
         {
             AgentId = _config.AgentId!,
             WorkspaceId = _config.WorkspaceId!,
-            RepositoryId = _config.RepositoryId!,
             Capabilities = _config.Capabilities!,
             DefaultShell = defaultShell,
             AvailableShells = availableShells

@@ -13,9 +13,6 @@ public class AgentConnectedMessage
     [JsonPropertyName("workspaceId")]
     public required string WorkspaceId { get; init; }
 
-    [JsonPropertyName("repositoryId")]
-    public required string RepositoryId { get; init; }
-
     [JsonPropertyName("capabilities")]
     public required string[] Capabilities { get; init; }
 

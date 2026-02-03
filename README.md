@@ -94,7 +94,6 @@ Chaque fichier `.json` dans le dossier `.sidehub/` représente un agent qui sera
   "sidehubUrl": "wss://www.sidehub.io/ws/agent",
   "agentId": "votre-agent-uuid",
   "workspaceId": "votre-workspace-uuid",
-  "repositoryId": "votre-repository-uuid",
   "agentToken": "sh_agent_xxx",
   "workingDirectory": ".",
   "capabilities": ["shell", "claude-code"]
@@ -107,7 +106,6 @@ Chaque fichier `.json` dans le dossier `.sidehub/` représente un agent qui sera
 | `sidehubUrl` | Oui | URL WebSocket du serveur SideHub |
 | `agentId` | Oui | UUID de l'agent |
 | `workspaceId` | Oui | UUID du workspace |
-| `repositoryId` | Oui | UUID du repository |
 | `agentToken` | Oui | Token d'authentification (`sh_agent_xxx`) |
 | `workingDirectory` | Oui | Répertoire de travail (relatif ou absolu) |
 | `capabilities` | Oui | Capacités de l'agent (`shell`, `claude-code`) |

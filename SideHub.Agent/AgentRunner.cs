@@ -19,7 +19,6 @@ public class AgentRunner
 
         Log($"Agent ID: {_config.AgentId}");
         Log($"Workspace ID: {_config.WorkspaceId}");
-        Log($"Repository ID: {_config.RepositoryId}");
         Log($"Working directory: {workingDir}");
         Log($"Capabilities: {string.Join(", ", _config.Capabilities!)}");
 
