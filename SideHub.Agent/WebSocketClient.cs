@@ -324,13 +324,14 @@ public class WebSocketClient : IAsyncDisposable
         var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
         var columns = message.Columns ?? 120;
         var rows = message.Rows ?? 30;
+        var effectiveWorkingDirectory = message.WorkingDirectory ?? _workingDirectory;
 
-        Log($"Starting PTY session with {shell} ({columns}x{rows})");
+        Log($"Starting PTY session with {shell} ({columns}x{rows}) in {effectiveWorkingDirectory}");
 
         try
         {
             // Create fresh NodePtyExecutor for each session (uses node-pty for correct terminal dimensions)
-            _ptyExecutor = new NodePtyExecutor(_workingDirectory);
+            _ptyExecutor = new NodePtyExecutor(effectiveWorkingDirectory);
             await _ptyExecutor.StartAsync(
                 shell,
                 async output =>

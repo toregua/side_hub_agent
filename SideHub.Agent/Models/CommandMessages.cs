@@ -96,6 +96,9 @@ public class IncomingMessage
 
     [JsonPropertyName("requestId")]
     public string? RequestId { get; init; }
+
+    [JsonPropertyName("workingDirectory")]
+    public string? WorkingDirectory { get; init; }
 }
 
 public class PtyOutputMessage
