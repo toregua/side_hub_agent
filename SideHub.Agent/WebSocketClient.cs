@@ -16,6 +16,7 @@ public class WebSocketClient : IAsyncDisposable
     private Timer? _heartbeatTimer;
     private string? _currentPtyShell;
     private NodePtyExecutor? _ptyExecutor;
+    private readonly Dictionary<string, (string Path, StringBuilder Data)> _pendingFileWrites = new();
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -221,8 +222,14 @@ public class WebSocketClient : IAsyncDisposable
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
                     break;
-                case "file.write":
-                    await HandleFileWriteAsync(message, ct);
+                case "file.write.start":
+                    HandleFileWriteStart(message);
+                    break;
+                case "file.write.chunk":
+                    HandleFileWriteChunk(message);
+                    break;
+                case "file.write.end":
+                    await HandleFileWriteEndAsync(message, ct);
                     break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
@@ -297,28 +304,47 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    private async Task HandleFileWriteAsync(IncomingMessage message, CancellationToken ct)
+    private void HandleFileWriteStart(IncomingMessage message)
     {
-        if (string.IsNullOrEmpty(message.CommandId) ||
-            string.IsNullOrEmpty(message.Path) ||
-            string.IsNullOrEmpty(message.Data))
+        if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Path))
         {
-            Log("Invalid file.write message received");
+            Log("Invalid file.write.start message");
             return;
         }
+        _pendingFileWrites[message.CommandId] = (message.Path, new StringBuilder());
+        Log($"File write started: {message.Path}");
+    }
 
-        Log($"Writing file: {message.Path}");
+    private void HandleFileWriteChunk(IncomingMessage message)
+    {
+        if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Data))
+            return;
+        if (_pendingFileWrites.TryGetValue(message.CommandId, out var state))
+            state.Data.Append(message.Data);
+    }
+
+    private async Task HandleFileWriteEndAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.CommandId))
+            return;
+
+        if (!_pendingFileWrites.TryGetValue(message.CommandId, out var state))
+        {
+            Log("file.write.end received for unknown commandId");
+            return;
+        }
+        _pendingFileWrites.Remove(message.CommandId);
 
         try
         {
-            var dir = Path.GetDirectoryName(message.Path);
+            var dir = Path.GetDirectoryName(state.Path);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var bytes = Convert.FromBase64String(message.Data);
-            await File.WriteAllBytesAsync(message.Path, bytes, ct);
+            var bytes = Convert.FromBase64String(state.Data.ToString());
+            await File.WriteAllBytesAsync(state.Path, bytes, ct);
 
-            Log($"File written: {message.Path} ({bytes.Length} bytes)");
+            Log($"File written: {state.Path} ({bytes.Length} bytes)");
             await SendAsync(new CommandCompletedMessage
             {
                 CommandId = message.CommandId,
