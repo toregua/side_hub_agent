@@ -106,6 +106,9 @@ public class IncomingMessage
 
     [JsonPropertyName("data")]
     public string? Data { get; init; }
+
+    [JsonPropertyName("ptyPaste")]
+    public string? PtyPaste { get; init; }
 }
 
 public class PtyOutputMessage

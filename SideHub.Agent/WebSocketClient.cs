@@ -16,7 +16,7 @@ public class WebSocketClient : IAsyncDisposable
     private Timer? _heartbeatTimer;
     private string? _currentPtyShell;
     private NodePtyExecutor? _ptyExecutor;
-    private readonly Dictionary<string, (string Path, StringBuilder Data)> _pendingFileWrites = new();
+    private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -311,7 +311,7 @@ public class WebSocketClient : IAsyncDisposable
             Log("Invalid file.write.start message");
             return;
         }
-        _pendingFileWrites[message.CommandId] = (message.Path, new StringBuilder());
+        _pendingFileWrites[message.CommandId] = (message.Path, new StringBuilder(), message.PtyPaste);
         Log($"File write started: {message.Path}");
     }
 
@@ -345,6 +345,21 @@ public class WebSocketClient : IAsyncDisposable
             await File.WriteAllBytesAsync(state.Path, bytes, ct);
 
             Log($"File written: {state.Path} ({bytes.Length} bytes)");
+
+            // Paste path into PTY if requested and PTY is running
+            if (!string.IsNullOrEmpty(state.PtyPaste) && _ptyExecutor?.IsRunning == true)
+            {
+                try
+                {
+                    await _ptyExecutor.WriteAsync(state.PtyPaste, ct);
+                    Log($"Pasted path into PTY");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to paste path into PTY: {ex.Message}");
+                }
+            }
+
             await SendAsync(new CommandCompletedMessage
             {
                 CommandId = message.CommandId,
