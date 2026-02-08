@@ -99,6 +99,13 @@ public class IncomingMessage
 
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; init; }
+
+    // file.write fields
+    [JsonPropertyName("path")]
+    public string? Path { get; init; }
+
+    [JsonPropertyName("data")]
+    public string? Data { get; init; }
 }
 
 public class PtyOutputMessage

@@ -221,6 +221,9 @@ public class WebSocketClient : IAsyncDisposable
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
                     break;
+                case "file.write":
+                    await HandleFileWriteAsync(message, ct);
+                    break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
                     break;
@@ -285,6 +288,46 @@ public class WebSocketClient : IAsyncDisposable
         catch (Exception ex)
         {
             Log($"Failed: {ex.Message}");
+            await SendAsync(new CommandFailedMessage
+            {
+                CommandId = message.CommandId,
+                ExitCode = -1,
+                Error = ex.Message
+            }, ct);
+        }
+    }
+
+    private async Task HandleFileWriteAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.CommandId) ||
+            string.IsNullOrEmpty(message.Path) ||
+            string.IsNullOrEmpty(message.Data))
+        {
+            Log("Invalid file.write message received");
+            return;
+        }
+
+        Log($"Writing file: {message.Path}");
+
+        try
+        {
+            var dir = Path.GetDirectoryName(message.Path);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            var bytes = Convert.FromBase64String(message.Data);
+            await File.WriteAllBytesAsync(message.Path, bytes, ct);
+
+            Log($"File written: {message.Path} ({bytes.Length} bytes)");
+            await SendAsync(new CommandCompletedMessage
+            {
+                CommandId = message.CommandId,
+                ExitCode = 0
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            Log($"File write failed: {ex.Message}");
             await SendAsync(new CommandFailedMessage
             {
                 CommandId = message.CommandId,
