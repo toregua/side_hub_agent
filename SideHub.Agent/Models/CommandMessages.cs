@@ -109,6 +109,19 @@ public class IncomingMessage
 
     [JsonPropertyName("ptyPaste")]
     public string? PtyPaste { get; init; }
+
+    // claude-sdk fields
+    [JsonPropertyName("sessionId")]
+    public string? SessionId { get; init; }
+
+    [JsonPropertyName("sdkUrl")]
+    public string? SdkUrl { get; init; }
+
+    [JsonPropertyName("model")]
+    public string? Model { get; init; }
+
+    [JsonPropertyName("permissionMode")]
+    public string? PermissionMode { get; init; }
 }
 
 public class PtyOutputMessage
@@ -151,4 +164,40 @@ public class PtyHistoryMessage
 
     [JsonPropertyName("requestId")]
     public required string RequestId { get; init; }
+}
+
+public class ClaudeSdkSpawnedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "claude-sdk.spawned";
+
+    [JsonPropertyName("sessionId")]
+    public required string SessionId { get; init; }
+
+    [JsonPropertyName("pid")]
+    public required int Pid { get; init; }
+}
+
+public class ClaudeSdkSpawnFailedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "claude-sdk.spawn-failed";
+
+    [JsonPropertyName("sessionId")]
+    public required string SessionId { get; init; }
+
+    [JsonPropertyName("error")]
+    public required string Error { get; init; }
+}
+
+public class ClaudeSdkExitedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "claude-sdk.exited";
+
+    [JsonPropertyName("sessionId")]
+    public required string SessionId { get; init; }
+
+    [JsonPropertyName("exitCode")]
+    public required int ExitCode { get; init; }
 }

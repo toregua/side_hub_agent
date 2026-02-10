@@ -17,6 +17,7 @@ public class WebSocketClient : IAsyncDisposable
     private string? _currentPtyShell;
     private NodePtyExecutor? _ptyExecutor;
     private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
+    private readonly Dictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -230,6 +231,9 @@ public class WebSocketClient : IAsyncDisposable
                     break;
                 case "file.write.end":
                     await HandleFileWriteEndAsync(message, ct);
+                    break;
+                case "claude-sdk.spawn":
+                    await HandleClaudeSdkSpawnAsync(message, ct);
                     break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
@@ -520,6 +524,107 @@ public class WebSocketClient : IAsyncDisposable
         }, ct);
     }
 
+    private async Task HandleClaudeSdkSpawnAsync(IncomingMessage message, CancellationToken ct)
+    {
+        var sessionId = message.SessionId;
+        var sdkUrl = message.SdkUrl;
+
+        if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(sdkUrl))
+        {
+            Log("Invalid claude-sdk.spawn message: missing sessionId or sdkUrl");
+            return;
+        }
+
+        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {sdkUrl}");
+
+        try
+        {
+            var model = message.Model ?? "claude-sonnet-4-20250514";
+            var cwd = message.WorkingDirectory ?? _workingDirectory;
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "claude",
+                ArgumentList =
+                {
+                    "--sdk-url", sdkUrl,
+                    "--print",
+                    "--output-format", "stream-json",
+                    "--input-format", "stream-json",
+                    "--verbose",
+                    "--model", model,
+                    "-p", ""
+                },
+                WorkingDirectory = cwd,
+                UseShellExecute = false,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+                RedirectStandardInput = false,
+                CreateNoWindow = true
+            };
+
+            var process = System.Diagnostics.Process.Start(startInfo);
+
+            if (process is null)
+            {
+                Log($"Failed to start Claude CLI process for session {sessionId}");
+                await SendAsync(new ClaudeSdkSpawnFailedMessage
+                {
+                    SessionId = sessionId,
+                    Error = "Failed to start process"
+                }, ct);
+                return;
+            }
+
+            _claudeSdkProcesses[sessionId] = process;
+
+            Log($"Claude CLI started for session {sessionId} (PID {process.Id})");
+            await SendAsync(new ClaudeSdkSpawnedMessage
+            {
+                SessionId = sessionId,
+                Pid = process.Id
+            }, ct);
+
+            // Monitor process exit in background
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await process.WaitForExitAsync(ct);
+                    var exitCode = process.ExitCode;
+                    Log($"Claude CLI for session {sessionId} exited with code {exitCode}");
+                    _claudeSdkProcesses.Remove(sessionId);
+
+                    await SendAsync(new ClaudeSdkExitedMessage
+                    {
+                        SessionId = sessionId,
+                        ExitCode = exitCode
+                    }, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Agent shutting down
+                    try { process.Kill(); } catch { }
+                    _claudeSdkProcesses.Remove(sessionId);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error monitoring Claude CLI process: {ex.Message}");
+                    _claudeSdkProcesses.Remove(sessionId);
+                }
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to spawn Claude CLI for session {sessionId}: {ex.Message}");
+            await SendAsync(new ClaudeSdkSpawnFailedMessage
+            {
+                SessionId = sessionId,
+                Error = ex.Message
+            }, ct);
+        }
+    }
+
     private static int CalculateReconnectDelay(int attempts)
     {
         var delay = (int)(MinReconnectDelayMs * Math.Pow(BackoffMultiplier, attempts));
@@ -529,6 +634,25 @@ public class WebSocketClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopHeartbeat();
+
+        // Kill any running Claude SDK processes
+        foreach (var (sessionId, process) in _claudeSdkProcesses)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill();
+                    Log($"Killed Claude CLI process for session {sessionId}");
+                }
+            }
+            catch
+            {
+                // Ignore kill errors
+            }
+        }
+        _claudeSdkProcesses.Clear();
+
         if (_ptyExecutor != null)
         {
             await _ptyExecutor.DisposeAsync();
