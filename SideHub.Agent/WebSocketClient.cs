@@ -545,6 +545,8 @@ public class WebSocketClient : IAsyncDisposable
             // --sdk-url is a hidden CLI flag that makes Claude connect to an external
             // WebSocket server instead of running in terminal mode.
             // See: https://github.com/The-Vibe-Company/companion
+            var permissionMode = message.PermissionMode ?? "default";
+
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "claude",
@@ -552,7 +554,12 @@ public class WebSocketClient : IAsyncDisposable
                 {
                     "--sdk-url", sdkUrl,
                     "--model", model,
-                    "--verbose"
+                    "--print",
+                    "--output-format", "stream-json",
+                    "--input-format", "stream-json",
+                    "--verbose",
+                    "--permission-mode", permissionMode,
+                    "-p", ""
                 },
                 WorkingDirectory = cwd,
                 UseShellExecute = false,
