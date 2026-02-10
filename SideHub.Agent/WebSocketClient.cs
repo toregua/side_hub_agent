@@ -551,12 +551,8 @@ public class WebSocketClient : IAsyncDisposable
                 ArgumentList =
                 {
                     "--sdk-url", sdkUrl,
-                    "--print",
-                    "--output-format", "stream-json",
-                    "--input-format", "stream-json",
-                    "--verbose",
                     "--model", model,
-                    "-p", "placeholder"
+                    "--verbose"
                 },
                 WorkingDirectory = cwd,
                 UseShellExecute = false,
