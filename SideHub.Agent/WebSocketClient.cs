@@ -535,33 +535,34 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        Log($"Spawning Claude CLI for session {sessionId} (bridge mode)");
+        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {sdkUrl}");
 
         try
         {
             var model = message.Model ?? "claude-sonnet-4-20250514";
-            var permissionMode = message.PermissionMode ?? "default";
             var cwd = message.WorkingDirectory ?? _workingDirectory;
 
-            // 1. Start Claude CLI with redirected stdio
+            // --sdk-url is a hidden CLI flag that makes Claude connect to an external
+            // WebSocket server instead of running in terminal mode.
+            // See: https://github.com/The-Vibe-Company/companion
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "claude",
                 ArgumentList =
                 {
+                    "--sdk-url", sdkUrl,
                     "--print",
                     "--output-format", "stream-json",
                     "--input-format", "stream-json",
                     "--verbose",
                     "--model", model,
-                    "--permission-mode", permissionMode,
-                    "-p", ""
+                    "-p", "placeholder"
                 },
                 WorkingDirectory = cwd,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
+                RedirectStandardOutput = false,
                 RedirectStandardError = true,
-                RedirectStandardInput = true,
+                RedirectStandardInput = false,
                 CreateNoWindow = true
             };
 
@@ -587,113 +588,51 @@ public class WebSocketClient : IAsyncDisposable
                 Pid = process.Id
             }, ct);
 
-            // 2. Connect a WebSocket to the backend's /ws/claude/{sessionId}
+            // Monitor stderr and process exit in background
             _ = Task.Run(async () =>
             {
-                ClientWebSocket? bridgeWs = null;
                 try
                 {
-                    bridgeWs = new ClientWebSocket();
-                    var wsUri = new Uri(sdkUrl);
-                    Log($"Connecting bridge WebSocket to {wsUri}");
-
-                    using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    connectCts.CancelAfter(TimeSpan.FromSeconds(15));
-                    await bridgeWs.ConnectAsync(wsUri, connectCts.Token);
-                    Log($"Bridge WebSocket connected for session {sessionId}");
-
-                    // 3. Bridge CLI stdout → WebSocket (background task)
-                    var stdoutTask = Task.Run(async () =>
+                    // Log stderr for debugging
+                    var stderrTask = Task.Run(async () =>
                     {
                         try
                         {
-                            var reader = process.StandardOutput;
-                            while (!ct.IsCancellationRequested && !process.HasExited)
+                            while (!process.HasExited)
                             {
-                                var line = await reader.ReadLineAsync(ct);
+                                var line = await process.StandardError.ReadLineAsync(ct);
                                 if (line is null) break;
-                                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                                // Forward raw JSON line to WebSocket
-                                var bytes = Encoding.UTF8.GetBytes(line);
-                                if (bridgeWs.State == WebSocketState.Open)
-                                {
-                                    await bridgeWs.SendAsync(
-                                        new ArraySegment<byte>(bytes),
-                                        WebSocketMessageType.Text,
-                                        true, ct);
-                                }
+                                if (!string.IsNullOrWhiteSpace(line))
+                                    Log($"[Claude CLI stderr] {line}");
                             }
                         }
                         catch (OperationCanceledException) { }
-                        catch (Exception ex)
-                        {
-                            Log($"CLI stdout bridge error for session {sessionId}: {ex.Message}");
-                        }
+                        catch { }
                     }, ct);
 
-                    // 4. Bridge WebSocket → CLI stdin (this task)
-                    var buffer = new byte[8192];
-                    var msgBuffer = new List<byte>();
-
-                    while (bridgeWs.State == WebSocketState.Open && !ct.IsCancellationRequested)
-                    {
-                        var result = await bridgeWs.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-
-                        if (result.MessageType == WebSocketMessageType.Close)
-                        {
-                            Log($"Bridge WebSocket closed for session {sessionId}");
-                            break;
-                        }
-
-                        msgBuffer.AddRange(buffer.AsSpan(0, result.Count).ToArray());
-
-                        if (result.EndOfMessage)
-                        {
-                            var json = Encoding.UTF8.GetString(msgBuffer.ToArray());
-                            msgBuffer.Clear();
-
-                            if (!string.IsNullOrWhiteSpace(json) && !process.HasExited)
-                            {
-                                await process.StandardInput.WriteLineAsync(json.AsMemory(), ct);
-                                await process.StandardInput.FlushAsync(ct);
-                            }
-                        }
-                    }
-
-                    await stdoutTask;
-                }
-                catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    Log($"Bridge error for session {sessionId}: {ex.Message}");
-                }
-                finally
-                {
-                    // Clean up
-                    if (!process.HasExited)
-                    {
-                        try { process.Kill(); } catch { }
-                    }
+                    await process.WaitForExitAsync(ct);
+                    var exitCode = process.ExitCode;
+                    Log($"Claude CLI for session {sessionId} exited with code {exitCode}");
                     _claudeSdkProcesses.Remove(sessionId);
 
-                    if (bridgeWs?.State == WebSocketState.Open)
-                    {
-                        try
-                        {
-                            await bridgeWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "Process ended", CancellationToken.None);
-                        }
-                        catch { }
-                    }
-                    bridgeWs?.Dispose();
-
-                    Log($"Claude CLI bridge for session {sessionId} terminated");
+                    await stderrTask;
 
                     await SendAsync(new ClaudeSdkExitedMessage
                     {
                         SessionId = sessionId,
-                        ExitCode = process.HasExited ? process.ExitCode : -1
+                        ExitCode = exitCode
                     }, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Agent shutting down
+                    try { process.Kill(); } catch { }
+                    _claudeSdkProcesses.Remove(sessionId);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error monitoring Claude CLI process: {ex.Message}");
+                    _claudeSdkProcesses.Remove(sessionId);
                 }
             }, ct);
         }
