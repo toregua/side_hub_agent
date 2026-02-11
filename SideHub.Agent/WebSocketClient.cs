@@ -589,8 +589,9 @@ public class WebSocketClient : IAsyncDisposable
 
             _claudeSdkProcesses[sessionId] = process;
 
-            // Close stdin immediately so the CLI doesn't block waiting for input
-            process.StandardInput.Close();
+            // Keep stdin pipe open (don't close it!) - the CLI uses WebSocket for input
+            // but closing stdin sends EOF which causes the CLI to exit after the first turn.
+            // The Companion project doesn't close stdin either.
 
             Log($"Claude CLI started for session {sessionId} (PID {process.Id})");
             await SendAsync(new ClaudeSdkSpawnedMessage
