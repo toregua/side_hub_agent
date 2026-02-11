@@ -563,9 +563,9 @@ public class WebSocketClient : IAsyncDisposable
                 },
                 WorkingDirectory = cwd,
                 UseShellExecute = false,
-                RedirectStandardOutput = false,
+                RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                RedirectStandardInput = false,
+                RedirectStandardInput = true,
                 CreateNoWindow = true
             };
 
@@ -584,6 +584,9 @@ public class WebSocketClient : IAsyncDisposable
 
             _claudeSdkProcesses[sessionId] = process;
 
+            // Close stdin immediately so the CLI doesn't block waiting for input
+            process.StandardInput.Close();
+
             Log($"Claude CLI started for session {sessionId} (PID {process.Id})");
             await SendAsync(new ClaudeSdkSpawnedMessage
             {
@@ -591,11 +594,28 @@ public class WebSocketClient : IAsyncDisposable
                 Pid = process.Id
             }, ct);
 
-            // Monitor stderr and process exit in background
+            // Monitor stdout, stderr and process exit in background
             _ = Task.Run(async () =>
             {
                 try
                 {
+                    // Log stdout for debugging (protocol goes via WebSocket, stdout is just debug)
+                    var stdoutTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            while (!process.HasExited)
+                            {
+                                var line = await process.StandardOutput.ReadLineAsync(ct);
+                                if (line is null) break;
+                                if (!string.IsNullOrWhiteSpace(line))
+                                    Log($"[Claude CLI stdout] {line}");
+                            }
+                        }
+                        catch (OperationCanceledException) { }
+                        catch { }
+                    }, ct);
+
                     // Log stderr for debugging
                     var stderrTask = Task.Run(async () =>
                     {
@@ -618,7 +638,7 @@ public class WebSocketClient : IAsyncDisposable
                     Log($"Claude CLI for session {sessionId} exited with code {exitCode}");
                     _claudeSdkProcesses.Remove(sessionId);
 
-                    await stderrTask;
+                    await Task.WhenAll(stdoutTask, stderrTask);
 
                     await SendAsync(new ClaudeSdkExitedMessage
                     {
