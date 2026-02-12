@@ -119,8 +119,8 @@ public static class Commands
         // Write our PID to the file
         File.WriteAllText(pidFile, Environment.ProcessId.ToString());
 
-        // Redirect console output to log file
-        using var logWriter = new StreamWriter(logFile, append: true) { AutoFlush = true };
+        // Redirect console output to log file with automatic rotation
+        using var logWriter = new RotatingLogWriter(logFile);
         var originalOut = Console.Out;
         var originalErr = Console.Error;
 
@@ -282,11 +282,18 @@ public static class Commands
             Console.WriteLine($"[SideHub] Agent is running (PID: {pid})");
             Console.WriteLine($"[SideHub] Logs: {manager.LogFile}");
 
-            // Show log file size
+            // Show log file size (current + archives)
             if (File.Exists(manager.LogFile))
             {
                 var fileInfo = new FileInfo(manager.LogFile);
+                var totalSize = RotatingLogWriter.GetTotalLogSize(manager.LogFile);
+                var archiveFiles = RotatingLogWriter.GetAllLogFiles(manager.LogFile);
+
                 Console.WriteLine($"[SideHub] Log size: {FormatBytes(fileInfo.Length)}");
+                if (archiveFiles.Count > 1)
+                {
+                    Console.WriteLine($"[SideHub] Total log size ({archiveFiles.Count} files): {FormatBytes(totalSize)}");
+                }
             }
 
             return 0;

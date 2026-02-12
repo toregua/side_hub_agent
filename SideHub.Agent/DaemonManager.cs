@@ -116,10 +116,10 @@ public class DaemonManager
         }
     }
 
-    public StreamWriter CreateLogWriter()
+    public RotatingLogWriter CreateLogWriter()
     {
         EnsureRunDirectory();
-        return new StreamWriter(_logFile, append: true) { AutoFlush = true };
+        return new RotatingLogWriter(_logFile);
     }
 
     public FileStream? OpenLogForReading()
