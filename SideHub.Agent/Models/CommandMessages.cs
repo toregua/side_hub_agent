@@ -122,6 +122,9 @@ public class IncomingMessage
 
     [JsonPropertyName("permissionMode")]
     public string? PermissionMode { get; init; }
+
+    [JsonPropertyName("resumeCliSessionId")]
+    public string? ResumeCliSessionId { get; init; }
 }
 
 public class PtyOutputMessage

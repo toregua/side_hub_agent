@@ -535,7 +535,8 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {sdkUrl}");
+        var resumeCliSessionId = message.ResumeCliSessionId;
+        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {sdkUrl}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
 
         try
         {
@@ -550,17 +551,6 @@ public class WebSocketClient : IAsyncDisposable
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "claude",
-                ArgumentList =
-                {
-                    "--sdk-url", sdkUrl,
-                    "--model", model,
-                    "--print",
-                    "--output-format", "stream-json",
-                    "--input-format", "stream-json",
-                    "--verbose",
-                    "--permission-mode", permissionMode,
-                    "-p", ""
-                },
                 WorkingDirectory = cwd,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -569,11 +559,35 @@ public class WebSocketClient : IAsyncDisposable
                 CreateNoWindow = true
             };
 
+            // Build argument list
+            startInfo.ArgumentList.Add("--sdk-url");
+            startInfo.ArgumentList.Add(sdkUrl);
+            startInfo.ArgumentList.Add("--model");
+            startInfo.ArgumentList.Add(model);
+            startInfo.ArgumentList.Add("--print");
+            startInfo.ArgumentList.Add("--output-format");
+            startInfo.ArgumentList.Add("stream-json");
+            startInfo.ArgumentList.Add("--input-format");
+            startInfo.ArgumentList.Add("stream-json");
+            startInfo.ArgumentList.Add("--verbose");
+            startInfo.ArgumentList.Add("--permission-mode");
+            startInfo.ArgumentList.Add(permissionMode);
+
+            if (!string.IsNullOrEmpty(resumeCliSessionId))
+            {
+                startInfo.ArgumentList.Add("--resume");
+                startInfo.ArgumentList.Add(resumeCliSessionId);
+            }
+
+            startInfo.ArgumentList.Add("-p");
+            startInfo.ArgumentList.Add("");
+
             // CLAUDECODE=1 tells the CLI to operate in SDK/WebSocket mode
             // Without this, the CLI connects but never sends system/init
             // See: companion/web/server/cli-launcher.ts
             startInfo.Environment["CLAUDECODE"] = "1";
 
+            var spawnedAt = DateTime.UtcNow;
             var process = System.Diagnostics.Process.Start(startInfo);
 
             if (process is null)
@@ -641,16 +655,31 @@ public class WebSocketClient : IAsyncDisposable
 
                     await process.WaitForExitAsync(ct);
                     var exitCode = process.ExitCode;
-                    Log($"Claude CLI for session {sessionId} exited with code {exitCode}");
+                    var elapsed = DateTime.UtcNow - spawnedAt;
+                    Log($"Claude CLI for session {sessionId} exited with code {exitCode} after {elapsed.TotalSeconds:F1}s");
                     _claudeSdkProcesses.Remove(sessionId);
 
                     await Task.WhenAll(stdoutTask, stderrTask);
 
-                    await SendAsync(new ClaudeSdkExitedMessage
+                    // Quick-exit detection: if CLI exits < 5s and we were resuming,
+                    // the session likely doesn't exist anymore
+                    if (elapsed.TotalSeconds < 5 && !string.IsNullOrEmpty(resumeCliSessionId))
                     {
-                        SessionId = sessionId,
-                        ExitCode = exitCode
-                    }, ct);
+                        Log($"Resume failed for session {sessionId} (CLI exited too quickly)");
+                        await SendAsync(new ClaudeSdkSpawnFailedMessage
+                        {
+                            SessionId = sessionId,
+                            Error = "Resume failed - CLI session may no longer exist"
+                        }, ct);
+                    }
+                    else
+                    {
+                        await SendAsync(new ClaudeSdkExitedMessage
+                        {
+                            SessionId = sessionId,
+                            ExitCode = exitCode
+                        }, ct);
+                    }
                 }
                 catch (OperationCanceledException)
                 {
