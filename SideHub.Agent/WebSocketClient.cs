@@ -582,10 +582,10 @@ public class WebSocketClient : IAsyncDisposable
             startInfo.ArgumentList.Add("-p");
             startInfo.ArgumentList.Add("");
 
-            // CLAUDECODE=1 tells the CLI to operate in SDK/WebSocket mode
-            // Without this, the CLI connects but never sends system/init
-            // See: companion/web/server/cli-launcher.ts
-            startInfo.Environment["CLAUDECODE"] = "1";
+            // Remove CLAUDECODE from inherited environment to prevent
+            // "cannot be launched inside another Claude Code session" error.
+            // The --sdk-url flag alone is sufficient for SDK/WebSocket mode.
+            startInfo.Environment.Remove("CLAUDECODE");
 
             var spawnedAt = DateTime.UtcNow;
             var process = System.Diagnostics.Process.Start(startInfo);
