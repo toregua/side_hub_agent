@@ -24,8 +24,10 @@ public class WebSocketClient : IAsyncDisposable
     private const double BackoffMultiplier = 1.5;
     private const int HeartbeatIntervalMs = 15000;
     private const int MaxMissedHeartbeatAcks = 3;
+    private const int StableConnectionThresholdMs = 60000; // 60s before resetting backoff
 
     private int _missedHeartbeatAcks;
+    private DateTime _connectedAt;
 
     public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null)
     {
@@ -52,12 +54,13 @@ public class WebSocketClient : IAsyncDisposable
             {
                 _ws = new ClientWebSocket();
                 _ws.Options.SetRequestHeader("Authorization", $"Bearer {_config.AgentToken}");
+                _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
 
                 Log($"Connecting to {_config.SidehubUrl}...");
                 await _ws.ConnectAsync(new Uri(_config.SidehubUrl!), ct);
                 Log("Connected");
 
-                reconnectAttempts = 0;
+                _connectedAt = DateTime.UtcNow;
 
                 await SendConnectedMessageAsync(ct);
                 StartHeartbeat(ct);
@@ -75,10 +78,17 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"Error: {ex.Message}");
                 StopHeartbeat();
 
+                // Only reset backoff if connection was stable for at least 60 seconds
+                var connectionDuration = (DateTime.UtcNow - _connectedAt).TotalMilliseconds;
+                if (connectionDuration >= StableConnectionThresholdMs)
+                {
+                    reconnectAttempts = 0;
+                }
+
                 var delay = CalculateReconnectDelay(reconnectAttempts);
                 reconnectAttempts++;
 
-                Log($"Reconnecting in {delay}ms...");
+                Log($"Reconnecting in {delay}ms (attempt {reconnectAttempts}, was connected {connectionDuration / 1000:F0}s)...");
                 try
                 {
                     await Task.Delay(delay, ct);
@@ -240,6 +250,9 @@ public class WebSocketClient : IAsyncDisposable
                     break;
                 case "agent.connected":
                     // Connection confirmed by server, no action needed
+                    break;
+                case "server.ping":
+                    // Server keepalive ping - no response needed, just keeps the connection alive
                     break;
                 default:
                     Log($"Unknown message type: {message.Type}");
