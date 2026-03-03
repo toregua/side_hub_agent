@@ -18,6 +18,7 @@ public class WebSocketClient : IAsyncDisposable
     private NodePtyExecutor? _ptyExecutor;
     private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
     private readonly Dictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
+    private ClaudeSdkProxy? _proxy;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -63,6 +64,7 @@ public class WebSocketClient : IAsyncDisposable
                 _connectedAt = DateTime.UtcNow;
 
                 await SendConnectedMessageAsync(ct);
+                await ReportAliveSessionsAsync(ct);
                 StartHeartbeat(ct);
 
                 Log("Waiting for commands...");
@@ -537,6 +539,40 @@ public class WebSocketClient : IAsyncDisposable
         }, ct);
     }
 
+    private async Task EnsureProxyStartedAsync()
+    {
+        if (_proxy is not null && _proxy.IsRunning) return;
+        _proxy = new ClaudeSdkProxy(Log);
+        await _proxy.StartAsync();
+    }
+
+    /// <summary>
+    /// After reconnecting to backend, report any Claude sessions still alive
+    /// so the backend can recreate them and the proxy can reconnect.
+    /// </summary>
+    private async Task ReportAliveSessionsAsync(CancellationToken ct)
+    {
+        if (_proxy is null) return;
+
+        var activeSessions = _proxy.GetActiveSessions();
+        if (activeSessions.Count == 0) return;
+
+        Log($"Reporting {activeSessions.Count} active Claude session(s) to backend...");
+
+        var sessionsPayload = activeSessions.Select(s => new Dictionary<string, string?>
+        {
+            ["sessionId"] = s.SessionId,
+            ["token"] = s.Token,
+            ["cliSessionId"] = s.CliSessionId
+        }).ToList();
+
+        await SendAsync(new ClaudeSdkSessionsAliveMessage { Sessions = sessionsPayload }, ct);
+
+        // Give backend a moment to recreate sessions before proxy reconnects
+        await Task.Delay(1000, ct);
+        await _proxy.ReconnectAllToBackendAsync(ct);
+    }
+
     private async Task HandleClaudeSdkSpawnAsync(IncomingMessage message, CancellationToken ct)
     {
         var sessionId = message.SessionId;
@@ -556,10 +592,29 @@ public class WebSocketClient : IAsyncDisposable
             var model = message.Model ?? "claude-sonnet-4-20250514";
             var cwd = message.WorkingDirectory ?? _workingDirectory;
 
-            // --sdk-url is a hidden CLI flag that makes Claude connect to an external
-            // WebSocket server instead of running in terminal mode.
-            // See: https://github.com/The-Vibe-Company/companion
-            var permissionMode = message.PermissionMode ?? "default";
+            // Map Side Hub permission modes to valid CLI permission modes.
+            // CLI accepts: acceptEdits, bypassPermissions, default, dontAsk, plan
+            // Side Hub uses 'pipeline' and 'auto' as custom modes handled server-side.
+            var rawPermissionMode = message.PermissionMode ?? "default";
+            var permissionMode = rawPermissionMode switch
+            {
+                "pipeline" => "bypassPermissions",
+                "auto" => "bypassPermissions",
+                _ => rawPermissionMode
+            };
+
+            // Start local WebSocket proxy so CLI connects to agent (stable)
+            // instead of directly to backend (drops on deploy).
+            await EnsureProxyStartedAsync();
+
+            // Extract token from backend URL for reconnection
+            var uriObj = new Uri(sdkUrl);
+            var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+
+            _proxy!.RegisterSession(sessionId, sdkUrl, token, rawPermissionMode);
+            var localUrl = _proxy.GetLocalUrl(sessionId);
+
+            Log($"CLI will connect to local proxy: {localUrl}");
 
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
@@ -572,9 +627,9 @@ public class WebSocketClient : IAsyncDisposable
                 CreateNoWindow = true
             };
 
-            // Build argument list
+            // CLI connects to local proxy instead of backend directly
             startInfo.ArgumentList.Add("--sdk-url");
-            startInfo.ArgumentList.Add(sdkUrl);
+            startInfo.ArgumentList.Add(localUrl);
             startInfo.ArgumentList.Add("--model");
             startInfo.ArgumentList.Add(model);
             startInfo.ArgumentList.Add("--print");
@@ -597,7 +652,6 @@ public class WebSocketClient : IAsyncDisposable
 
             // Remove CLAUDECODE from inherited environment to prevent
             // "cannot be launched inside another Claude Code session" error.
-            // The --sdk-url flag alone is sufficient for SDK/WebSocket mode.
             startInfo.Environment.Remove("CLAUDECODE");
 
             var spawnedAt = DateTime.UtcNow;
@@ -606,6 +660,7 @@ public class WebSocketClient : IAsyncDisposable
             if (process is null)
             {
                 Log($"Failed to start Claude CLI process for session {sessionId}");
+                _proxy.RemoveSession(sessionId);
                 await SendAsync(new ClaudeSdkSpawnFailedMessage
                 {
                     SessionId = sessionId,
@@ -618,7 +673,6 @@ public class WebSocketClient : IAsyncDisposable
 
             // Keep stdin pipe open (don't close it!) - the CLI uses WebSocket for input
             // but closing stdin sends EOF which causes the CLI to exit after the first turn.
-            // The Companion project doesn't close stdin either.
 
             Log($"Claude CLI started for session {sessionId} (PID {process.Id})");
             await SendAsync(new ClaudeSdkSpawnedMessage
@@ -632,7 +686,6 @@ public class WebSocketClient : IAsyncDisposable
             {
                 try
                 {
-                    // Log stdout for debugging (protocol goes via WebSocket, stdout is just debug)
                     var stdoutTask = Task.Run(async () =>
                     {
                         try
@@ -649,7 +702,6 @@ public class WebSocketClient : IAsyncDisposable
                         catch { }
                     }, ct);
 
-                    // Log stderr for debugging
                     var stderrTask = Task.Run(async () =>
                     {
                         try
@@ -671,11 +723,10 @@ public class WebSocketClient : IAsyncDisposable
                     var elapsed = DateTime.UtcNow - spawnedAt;
                     Log($"Claude CLI for session {sessionId} exited with code {exitCode} after {elapsed.TotalSeconds:F1}s");
                     _claudeSdkProcesses.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
 
                     await Task.WhenAll(stdoutTask, stderrTask);
 
-                    // Quick-exit detection: if CLI exits < 5s and we were resuming,
-                    // the session likely doesn't exist anymore
                     if (elapsed.TotalSeconds < 5 && !string.IsNullOrEmpty(resumeCliSessionId))
                     {
                         Log($"Resume failed for session {sessionId} (CLI exited too quickly)");
@@ -696,20 +747,22 @@ public class WebSocketClient : IAsyncDisposable
                 }
                 catch (OperationCanceledException)
                 {
-                    // Agent shutting down
                     try { process.Kill(); } catch { }
                     _claudeSdkProcesses.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
                 }
                 catch (Exception ex)
                 {
                     Log($"Error monitoring Claude CLI process: {ex.Message}");
                     _claudeSdkProcesses.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
                 }
             }, ct);
         }
         catch (Exception ex)
         {
             Log($"Failed to spawn Claude CLI for session {sessionId}: {ex.Message}");
+            _proxy?.RemoveSession(sessionId);
             await SendAsync(new ClaudeSdkSpawnFailedMessage
             {
                 SessionId = sessionId,
@@ -727,6 +780,13 @@ public class WebSocketClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopHeartbeat();
+
+        // Dispose proxy first (closes local WebSocket server and backend connections)
+        if (_proxy != null)
+        {
+            await _proxy.DisposeAsync();
+            _proxy = null;
+        }
 
         // Kill any running Claude SDK processes
         foreach (var (sessionId, process) in _claudeSdkProcesses)

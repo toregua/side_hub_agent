@@ -204,3 +204,12 @@ public class ClaudeSdkExitedMessage
     [JsonPropertyName("exitCode")]
     public required int ExitCode { get; init; }
 }
+
+public class ClaudeSdkSessionsAliveMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "claude-sdk.sessions-alive";
+
+    [JsonPropertyName("sessions")]
+    public required List<Dictionary<string, string?>> Sessions { get; init; }
+}
