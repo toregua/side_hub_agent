@@ -2,7 +2,6 @@
 
 Remote command execution agent for the [SideHub](https://www.sidehub.io) platform. Connects via WebSocket to receive and execute shell commands with real-time output streaming.
 
-[![CI](https://github.com/sidehub-io/side_hub_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sidehub-io/side_hub_agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Quick Start (< 5 minutes)
@@ -295,7 +294,6 @@ side_hub_agent/
 │       ├── index.js
 │       └── package.json
 ├── .github/workflows/
-│   ├── ci.yml                     # CI (build + test on PRs)
 │   └── release.yml                # Release builds on tags
 ├── CONTRIBUTING.md
 ├── LICENSE
