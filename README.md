@@ -1,292 +1,334 @@
 # SideHub Agent
 
-Agent d'exécution de commandes à distance pour la plateforme SideHub. Se connecte via WebSocket pour recevoir et exécuter des commandes shell avec streaming en temps réel.
+Remote command execution agent for the [SideHub](https://www.sidehub.io) platform. Connects via WebSocket to receive and execute shell commands with real-time output streaming.
 
-## Prérequis
+[![CI](https://github.com/sidehub-io/side_hub_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sidehub-io/side_hub_agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-- .NET 10.0 Runtime (ou SDK pour compiler depuis les sources)
+## Quick Start (< 5 minutes)
 
-## Installation
+### 1. Install the agent
 
-### macOS
-
-#### Option 1 : Téléchargement direct (recommandé)
-
+**macOS**
 ```bash
-# Télécharger la dernière version
 curl -fsSL https://www.sidehub.io/api/agent/download/macos -o sidehub-agent
-
-# Rendre exécutable
 chmod +x sidehub-agent
-
-# Déplacer dans le PATH (optionnel)
 sudo mv sidehub-agent /usr/local/bin/
 ```
 
-#### Option 2 : Via le script d'installation
-
+**Linux**
 ```bash
-curl -fsSL https://www.sidehub.io/api/agent/install.sh | bash
+curl -fsSL https://www.sidehub.io/api/agent/download/linux -o sidehub-agent
+chmod +x sidehub-agent
+sudo mv sidehub-agent /usr/local/bin/
 ```
 
-#### Option 3 : Compilation depuis les sources
-
-```bash
-# Cloner le repo
-git clone https://github.com/votre-org/side_hub_agent.git
-cd side_hub_agent
-
-# Publier en self-contained (inclut le runtime .NET)
-dotnet publish SideHub.Agent -c Release -r osx-arm64 --self-contained -o ./dist
-
-# Ou pour Intel Mac
-dotnet publish SideHub.Agent -c Release -r osx-x64 --self-contained -o ./dist
-```
-
-### Windows
-
-#### Option 1 : Téléchargement direct (recommandé)
-
+**Windows (PowerShell)**
 ```powershell
-# PowerShell - Télécharger la dernière version
 Invoke-WebRequest -Uri "https://www.sidehub.io/api/agent/download/windows" -OutFile "sidehub-agent.exe"
-
-# Déplacer dans un dossier du PATH (optionnel)
-Move-Item sidehub-agent.exe "$env:LOCALAPPDATA\Programs\sidehub-agent\sidehub-agent.exe"
 ```
 
-#### Option 2 : Via le script d'installation
+Or use the install scripts:
+```bash
+# macOS / Linux
+curl -fsSL https://www.sidehub.io/api/agent/install.sh | bash
 
-```powershell
+# Windows (PowerShell)
 irm https://www.sidehub.io/api/agent/install.ps1 | iex
 ```
 
-#### Option 3 : Compilation depuis les sources
+### 2. Configure
 
-```powershell
-# Cloner le repo
-git clone https://github.com/votre-org/side_hub_agent.git
-cd side_hub_agent
+1. Log in to [SideHub](https://www.sidehub.io) and go to **Agents** in your workspace
+2. Create a new agent — this generates an `agentId`, `workspaceId`, and `agentToken`
+3. In your project directory, create a `.sidehub/` folder with a JSON config file:
 
-# Publier en self-contained
-dotnet publish SideHub.Agent -c Release -r win-x64 --self-contained -o ./dist
+```bash
+mkdir -p .sidehub
 ```
+
+```bash
+cat > .sidehub/agent.json << 'EOF'
+{
+  "name": "my-agent",
+  "sidehubUrl": "wss://www.sidehub.io/ws/agent",
+  "agentId": "<your-agent-uuid>",
+  "workspaceId": "<your-workspace-uuid>",
+  "agentToken": "sh_agent_<your-token>",
+  "workingDirectory": ".",
+  "capabilities": ["shell"]
+}
+EOF
+```
+
+Replace the placeholder values with the credentials from your SideHub dashboard.
+
+### 3. Start
+
+```bash
+sidehub-agent
+```
+
+That's it — the agent connects to SideHub and is ready to receive commands.
 
 ## Configuration
 
-Créer un dossier `.sidehub/` à la racine de votre repository avec un ou plusieurs fichiers de configuration JSON :
+Agent configuration files live in `.sidehub/` at the root of your project. Each `.json` file defines one agent instance — all are launched in parallel.
 
 ```
-mon-repo/
+my-project/
 └── .sidehub/
     ├── agent-dev.json
-    ├── agent-prod.json
-    └── ...
+    ├── agent-staging.json
+    └── agent-prod.json
 ```
 
-Chaque fichier `.json` dans le dossier `.sidehub/` représente un agent qui sera lancé en parallèle.
+### Configuration fields
 
-### Format de configuration
+| Field | Required | Description |
+|---|---|---|
+| `name` | No | Display name (defaults to filename) |
+| `sidehubUrl` | Yes | WebSocket endpoint — `wss://www.sidehub.io/ws/agent` |
+| `agentId` | Yes | Agent UUID (from SideHub dashboard) |
+| `workspaceId` | Yes | Workspace UUID (from SideHub dashboard) |
+| `agentToken` | Yes | Authentication token (prefix `sh_agent_`) |
+| `workingDirectory` | Yes | Working directory for command execution (`.` for current, or absolute path) |
+| `capabilities` | Yes | Agent capabilities: `"shell"`, `"claude-code"` |
+
+### Capabilities
+
+- **`shell`** — Execute shell commands remotely with real-time output streaming
+- **`claude-code`** — Proxy Claude Code SDK sessions through the agent
+
+### Example: multi-agent setup
 
 ```json
+// .sidehub/backend.json
 {
-  "name": "mon-agent",
+  "name": "backend-server",
   "sidehubUrl": "wss://www.sidehub.io/ws/agent",
-  "agentId": "votre-agent-uuid",
-  "workspaceId": "votre-workspace-uuid",
-  "agentToken": "sh_agent_xxx",
-  "workingDirectory": ".",
+  "agentId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "workspaceId": "11111111-2222-3333-4444-555555555555",
+  "agentToken": "sh_agent_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "workingDirectory": "/var/www/backend",
   "capabilities": ["shell", "claude-code"]
 }
 ```
 
-| Champ | Obligatoire | Description |
-|-------|-------------|-------------|
-| `name` | Non | Nom d'affichage de l'agent (sinon utilise le nom du fichier) |
-| `sidehubUrl` | Oui | URL WebSocket du serveur SideHub |
-| `agentId` | Oui | UUID de l'agent |
-| `workspaceId` | Oui | UUID du workspace |
-| `agentToken` | Oui | Token d'authentification (`sh_agent_xxx`) |
-| `workingDirectory` | Oui | Répertoire de travail (relatif ou absolu) |
-| `capabilities` | Oui | Capacités de l'agent (`shell`, `claude-code`) |
+## Commands
 
-Les tokens et IDs sont disponibles dans votre dashboard SideHub.
+```
+Usage: sidehub-agent [command] [options]
 
-## Utilisation
+Commands:
+  start             Start the agent (default)
+    -d, --daemon    Run in background
+  stop              Stop the running agent
+  logs              Show agent logs
+    --no-follow     Print current logs without following
+  status            Show agent status
+  help              Show help
+```
+
+### Examples
 
 ```bash
-# Lancer tous les agents configurés
+# Start in foreground (default)
 sidehub-agent
 
-# Depuis le dossier contenant .sidehub/
-./sidehub-agent
+# Start as background daemon
+sidehub-agent start -d
+
+# View logs (follows by default)
+sidehub-agent logs
+
+# View logs without following
+sidehub-agent logs --no-follow
+
+# Check if the agent is running
+sidehub-agent status
+
+# Stop the daemon
+sidehub-agent stop
 ```
 
-L'agent :
-1. Charge toutes les configurations depuis `.sidehub/*.json`
-2. Lance chaque agent en parallèle
-3. Chaque agent se connecte au serveur SideHub via WebSocket
-4. Envoie des heartbeats toutes les 30 secondes
-5. Exécute les commandes reçues et stream les résultats
-
-Arrêt propre avec `Ctrl+C` (arrête tous les agents).
-
-## Architecture des releases
-
-### Builds disponibles
-
-| Plateforme | Architecture | Fichier |
-|------------|--------------|---------|
-| macOS | Apple Silicon (M1/M2/M3) | `sidehub-agent-osx-arm64` |
-| macOS | Intel | `sidehub-agent-osx-x64` |
-| Windows | x64 | `sidehub-agent-win-x64.exe` |
-| Windows | ARM64 | `sidehub-agent-win-arm64.exe` |
-| Linux | x64 | `sidehub-agent-linux-x64` |
-| Linux | ARM64 | `sidehub-agent-linux-arm64` |
-
-### Self-contained vs Framework-dependent
-
-- **Self-contained** (~80-100 MB) : Inclut le runtime .NET, aucune dépendance
-- **Framework-dependent** (~5 MB) : Nécessite .NET 10 installé
-
-Les releases officielles sont self-contained pour simplifier l'installation.
-
-## API de distribution (pour SideHub)
-
-L'API SideHub expose les endpoints suivants pour la distribution :
-
-### Endpoints
+## Architecture
 
 ```
-GET /api/agent/releases
-GET /api/agent/releases/latest
-GET /api/agent/releases/{version}
-GET /api/agent/download/{platform}
-GET /api/agent/download/{platform}/{version}
-GET /api/agent/install.sh
-GET /api/agent/install.ps1
+┌─────────────────────────────────────────────────────────┐
+│                     SideHub SaaS                        │
+│            https://www.sidehub.io                       │
+│                                                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  Angular 18  │  │ .NET 10 API  │  │  PostgreSQL   │  │
+│  │  Frontend    │──│  (WebSocket  │──│  + pgvector   │  │
+│  │             │  │   handlers)  │  │               │  │
+│  └─────────────┘  └──────┬───────┘  └───────────────┘  │
+│                          │                              │
+└──────────────────────────┼──────────────────────────────┘
+                           │ wss://
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+    ┌─────┴──────┐  ┌─────┴──────┐  ┌─────┴──────┐
+    │   Agent 1  │  │   Agent 2  │  │   Agent N  │
+    │ (dev VPS)  │  │ (staging)  │  │ (prod)     │
+    └─────┬──────┘  └────────────┘  └────────────┘
+          │
+          ├── CommandExecutor     Shell command execution
+          ├── NodePtyExecutor     PTY terminal sessions
+          ├── ClaudeSdkProxy      Claude Code proxy
+          ├── DaemonManager       Background process management
+          └── RotatingLogWriter   Log rotation (10 MB)
 ```
 
-### Exemple d'implémentation côté API
+### Core components
 
-Voir la section [Distribution depuis SideHub](#distribution-depuis-sidehub) ci-dessous.
+| Component | File | Description |
+|---|---|---|
+| **Entry point** | `Program.cs` | CLI argument parsing, command routing |
+| **Config loader** | `AgentConfig.cs` | Loads and validates `.sidehub/*.json` files |
+| **Agent runner** | `AgentRunner.cs` | Orchestrates agent lifecycle |
+| **WebSocket client** | `WebSocketClient.cs` | Maintains persistent connection to SideHub backend with auto-reconnection |
+| **Command executor** | `CommandExecutor.cs` | Executes shell commands with real-time stdout/stderr streaming |
+| **PTY executor** | `NodePtyExecutor.cs` | Full terminal emulation via Node.js PTY helper |
+| **Claude SDK proxy** | `ClaudeSdkProxy.cs` | Local WebSocket proxy for Claude Code sessions |
+| **Daemon manager** | `DaemonManager.cs` | PID file management, process lifecycle |
+| **Log writer** | `RotatingLogWriter.cs` | Automatic log rotation with configurable size |
 
-## Distribution depuis SideHub
+### WebSocket protocol
 
-### Structure recommandée pour l'API
+**Agent → Backend:**
+- `agent.connected` — Sent on connection with capabilities and shell info
+- `agent.heartbeat` — Keep-alive every 15 seconds
+- `command.output` — Real-time stdout/stderr streaming
+- `command.completed` — Command finished (with exit code)
+- `command.failed` — Command execution error
+- `command.busy` — Agent is busy with another command
 
-```
-/api/agent/
-├── releases                    # Liste toutes les versions
-├── releases/latest             # Dernière version stable
-├── releases/{version}          # Détails d'une version
-├── download/{platform}         # Télécharge la dernière version
-├── download/{platform}/{version}  # Télécharge une version spécifique
-├── install.sh                  # Script d'installation bash
-└── install.ps1                 # Script d'installation PowerShell
-```
+**Backend → Agent:**
+- `command.execute` — Execute a shell command
+- `pty.start` — Start a PTY session
+- `pty.input` — Send input to PTY
+- `pty.resize` — Resize PTY terminal
 
-### Workflow de release
+### Connection resilience
 
-1. **Tag une release** sur GitHub (`v1.0.0`)
-2. **GitHub Actions** build les binaires pour toutes les plateformes
-3. **Upload** les artifacts vers un storage (GitHub Releases, S3, Azure Blob)
-4. **API SideHub** expose les endpoints de téléchargement
+- **Automatic reconnection** with exponential backoff (1s → 30s max)
+- **Heartbeat monitoring** — disconnects after 3 missed ACKs
+- **Stability detection** — backoff resets after 60s of stable connection
+- **Claude SDK buffering** — buffers up to 1000 messages during backend reconnections
 
-### Exemple de GitHub Actions workflow
+## Building from source
 
-Créer `.github/workflows/release.yml` :
+### Prerequisites
 
-```yaml
-name: Release
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- [Node.js](https://nodejs.org/) (for PTY helper, optional)
 
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            rid: osx-arm64
-            artifact: sidehub-agent-osx-arm64
-          - os: macos-13
-            rid: osx-x64
-            artifact: sidehub-agent-osx-x64
-          - os: windows-latest
-            rid: win-x64
-            artifact: sidehub-agent-win-x64.exe
-          - os: ubuntu-latest
-            rid: linux-x64
-            artifact: sidehub-agent-linux-x64
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Publish
-        run: |
-          dotnet publish SideHub.Agent -c Release -r ${{ matrix.rid }} \
-            --self-contained -p:PublishSingleFile=true \
-            -o ./publish
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ./publish/*
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            sidehub-agent-osx-arm64/*
-            sidehub-agent-osx-x64/*
-            sidehub-agent-win-x64.exe/*
-            sidehub-agent-linux-x64/*
-```
-
-## Développement
-
-### Build local
+### Build
 
 ```bash
-# Debug
+git clone https://github.com/sidehub-io/side_hub_agent.git
+cd side_hub_agent
+
+# Debug build
 dotnet build SideHub.Agent
 
-# Release
+# Release build
 dotnet build SideHub.Agent -c Release
 
-# Run
+# Run directly
 dotnet run --project SideHub.Agent
 ```
 
-### Publier pour une plateforme spécifique
+### Publish self-contained binary
 
 ```bash
-# macOS Apple Silicon (self-contained, single file)
+# macOS (Apple Silicon)
 dotnet publish SideHub.Agent -c Release -r osx-arm64 --self-contained -p:PublishSingleFile=true
+
+# macOS (Intel)
+dotnet publish SideHub.Agent -c Release -r osx-x64 --self-contained -p:PublishSingleFile=true
+
+# Linux x64
+dotnet publish SideHub.Agent -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true
+
+# Linux ARM64
+dotnet publish SideHub.Agent -c Release -r linux-arm64 --self-contained -p:PublishSingleFile=true
 
 # Windows x64
 dotnet publish SideHub.Agent -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-## Licence
+### Available builds
 
-Propriétaire - SideHub
+| Platform | Architecture | Artifact |
+|---|---|---|
+| macOS | Apple Silicon (M1/M2/M3/M4) | `sidehub-agent-osx-arm64` |
+| macOS | Intel | `sidehub-agent-osx-x64` |
+| Linux | x64 | `sidehub-agent-linux-x64` |
+| Linux | ARM64 | `sidehub-agent-linux-arm64` |
+| Windows | x64 | `sidehub-agent-win-x64.exe` |
+| Windows | ARM64 | `sidehub-agent-win-arm64.exe` |
+
+## Project structure
+
+```
+side_hub_agent/
+├── SideHub.Agent/
+│   ├── Program.cs                 # Entry point & CLI
+│   ├── AgentConfig.cs             # Configuration loading
+│   ├── AgentRunner.cs             # Agent lifecycle
+│   ├── WebSocketClient.cs         # WebSocket connection
+│   ├── CommandExecutor.cs         # Shell command execution
+│   ├── NodePtyExecutor.cs         # PTY terminal emulation
+│   ├── ClaudeSdkProxy.cs          # Claude Code proxy
+│   ├── DaemonManager.cs           # Daemon process management
+│   ├── RotatingLogWriter.cs       # Log rotation
+│   ├── SystemInfoProvider.cs      # Platform detection
+│   ├── Commands.cs                # CLI command handlers
+│   ├── Models/
+│   │   ├── AgentMessages.cs       # Agent protocol messages
+│   │   └── CommandMessages.cs     # Command protocol messages
+│   └── pty-helper/                # Node.js PTY helper
+│       ├── index.js
+│       └── package.json
+├── .github/workflows/
+│   ├── ci.yml                     # CI (build + test on PRs)
+│   └── release.yml                # Release builds on tags
+├── CONTRIBUTING.md
+├── LICENSE
+└── README.md
+```
+
+## Troubleshooting
+
+### Agent won't connect
+
+1. Verify your `agentToken` is correct in the config file
+2. Check that `sidehubUrl` uses `wss://` (not `ws://`)
+3. Ensure your firewall allows outbound WebSocket connections
+4. Run `sidehub-agent status` to check if another instance is already running
+
+### "Configuration directory not found"
+
+The agent expects a `.sidehub/` folder in the current working directory. Make sure you run `sidehub-agent` from your project root.
+
+### Daemon won't start
+
+Check logs for details:
+```bash
+sidehub-agent logs --no-follow
+```
+
+If a stale PID file exists, `sidehub-agent status` will clean it up automatically.
+
+## Links
+
+- **SideHub Platform**: [https://www.sidehub.io](https://www.sidehub.io)
+- **Issues**: [GitHub Issues](https://github.com/sidehub-io/side_hub_agent/issues)
+
+## License
+
+[MIT](LICENSE)
