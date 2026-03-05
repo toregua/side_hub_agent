@@ -21,11 +21,20 @@ public class ClaudeSdkProxy : IAsyncDisposable
     private const int MaxBufferedMessages = 1000;
     private const int BackendReconnectDelayMs = 3000;
     private const int CliKeepAliveIntervalMs = 10000;
+    private const int InactivityTimeoutMs = 300_000; // 5 minutes
+    private const int InactivityCheckIntervalMs = 60_000; // Check every minute
+
+    private Action<string>? _onSessionTimeout;
 
     public ClaudeSdkProxy(Action<string> log)
     {
         _log = log;
     }
+
+    /// <summary>
+    /// Called when a session is reaped due to inactivity. The callback receives the sessionId.
+    /// </summary>
+    public void OnSessionTimeout(Action<string> callback) => _onSessionTimeout = callback;
 
     public int Port => _port;
     public bool IsRunning => _listener?.IsListening == true;
@@ -52,6 +61,9 @@ public class ClaudeSdkProxy : IAsyncDisposable
 
         _listenerCts = new CancellationTokenSource();
         _acceptLoopTask = AcceptLoopAsync(_listenerCts.Token);
+
+        // Start inactivity reaper
+        _ = Task.Run(() => InactivityReaperLoopAsync(_listenerCts.Token), _listenerCts.Token);
 
         _log($"[Proxy] Local WebSocket server started on port {_port}");
     }
@@ -244,57 +256,101 @@ public class ClaudeSdkProxy : IAsyncDisposable
     }
 
     /// <summary>
+    /// Periodically checks for inactive sessions and reaps them.
+    /// </summary>
+    private async Task InactivityReaperLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(InactivityCheckIntervalMs, ct);
+
+                var now = DateTime.UtcNow;
+                var toReap = _sessions.Values
+                    .Where(s => (now - s.LastActivity).TotalMilliseconds > InactivityTimeoutMs)
+                    .Select(s => s.SessionId)
+                    .ToList();
+
+                foreach (var sessionId in toReap)
+                {
+                    _log($"[Proxy] Session {sessionId} inactive for >{InactivityTimeoutMs / 1000}s, reaping");
+                    RemoveSession(sessionId);
+                    _onSessionTimeout?.Invoke(sessionId);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    /// <summary>
     /// Connects the proxy to the backend WebSocket and starts relaying backend → CLI.
-    /// Handles reconnection with backoff when backend drops.
+    /// Automatically reconnects with backoff when backend drops.
     /// </summary>
     private async Task ConnectToBackendAsync(ProxySession session, CancellationToken ct)
     {
-        // Disconnect any existing backend socket
-        if (session.BackendSocket != null)
+        var attempt = 0;
+
+        while (session.CliConnected && !ct.IsCancellationRequested)
         {
+            // Disconnect any existing backend socket
+            if (session.BackendSocket != null)
+            {
+                try
+                {
+                    if (session.BackendSocket.State == WebSocketState.Open)
+                        await session.BackendSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconnecting", ct);
+                }
+                catch { }
+                session.BackendSocket.Dispose();
+                session.BackendSocket = null;
+                session.BackendConnected = false;
+            }
+
             try
             {
-                if (session.BackendSocket.State == WebSocketState.Open)
-                    await session.BackendSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconnecting", ct);
+                var ws = new ClientWebSocket();
+                var uri = new Uri(session.BackendUrl);
+
+                _log($"[Proxy] Connecting to backend for session {session.SessionId}...{(attempt > 0 ? $" (attempt {attempt + 1})" : "")}");
+                await ws.ConnectAsync(uri, ct);
+
+                session.BackendSocket = ws;
+                session.BackendConnected = true;
+                attempt = 0;
+                _log($"[Proxy] Backend connected for session {session.SessionId}");
+
+                // Replay system/init if we have it cached (reconnection scenario)
+                if (session.SystemInitMessage != null && session.HasBeenConnectedBefore)
+                {
+                    _log($"[Proxy] Replaying system/init for session {session.SessionId}");
+                    await SendToBackendAsync(session, session.SystemInitMessage, ct);
+                }
+
+                session.HasBeenConnectedBefore = true;
+
+                // Replay buffered messages
+                await ReplayBufferedMessagesAsync(session, ct);
+
+                // Start backend receive loop (backend → CLI relay)
+                await BackendReceiveLoopAsync(session, ct);
+
+                // BackendReceiveLoopAsync returned — backend disconnected, loop to reconnect
             }
-            catch { }
-            session.BackendSocket.Dispose();
-            session.BackendSocket = null;
-            session.BackendConnected = false;
-        }
-
-        try
-        {
-            var ws = new ClientWebSocket();
-            var uri = new Uri(session.BackendUrl);
-
-            _log($"[Proxy] Connecting to backend for session {session.SessionId}...");
-            await ws.ConnectAsync(uri, ct);
-
-            session.BackendSocket = ws;
-            session.BackendConnected = true;
-            _log($"[Proxy] Backend connected for session {session.SessionId}");
-
-            // Replay system/init if we have it cached (reconnection scenario)
-            if (session.SystemInitMessage != null && session.HasBeenConnectedBefore)
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
             {
-                _log($"[Proxy] Replaying system/init for session {session.SessionId}");
-                await SendToBackendAsync(session, session.SystemInitMessage, ct);
+                _log($"[Proxy] Backend connection failed for {session.SessionId}: {ex.Message}");
+                session.BackendConnected = false;
             }
 
-            session.HasBeenConnectedBefore = true;
-
-            // Replay buffered messages
-            await ReplayBufferedMessagesAsync(session, ct);
-
-            // Start backend receive loop (backend → CLI relay)
-            await BackendReceiveLoopAsync(session, ct);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            _log($"[Proxy] Backend connection failed for {session.SessionId}: {ex.Message}");
-            session.BackendConnected = false;
+            // Backoff before reconnecting
+            if (session.CliConnected && !ct.IsCancellationRequested)
+            {
+                var delay = Math.Min(BackendReconnectDelayMs * (1 << Math.Min(attempt, 5)), 60_000);
+                attempt++;
+                try { await Task.Delay(delay, ct); } catch (OperationCanceledException) { return; }
+            }
         }
     }
 
@@ -410,6 +466,7 @@ public class ClaudeSdkProxy : IAsyncDisposable
         {
             var bytes = Encoding.UTF8.GetBytes(message);
             await session.BackendSocket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+            session.LastActivity = DateTime.UtcNow;
         }
         finally
         {
@@ -426,6 +483,7 @@ public class ClaudeSdkProxy : IAsyncDisposable
         {
             var bytes = Encoding.UTF8.GetBytes(message);
             await session.CliSocket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+            session.LastActivity = DateTime.UtcNow;
         }
         finally
         {
@@ -470,6 +528,7 @@ public class ClaudeSdkProxy : IAsyncDisposable
         public bool CliConnected { get; set; }
         public bool BackendConnected { get; set; }
         public bool HasBeenConnectedBefore { get; set; }
+        public DateTime LastActivity { get; set; } = DateTime.UtcNow;
 
         public string? SystemInitMessage { get; set; }
         public string? CliSessionId { get; set; }

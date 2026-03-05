@@ -247,6 +247,9 @@ public class WebSocketClient : IAsyncDisposable
                 case "claude-sdk.spawn":
                     await HandleClaudeSdkSpawnAsync(message, ct);
                     break;
+                case "claude-sdk.stop":
+                    HandleClaudeSdkStop(message);
+                    break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
                     break;
@@ -543,6 +546,22 @@ public class WebSocketClient : IAsyncDisposable
     {
         if (_proxy is not null && _proxy.IsRunning) return;
         _proxy = new ClaudeSdkProxy(Log);
+        _proxy.OnSessionTimeout(sessionId =>
+        {
+            if (_claudeSdkProcesses.TryGetValue(sessionId, out var process))
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill();
+                        Log($"Killed inactive Claude CLI process for session {sessionId}");
+                    }
+                }
+                catch { }
+                _claudeSdkProcesses.Remove(sessionId);
+            }
+        });
         await _proxy.StartAsync();
     }
 
@@ -769,6 +788,37 @@ public class WebSocketClient : IAsyncDisposable
                 Error = ex.Message
             }, ct);
         }
+    }
+
+    private void HandleClaudeSdkStop(IncomingMessage message)
+    {
+        var sessionId = message.SessionId;
+        if (string.IsNullOrEmpty(sessionId))
+        {
+            Log("Invalid claude-sdk.stop message: missing sessionId");
+            return;
+        }
+
+        Log($"Received stop request for session {sessionId}");
+
+        if (_claudeSdkProcesses.TryGetValue(sessionId, out var process))
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill();
+                    Log($"Killed Claude CLI process for session {sessionId} (stop requested)");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error killing Claude CLI for session {sessionId}: {ex.Message}");
+            }
+            _claudeSdkProcesses.Remove(sessionId);
+        }
+
+        _proxy?.RemoveSession(sessionId);
     }
 
     private static int CalculateReconnectDelay(int attempts)
