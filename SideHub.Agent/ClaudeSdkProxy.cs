@@ -85,17 +85,15 @@ public class ClaudeSdkProxy : IAsyncDisposable
 
     /// <summary>
     /// Called when the agent's main WebSocket reconnects to the backend.
-    /// Reconnects all active proxy sessions to the backend.
+    /// The auto-reconnect loop in ConnectToBackendAsync handles reconnection,
+    /// so this just logs for visibility.
     /// </summary>
-    public async Task ReconnectAllToBackendAsync(CancellationToken ct)
+    public Task ReconnectAllToBackendAsync(CancellationToken ct)
     {
         var activeSessions = _sessions.Values.Where(s => s.CliConnected).ToList();
-        if (activeSessions.Count == 0) return;
-
-        _log($"[Proxy] Reconnecting {activeSessions.Count} active session(s) to backend...");
-
-        var tasks = activeSessions.Select(s => ConnectToBackendAsync(s, ct));
-        await Task.WhenAll(tasks);
+        if (activeSessions.Count > 0)
+            _log($"[Proxy] {activeSessions.Count} active session(s) will auto-reconnect to backend");
+        return Task.CompletedTask;
     }
 
     public void RemoveSession(string sessionId)
@@ -338,6 +336,15 @@ public class ClaudeSdkProxy : IAsyncDisposable
                 // BackendReceiveLoopAsync returned — backend disconnected, loop to reconnect
             }
             catch (OperationCanceledException) { return; }
+            catch (WebSocketException ex) when (ex.Message.Contains("404"))
+            {
+                // Session no longer exists on backend (e.g. after redeploy) — stop retrying
+                _log($"[Proxy] Backend returned 404 for session {session.SessionId}, session lost — giving up");
+                session.BackendConnected = false;
+                RemoveSession(session.SessionId);
+                _onSessionTimeout?.Invoke(session.SessionId);
+                return;
+            }
             catch (Exception ex)
             {
                 _log($"[Proxy] Backend connection failed for {session.SessionId}: {ex.Message}");
