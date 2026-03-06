@@ -90,9 +90,12 @@ public class CodexBridge : IAsyncDisposable
         };
 
         startInfo.ArgumentList.Add("app-server");
-
-        // Codex app-server uses stdio by default (not WebSocket)
-        // No --listen flag needed — we communicate via stdin/stdout
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add($"model=\"{_model}\"");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add($"sandbox=\"{sandbox}\"");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add($"approval_policy=\"{approval}\"");
 
         // Pass environment
         startInfo.Environment["CODEX_QUIET"] = "1";
