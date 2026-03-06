@@ -570,13 +570,14 @@ public class CodexBridge : IAsyncDisposable
                 break;
 
             case "item/completed":
-                // An item completed — could be agent message, command, or file change
+                // ItemCompletedNotification: {item: ThreadItem, threadId, turnId}
+                // ThreadItem types: agentMessage, commandExecution, fileChange, mcpToolCall, plan, reasoning, etc.
                 if (paramsEl.ValueKind != JsonValueKind.Undefined &&
                     paramsEl.TryGetProperty("item", out var completedItem))
                 {
                     var itemType = completedItem.TryGetProperty("type", out var ct2) ? ct2.GetString() : null;
 
-                    if (itemType is "agentMessage" or "message")
+                    if (itemType is "agentMessage")
                     {
                         // Assistant message completed
                         var contentBlocks = ExtractContentBlocks(completedItem);
@@ -612,19 +613,27 @@ public class CodexBridge : IAsyncDisposable
                 break;
 
             case "turn/completed":
-                // Check if the turn has an error
+                // TurnCompletedNotification: {turn: {id, status, items, error?}, threadId}
+                // status: "completed" | "interrupted" | "failed" | "inProgress"
                 string resultSubtype = "success";
                 string? errorText = null;
                 if (paramsEl.ValueKind != JsonValueKind.Undefined &&
-                    paramsEl.TryGetProperty("turn", out var turnEl) &&
-                    turnEl.TryGetProperty("status", out var statusEl))
+                    paramsEl.TryGetProperty("turn", out var turnEl))
                 {
-                    var status = statusEl.GetString();
-                    if (status is "error" or "errored" or "failed")
+                    var status = turnEl.TryGetProperty("status", out var statusEl) ? statusEl.GetString() : "completed";
+                    if (status is "failed" or "interrupted")
                     {
                         resultSubtype = "error_max_turns";
-                        errorText = turnEl.TryGetProperty("error", out var errEl) ? errEl.ToString() : "Turn errored";
+                        if (turnEl.TryGetProperty("error", out var errEl) && errEl.ValueKind == JsonValueKind.Object)
+                        {
+                            errorText = errEl.TryGetProperty("message", out var em) ? em.GetString() : errEl.ToString();
+                        }
+                        else
+                        {
+                            errorText = $"Turn {status}";
+                        }
                     }
+                    _log($"[CodexBridge] Turn completed: status={status}{(errorText != null ? $", error={errorText}" : "")}");
                 }
 
                 var resultMsg = JsonSerializer.Serialize(new
@@ -665,6 +674,116 @@ public class CodexBridge : IAsyncDisposable
                 // Tool output streaming — forward as tool progress
                 break;
 
+            case "error":
+                // ErrorNotification: {error: {message, codexErrorInfo?}, willRetry, threadId, turnId}
+                var errorMessage = "Unknown error";
+                string? errorCode = null;
+                var willRetry = false;
+                if (paramsEl.ValueKind != JsonValueKind.Undefined)
+                {
+                    willRetry = paramsEl.TryGetProperty("willRetry", out var wr) && wr.GetBoolean();
+
+                    if (paramsEl.TryGetProperty("error", out var errObj) && errObj.ValueKind == JsonValueKind.Object)
+                    {
+                        errorMessage = errObj.TryGetProperty("message", out var em) ? em.GetString() ?? "Unknown error" : "Unknown error";
+                        if (errObj.TryGetProperty("codexErrorInfo", out var cei))
+                        {
+                            errorCode = cei.ValueKind == JsonValueKind.String ? cei.GetString() : cei.ToString();
+                        }
+                    }
+                    else
+                    {
+                        errorMessage = paramsEl.ToString();
+                    }
+                }
+                _log($"[CodexBridge] ERROR from Codex: {errorMessage} (code={errorCode}, willRetry={willRetry})");
+
+                // Only send error to frontend if Codex won't retry
+                if (!willRetry)
+                {
+                    var errResultMsg = JsonSerializer.Serialize(new
+                    {
+                        type = "result",
+                        subtype = "error_max_turns",
+                        error = errorMessage,
+                        cost_usd = 0,
+                        duration_ms = 0,
+                        duration_api_ms = 0,
+                        session_id = _threadId ?? _sessionId
+                    }, JsonOptions);
+                    await SendToBackendAsync(errResultMsg, ct);
+                }
+                break;
+
+            case "codex/event/error":
+                // Codex event error — log full details
+                var codexError = paramsEl.ValueKind != JsonValueKind.Undefined ? paramsEl.ToString() : "no details";
+                _log($"[CodexBridge] codex/event/error: {codexError}");
+                break;
+
+            case "codex/event/item_started":
+                // Map to item/started behavior
+                if (paramsEl.ValueKind != JsonValueKind.Undefined)
+                {
+                    var evtItemType = paramsEl.TryGetProperty("type", out var eit) ? eit.GetString() : null;
+                    if (evtItemType is "command" or "shell" or "commandExecution" or "shellExecution")
+                    {
+                        var msg = JsonSerializer.Serialize(new
+                        {
+                            type = "tool_progress",
+                            tool_name = "Bash",
+                            data = new { status = "started" }
+                        }, JsonOptions);
+                        await SendToBackendAsync(msg, ct);
+                    }
+                }
+                break;
+
+            case "codex/event/item_completed":
+                // Map to item/completed behavior
+                if (paramsEl.ValueKind != JsonValueKind.Undefined)
+                {
+                    var evtItemType2 = paramsEl.TryGetProperty("type", out var eit2) ? eit2.GetString() : null;
+
+                    if (evtItemType2 is "message" or "agentMessage")
+                    {
+                        var contentBlocks2 = ExtractContentBlocks(paramsEl);
+                        var assistantMsg2 = JsonSerializer.Serialize(new
+                        {
+                            type = "assistant",
+                            message = new { role = "assistant", content = contentBlocks2 }
+                        }, JsonOptions);
+                        await SendToBackendAsync(assistantMsg2, ct);
+                    }
+                    else
+                    {
+                        var summaryMsg2 = JsonSerializer.Serialize(new
+                        {
+                            type = "tool_use_summary",
+                            message = new
+                            {
+                                content = new[] { new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" } }
+                            }
+                        }, JsonOptions);
+                        await SendToBackendAsync(summaryMsg2, ct);
+                    }
+                }
+                break;
+
+            case "codex/event/task_complete":
+                // Turn/task completed via codex/event protocol
+                var taskResultMsg = JsonSerializer.Serialize(new
+                {
+                    type = "result",
+                    subtype = "success",
+                    cost_usd = 0,
+                    duration_ms = 0,
+                    duration_api_ms = 0,
+                    session_id = _threadId ?? _sessionId
+                }, JsonOptions);
+                await SendToBackendAsync(taskResultMsg, ct);
+                break;
+
             case "turn/started":
             case "thread/started":
             case "thread/status/changed":
@@ -674,11 +793,17 @@ public class CodexBridge : IAsyncDisposable
             case "turn/diff/updated":
             case "turn/plan/updated":
             case "serverRequest/resolved":
+            case "codex/event/mcp_startup_complete":
+            case "codex/event/task_started":
+            case "codex/event/user_message":
+            case "codex/event/warning":
                 // Informational, no translation needed
                 break;
 
             default:
-                _log($"[CodexBridge] Unhandled Codex notification: {method}");
+                // Log full content for unknown notifications to aid debugging
+                var paramsStr = paramsEl.ValueKind != JsonValueKind.Undefined ? paramsEl.ToString() : "null";
+                _log($"[CodexBridge] Unhandled Codex notification: {method} | params={paramsStr[..Math.Min(500, paramsStr.Length)]}");
                 break;
         }
     }
@@ -731,7 +856,16 @@ public class CodexBridge : IAsyncDisposable
     {
         var blocks = new List<object>();
 
-        if (item.TryGetProperty("content", out var content))
+        // Codex agentMessage uses "text" field (string), not "content"
+        if (item.TryGetProperty("text", out var textProp) && textProp.ValueKind == JsonValueKind.String)
+        {
+            var t = textProp.GetString() ?? "";
+            if (!string.IsNullOrEmpty(t))
+                blocks.Add(new { type = "text", text = t });
+        }
+
+        // Also check "content" for compatibility
+        if (blocks.Count == 0 && item.TryGetProperty("content", out var content))
         {
             if (content.ValueKind == JsonValueKind.String)
             {
@@ -741,13 +875,10 @@ public class CodexBridge : IAsyncDisposable
             {
                 foreach (var block in content.EnumerateArray())
                 {
-                    if (block.TryGetProperty("type", out var bt))
+                    if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text" &&
+                        block.TryGetProperty("text", out var txt))
                     {
-                        var blockType = bt.GetString();
-                        if (blockType == "text" && block.TryGetProperty("text", out var txt))
-                        {
-                            blocks.Add(new { type = "text", text = txt.GetString() ?? "" });
-                        }
+                        blocks.Add(new { type = "text", text = txt.GetString() ?? "" });
                     }
                 }
             }
@@ -755,9 +886,7 @@ public class CodexBridge : IAsyncDisposable
 
         if (blocks.Count == 0)
         {
-            // Fallback: try to get any text from the item
-            var rawText = item.ToString();
-            blocks.Add(new { type = "text", text = rawText });
+            blocks.Add(new { type = "text", text = "[No content extracted]" });
         }
 
         return blocks.ToArray();
