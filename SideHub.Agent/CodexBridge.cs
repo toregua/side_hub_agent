@@ -407,6 +407,17 @@ public class CodexBridge : IAsyncDisposable
         {
             case "initialize":
                 _log($"[CodexBridge] Initialize response received");
+                // Send system/init immediately so the backend transitions to AwaitingInput
+                // and the frontend moves from "connecting" to "ready"
+                var initMsg = JsonSerializer.Serialize(new
+                {
+                    type = "system",
+                    subtype = "init",
+                    model = _model,
+                    tools = Array.Empty<string>(),
+                    session_id = _sessionId
+                }, JsonOptions);
+                await SendToBackendAsync(initMsg, ct);
                 break;
 
             case "thread/start":
@@ -415,18 +426,6 @@ public class CodexBridge : IAsyncDisposable
                 {
                     _threadId = tid.GetString();
                 }
-
-                // Send init-like message to backend
-                var initMsg = JsonSerializer.Serialize(new
-                {
-                    type = "system",
-                    subtype = "init",
-                    model = _model,
-                    tools = Array.Empty<string>(),
-                    session_id = _threadId ?? _sessionId
-                }, JsonOptions);
-
-                await SendToBackendAsync(initMsg, ct);
                 break;
 
             case "turn/start":
