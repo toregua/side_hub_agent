@@ -28,11 +28,14 @@ public class CodexBridge : IAsyncDisposable
     private int _rpcId;
     private bool _disposed;
 
+    // Store the first user message to send as turn/start after thread/start completes
+    private string? _pendingUserMessage;
+
     // Track pending JSON-RPC requests to correlate responses
     private readonly ConcurrentDictionary<int, string> _pendingRequests = new();
 
-    // Track pending approval request IDs: Codex approvalId -> our requestId
-    private readonly ConcurrentDictionary<string, string> _pendingApprovals = new();
+    // Track pending approval request IDs: Codex approvalId -> (our requestId, jsonRpcId)
+    private readonly ConcurrentDictionary<string, (string RequestId, int JsonRpcId)> _pendingApprovals = new();
 
     // Callback to send NDJSON messages to the backend (through proxy)
     private Func<string, CancellationToken, Task>? _sendToBackend;
@@ -129,6 +132,8 @@ public class CodexBridge : IAsyncDisposable
             using var doc = JsonDocument.Parse(ndjsonMessage);
             var root = doc.RootElement;
             var type = root.GetProperty("type").GetString();
+
+            _log($"[CodexBridge] Backend message received: type={type}");
 
             switch (type)
             {
@@ -238,11 +243,13 @@ public class CodexBridge : IAsyncDisposable
 
         if (_threadId is null)
         {
-            // First message — start a new thread
+            // First message — start a new thread, then send turn/start after threadId is received
+            _pendingUserMessage = textContent;
+
             var id = NextId();
             _pendingRequests[id] = "thread/start";
 
-            var (sandbox, _) = MapPermissionMode(_permissionMode);
+            var (sandbox, approval) = MapPermissionMode(_permissionMode);
 
             var msg = new JsonObject
             {
@@ -252,33 +259,49 @@ public class CodexBridge : IAsyncDisposable
                 ["params"] = new JsonObject
                 {
                     ["model"] = _model,
-                    ["instructions"] = textContent,
-                    ["sandbox"] = sandbox
+                    ["sandbox"] = sandbox,
+                    ["approvalPolicy"] = approval
                 }
             };
 
+            _log($"[CodexBridge] Sending thread/start (model={_model}, sandbox={sandbox}, approval={approval})");
             await WriteToStdinAsync(msg.ToJsonString(JsonOptions));
         }
         else
         {
             // Subsequent message — new turn in existing thread
-            var id = NextId();
-            _pendingRequests[id] = "turn/start";
-
-            var msg = new JsonObject
-            {
-                ["jsonrpc"] = "2.0",
-                ["method"] = "turn/start",
-                ["id"] = id,
-                ["params"] = new JsonObject
-                {
-                    ["threadId"] = _threadId,
-                    ["message"] = textContent
-                }
-            };
-
-            await WriteToStdinAsync(msg.ToJsonString(JsonOptions));
+            await SendTurnStartAsync(textContent);
         }
+    }
+
+    private async Task SendTurnStartAsync(string textContent)
+    {
+        var id = NextId();
+        _pendingRequests[id] = "turn/start";
+
+        var inputArray = new JsonArray
+        {
+            new JsonObject
+            {
+                ["type"] = "text",
+                ["text"] = textContent
+            }
+        };
+
+        var msg = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = "turn/start",
+            ["id"] = id,
+            ["params"] = new JsonObject
+            {
+                ["threadId"] = _threadId,
+                ["input"] = inputArray
+            }
+        };
+
+        _log($"[CodexBridge] Sending turn/start (threadId={_threadId}, input length={textContent.Length})");
+        await WriteToStdinAsync(msg.ToJsonString(JsonOptions));
     }
 
     private async Task HandleControlResponseAsync(JsonElement root, CancellationToken ct)
@@ -295,34 +318,36 @@ public class CodexBridge : IAsyncDisposable
 
         var approved = behavior == "allow";
 
-        // Find the original Codex approvalId
-        string? approvalId = null;
+        // Find the original Codex approval info
+        string? approvalKey = null;
+        int jsonRpcId = 0;
         foreach (var kv in _pendingApprovals)
         {
-            if (kv.Value == requestId)
+            if (kv.Value.RequestId == requestId)
             {
-                approvalId = kv.Key;
+                approvalKey = kv.Key;
+                jsonRpcId = kv.Value.JsonRpcId;
                 _pendingApprovals.TryRemove(kv.Key, out _);
                 break;
             }
         }
 
-        if (approvalId is null)
+        if (approvalKey is null)
         {
             _log($"[CodexBridge] No pending approval found for requestId {requestId}");
             return;
         }
 
-        var id = NextId();
+        _log($"[CodexBridge] Approval response: key={approvalKey}, approved={approved}, rpcId={jsonRpcId}");
+
+        // Send JSON-RPC response with the original request id
         var msg = new JsonObject
         {
             ["jsonrpc"] = "2.0",
-            ["method"] = "serverRequest/resolved",
-            ["id"] = id,
-            ["params"] = new JsonObject
+            ["id"] = jsonRpcId,
+            ["result"] = new JsonObject
             {
-                ["decision"] = approved ? "accept" : "decline",
-                ["itemId"] = approvalId
+                ["decision"] = approved ? "accept" : "decline"
             }
         };
 
@@ -381,21 +406,34 @@ public class CodexBridge : IAsyncDisposable
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
 
-        // Check if it's a response (has "id" and "result"/"error") or a notification (has "method")
-        if (root.TryGetProperty("id", out var idElement) && root.TryGetProperty("result", out var result))
+        var hasId = root.TryGetProperty("id", out var idElement);
+        var hasMethod = root.TryGetProperty("method", out var methodElement);
+        var hasResult = root.TryGetProperty("result", out var result);
+        var hasError = root.TryGetProperty("error", out var error);
+
+        if (hasId && hasResult)
         {
+            // JSON-RPC response to our request
             await HandleRpcResponseAsync(idElement.GetInt32(), result, ct);
         }
-        else if (root.TryGetProperty("id", out var errIdElement) && root.TryGetProperty("error", out var error))
+        else if (hasId && hasError)
         {
-            var errId = errIdElement.GetInt32();
-            _log($"[CodexBridge] JSON-RPC error for request {errId}: {error}");
+            _log($"[CodexBridge] JSON-RPC error for request {idElement.GetInt32()}: {error}");
         }
-        else if (root.TryGetProperty("method", out var methodElement))
+        else if (hasId && hasMethod)
         {
+            // Server-initiated request (e.g. approval requests) — needs JSON-RPC response
             var method = methodElement.GetString() ?? "";
             var paramsEl = root.TryGetProperty("params", out var p) ? p : default;
-            await HandleRpcNotificationAsync(method, paramsEl, root, ct);
+            var rpcId = idElement.GetInt32();
+            await HandleServerRequestAsync(method, paramsEl, rpcId, ct);
+        }
+        else if (hasMethod)
+        {
+            // Notification (no id)
+            var method = methodElement.GetString() ?? "";
+            var paramsEl = root.TryGetProperty("params", out var p) ? p : default;
+            await HandleRpcNotificationAsync(method, paramsEl, ct);
         }
     }
 
@@ -421,30 +459,85 @@ public class CodexBridge : IAsyncDisposable
                 break;
 
             case "thread/start":
-                // Extract threadId from result
-                if (result.TryGetProperty("threadId", out var tid))
+                // Extract threadId from result, then send turn/start with the pending user message
+                if (result.TryGetProperty("thread", out var threadObj) &&
+                    threadObj.TryGetProperty("id", out var tid))
                 {
                     _threadId = tid.GetString();
+                }
+                else if (result.TryGetProperty("threadId", out var tidDirect))
+                {
+                    _threadId = tidDirect.GetString();
+                }
+                _log($"[CodexBridge] Thread started: {_threadId}");
+
+                // Now send the actual user message as turn/start
+                if (_pendingUserMessage is not null && _threadId is not null)
+                {
+                    var msg = _pendingUserMessage;
+                    _pendingUserMessage = null;
+                    await SendTurnStartAsync(msg);
                 }
                 break;
 
             case "turn/start":
                 // Turn started — processing will come via notifications
+                _log("[CodexBridge] Turn started");
                 break;
         }
     }
 
-    private async Task HandleRpcNotificationAsync(string method, JsonElement paramsEl, JsonElement root, CancellationToken ct)
+    /// <summary>
+    /// Handle server-initiated requests (have id + method) — need JSON-RPC response.
+    /// </summary>
+    private async Task HandleServerRequestAsync(string method, JsonElement paramsEl, int rpcId, CancellationToken ct)
+    {
+        switch (method)
+        {
+            case "item/commandExecution/requestApproval":
+                await HandleApprovalRequestAsync(paramsEl, "Bash", rpcId, ct);
+                break;
+
+            case "item/fileChange/requestApproval":
+                await HandleApprovalRequestAsync(paramsEl, "Edit", rpcId, ct);
+                break;
+
+            case "applyPatchApproval":
+                await HandleApprovalRequestAsync(paramsEl, "Edit", rpcId, ct);
+                break;
+
+            default:
+                _log($"[CodexBridge] Unhandled server request: {method} (id={rpcId})");
+                // Send error response so Codex doesn't hang waiting
+                var errResp = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = rpcId,
+                    ["error"] = new JsonObject
+                    {
+                        ["code"] = -32601,
+                        ["message"] = $"Method not supported: {method}"
+                    }
+                };
+                await WriteToStdinAsync(errResp.ToJsonString(JsonOptions));
+                break;
+        }
+    }
+
+    private async Task HandleRpcNotificationAsync(string method, JsonElement paramsEl, CancellationToken ct)
     {
         switch (method)
         {
             case "item/agentMessage/delta":
-                // Streaming text delta — accumulate and forward
+                // Streaming text delta
                 if (paramsEl.ValueKind != JsonValueKind.Undefined &&
-                    paramsEl.TryGetProperty("delta", out var delta) &&
-                    delta.TryGetProperty("content", out var deltaContent))
+                    paramsEl.TryGetProperty("delta", out var delta))
                 {
-                    var text = deltaContent.GetString() ?? "";
+                    // Delta is a string in the v2 protocol
+                    var text = delta.ValueKind == JsonValueKind.String
+                        ? delta.GetString() ?? ""
+                        : delta.TryGetProperty("content", out var dc) ? dc.GetString() ?? "" : "";
+
                     if (!string.IsNullOrEmpty(text))
                     {
                         var streamMsg = JsonSerializer.Serialize(new
@@ -457,64 +550,88 @@ public class CodexBridge : IAsyncDisposable
                 }
                 break;
 
-            case "item/agentMessage/completed":
+            case "item/started":
+                // An item (command, file change, agent message) started
                 if (paramsEl.ValueKind != JsonValueKind.Undefined &&
-                    paramsEl.TryGetProperty("item", out var item))
+                    paramsEl.TryGetProperty("item", out var startedItem))
                 {
-                    var contentBlocks = ExtractContentBlocks(item);
-                    var assistantMsg = JsonSerializer.Serialize(new
+                    var itemType = startedItem.TryGetProperty("type", out var st) ? st.GetString() : null;
+                    if (itemType is "commandExecution" or "shellExecution")
                     {
-                        type = "assistant",
-                        message = new
+                        var msg = JsonSerializer.Serialize(new
                         {
-                            role = "assistant",
-                            content = contentBlocks
-                        }
-                    }, JsonOptions);
-                    await SendToBackendAsync(assistantMsg, ct);
+                            type = "tool_progress",
+                            tool_name = "Bash",
+                            data = new { status = "started" }
+                        }, JsonOptions);
+                        await SendToBackendAsync(msg, ct);
+                    }
                 }
                 break;
 
-            case "item/commandExecution/requestApproval":
-                await HandleApprovalRequestAsync(paramsEl, "Bash", ct);
-                break;
-
-            case "item/fileChange/requestApproval":
-                await HandleApprovalRequestAsync(paramsEl, "Edit", ct);
-                break;
-
-            case "item/commandExecution/started":
-                var startedMsg = JsonSerializer.Serialize(new
+            case "item/completed":
+                // An item completed — could be agent message, command, or file change
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("item", out var completedItem))
                 {
-                    type = "tool_progress",
-                    tool_name = "Bash",
-                    data = new { status = "started" }
-                }, JsonOptions);
-                await SendToBackendAsync(startedMsg, ct);
-                break;
+                    var itemType = completedItem.TryGetProperty("type", out var ct2) ? ct2.GetString() : null;
 
-            case "item/commandExecution/completed":
-            case "item/fileChange/completed":
-                var toolName = method.Contains("command") ? "Bash" : "Edit";
-                var summaryMsg = JsonSerializer.Serialize(new
-                {
-                    type = "tool_use_summary",
-                    message = new
+                    if (itemType is "agentMessage" or "message")
                     {
-                        content = new[]
+                        // Assistant message completed
+                        var contentBlocks = ExtractContentBlocks(completedItem);
+                        var assistantMsg = JsonSerializer.Serialize(new
                         {
-                            new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" }
-                        }
+                            type = "assistant",
+                            message = new
+                            {
+                                role = "assistant",
+                                content = contentBlocks
+                            }
+                        }, JsonOptions);
+                        await SendToBackendAsync(assistantMsg, ct);
                     }
-                }, JsonOptions);
-                await SendToBackendAsync(summaryMsg, ct);
+                    else
+                    {
+                        // Tool execution completed (command or file change)
+                        var toolName = itemType is "commandExecution" or "shellExecution" ? "Bash" : "Edit";
+                        var summaryMsg = JsonSerializer.Serialize(new
+                        {
+                            type = "tool_use_summary",
+                            message = new
+                            {
+                                content = new[]
+                                {
+                                    new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" }
+                                }
+                            }
+                        }, JsonOptions);
+                        await SendToBackendAsync(summaryMsg, ct);
+                    }
+                }
                 break;
 
             case "turn/completed":
+                // Check if the turn has an error
+                string resultSubtype = "success";
+                string? errorText = null;
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("turn", out var turnEl) &&
+                    turnEl.TryGetProperty("status", out var statusEl))
+                {
+                    var status = statusEl.GetString();
+                    if (status is "error" or "errored" or "failed")
+                    {
+                        resultSubtype = "error_max_turns";
+                        errorText = turnEl.TryGetProperty("error", out var errEl) ? errEl.ToString() : "Turn errored";
+                    }
+                }
+
                 var resultMsg = JsonSerializer.Serialize(new
                 {
                     type = "result",
-                    subtype = "success",
+                    subtype = resultSubtype,
+                    error = errorText,
                     cost_usd = 0,
                     duration_ms = 0,
                     duration_api_ms = 0,
@@ -523,18 +640,40 @@ public class CodexBridge : IAsyncDisposable
                 await SendToBackendAsync(resultMsg, ct);
                 break;
 
-            case "turn/errored":
-                var errorMsg = JsonSerializer.Serialize(new
+            case "item/reasoning/textDelta":
+            case "item/reasoning/summaryTextDelta":
+            case "item/plan/delta":
+                // Forward reasoning/plan deltas as stream events
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("delta", out var reasonDelta))
                 {
-                    type = "result",
-                    subtype = "error_max_turns",
-                    error = "Turn errored",
-                    session_id = _threadId ?? _sessionId
-                }, JsonOptions);
-                await SendToBackendAsync(errorMsg, ct);
+                    var text = reasonDelta.ValueKind == JsonValueKind.String ? reasonDelta.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        var msg = JsonSerializer.Serialize(new
+                        {
+                            type = "stream_event",
+                            @event = new { type = "content_block_delta", delta = new { type = "thinking_delta", thinking = text } }
+                        }, JsonOptions);
+                        await SendToBackendAsync(msg, ct);
+                    }
+                }
                 break;
 
+            case "item/commandExecution/outputDelta":
+            case "item/fileChange/outputDelta":
+                // Tool output streaming — forward as tool progress
+                break;
+
+            case "turn/started":
+            case "thread/started":
             case "thread/status/changed":
+            case "thread/name/updated":
+            case "thread/tokenUsage/updated":
+            case "thread/compacted":
+            case "turn/diff/updated":
+            case "turn/plan/updated":
+            case "serverRequest/resolved":
                 // Informational, no translation needed
                 break;
 
@@ -544,15 +683,17 @@ public class CodexBridge : IAsyncDisposable
         }
     }
 
-    private async Task HandleApprovalRequestAsync(JsonElement paramsEl, string toolName, CancellationToken ct)
+    private async Task HandleApprovalRequestAsync(JsonElement paramsEl, string toolName, int rpcId, CancellationToken ct)
     {
         if (paramsEl.ValueKind == JsonValueKind.Undefined) return;
 
-        var approvalId = paramsEl.TryGetProperty("approvalId", out var aid) ? aid.GetString() : Guid.NewGuid().ToString();
+        var itemId = paramsEl.TryGetProperty("itemId", out var iid) ? iid.GetString() : null;
+        var approvalId = paramsEl.TryGetProperty("approvalId", out var aid) ? aid.GetString() : null;
+        var key = approvalId ?? itemId ?? Guid.NewGuid().ToString();
         var requestId = Guid.NewGuid().ToString();
 
-        // Store mapping for when the response comes back
-        _pendingApprovals[approvalId ?? requestId] = requestId;
+        // Store mapping: key -> (our requestId for backend, JSON-RPC id for Codex response)
+        _pendingApprovals[key] = (requestId, rpcId);
 
         // Build tool input based on type
         object toolInput;
@@ -568,6 +709,8 @@ public class CodexBridge : IAsyncDisposable
             toolInput = new { file_path = file, diff };
         }
 
+        _log($"[CodexBridge] Approval request: tool={toolName}, rpcId={rpcId}, key={key}");
+
         var permMsg = JsonSerializer.Serialize(new
         {
             type = "control_request",
@@ -577,7 +720,7 @@ public class CodexBridge : IAsyncDisposable
                 subtype = "can_use_tool",
                 tool_name = toolName,
                 input = toolInput,
-                tool_use_id = approvalId ?? requestId
+                tool_use_id = key
             }
         }, JsonOptions);
 
