@@ -804,7 +804,7 @@ public class WebSocketClient : IAsyncDisposable
 
         try
         {
-            var model = message.Model ?? "o3-mini";
+            var model = message.Model ?? "o4-mini";
             var cwd = message.WorkingDirectory ?? _workingDirectory;
             var rawPermissionMode = message.PermissionMode ?? "default";
 
