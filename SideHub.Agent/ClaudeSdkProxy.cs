@@ -96,6 +96,54 @@ public class ClaudeSdkProxy : IAsyncDisposable
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Register a virtual CLI connection for Codex sessions.
+    /// Instead of a real CLI WebSocket, the CodexBridge provides callbacks for message exchange.
+    /// </summary>
+    public void RegisterVirtualSession(
+        string sessionId,
+        string backendUrl,
+        string token,
+        string permissionMode,
+        Func<string, CancellationToken, Task> onBackendMessage)
+    {
+        var session = new ProxySession
+        {
+            SessionId = sessionId,
+            BackendUrl = backendUrl,
+            Token = token,
+            PermissionMode = permissionMode,
+            CliConnected = true,           // Virtual CLI is always "connected"
+            IsVirtual = true,
+            VirtualOnBackendMessage = onBackendMessage
+        };
+        _sessions[sessionId] = session;
+        _log($"[Proxy] Virtual session {sessionId} registered (mode={permissionMode})");
+
+        // Connect to backend immediately (no CLI WebSocket to wait for)
+        _ = Task.Run(() => ConnectToBackendAsync(session, _listenerCts?.Token ?? CancellationToken.None));
+    }
+
+    /// <summary>
+    /// Send an NDJSON message to the backend for a virtual session (called by CodexBridge).
+    /// </summary>
+    public async Task SendVirtualMessageToBackendAsync(string sessionId, string message, CancellationToken ct)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session)) return;
+
+        if (session.BackendConnected && session.BackendSocket?.State == WebSocketState.Open)
+        {
+            // Cache system/init for reconnection
+            CacheSystemInit(session, message);
+            await SendToBackendAsync(session, message, ct);
+        }
+        else
+        {
+            CacheSystemInit(session, message);
+            BufferMessage(session, message);
+        }
+    }
+
     public void RemoveSession(string sessionId)
     {
         if (_sessions.TryRemove(sessionId, out var session))
@@ -395,8 +443,12 @@ public class ClaudeSdkProxy : IAsyncDisposable
                         var rawMessage = Encoding.UTF8.GetString(messageBuffer.ToArray());
                         messageBuffer.Clear();
 
-                        // Forward backend message to CLI
-                        if (session.CliSocket?.State == WebSocketState.Open)
+                        // Forward backend message to CLI (or virtual bridge)
+                        if (session.IsVirtual && session.VirtualOnBackendMessage is not null)
+                        {
+                            await session.VirtualOnBackendMessage(rawMessage, ct);
+                        }
+                        else if (session.CliSocket?.State == WebSocketState.Open)
                         {
                             await SendToCliAsync(session, rawMessage, ct);
                         }
@@ -536,6 +588,10 @@ public class ClaudeSdkProxy : IAsyncDisposable
         public bool BackendConnected { get; set; }
         public bool HasBeenConnectedBefore { get; set; }
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
+
+        // Virtual session support (Codex bridge — no real CLI WebSocket)
+        public bool IsVirtual { get; init; }
+        public Func<string, CancellationToken, Task>? VirtualOnBackendMessage { get; init; }
 
         public string? SystemInitMessage { get; set; }
         public string? CliSessionId { get; set; }

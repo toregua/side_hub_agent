@@ -18,6 +18,7 @@ public class WebSocketClient : IAsyncDisposable
     private NodePtyExecutor? _ptyExecutor;
     private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
     private readonly Dictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
+    private readonly Dictionary<string, CodexBridge> _codexBridges = new();
     private ClaudeSdkProxy? _proxy;
 
     private const int MinReconnectDelayMs = 1000;
@@ -596,10 +597,17 @@ public class WebSocketClient : IAsyncDisposable
     {
         var sessionId = message.SessionId;
         var sdkUrl = message.SdkUrl;
+        var provider = message.Provider ?? "claude";
 
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(sdkUrl))
         {
             Log("Invalid claude-sdk.spawn message: missing sessionId or sdkUrl");
+            return;
+        }
+
+        if (provider == "codex")
+        {
+            await HandleCodexSpawnAsync(message, sessionId, sdkUrl, ct);
             return;
         }
 
@@ -790,6 +798,97 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
+    private async Task HandleCodexSpawnAsync(IncomingMessage message, string sessionId, string sdkUrl, CancellationToken ct)
+    {
+        Log($"Spawning Codex CLI for session {sessionId}");
+
+        try
+        {
+            var model = message.Model ?? "o3-mini";
+            var cwd = message.WorkingDirectory ?? _workingDirectory;
+            var rawPermissionMode = message.PermissionMode ?? "default";
+
+            await EnsureProxyStartedAsync();
+
+            var uriObj = new Uri(sdkUrl);
+            var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+
+            var bridge = new CodexBridge(sessionId, model, cwd, rawPermissionMode, Log);
+
+            // Register virtual session so bridge can send messages to backend via proxy
+            _proxy!.RegisterVirtualSession(
+                sessionId, sdkUrl, token, rawPermissionMode,
+                (msg, cancelToken) => bridge.HandleBackendMessageAsync(msg, cancelToken));
+
+            // Start bridge with callback to send NDJSON to backend
+            await bridge.StartAsync(
+                (msg, cancelToken) => _proxy.SendVirtualMessageToBackendAsync(sessionId, msg, cancelToken),
+                ct);
+
+            if (bridge.Pid is null)
+            {
+                _proxy.RemoveSession(sessionId);
+                await SendAsync(new ClaudeSdkSpawnFailedMessage
+                {
+                    SessionId = sessionId,
+                    Error = "Failed to start codex process"
+                }, ct);
+                return;
+            }
+
+            _codexBridges[sessionId] = bridge;
+
+            Log($"Codex CLI started for session {sessionId} (PID {bridge.Pid})");
+            await SendAsync(new ClaudeSdkSpawnedMessage
+            {
+                SessionId = sessionId,
+                Pid = bridge.Pid.Value
+            }, ct);
+
+            // Monitor process exit in background
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await bridge.WaitForExitAsync(ct);
+                    var exitCode = bridge.ExitCode;
+                    Log($"Codex CLI for session {sessionId} exited with code {exitCode}");
+
+                    _codexBridges.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
+
+                    await SendAsync(new ClaudeSdkExitedMessage
+                    {
+                        SessionId = sessionId,
+                        ExitCode = exitCode
+                    }, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    await bridge.DisposeAsync();
+                    _codexBridges.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error monitoring Codex process: {ex.Message}");
+                    _codexBridges.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
+                }
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to spawn Codex CLI for session {sessionId}: {ex.Message}");
+            _proxy?.RemoveSession(sessionId);
+            await SendAsync(new ClaudeSdkSpawnFailedMessage
+            {
+                SessionId = sessionId,
+                Error = ex.Message
+            }, ct);
+        }
+    }
+
     private void HandleClaudeSdkStop(IncomingMessage message)
     {
         var sessionId = message.SessionId;
@@ -816,6 +915,20 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"Error killing Claude CLI for session {sessionId}: {ex.Message}");
             }
             _claudeSdkProcesses.Remove(sessionId);
+        }
+
+        if (_codexBridges.TryGetValue(sessionId, out var bridge))
+        {
+            try
+            {
+                bridge.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                Log($"Stopped Codex bridge for session {sessionId}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error stopping Codex bridge for session {sessionId}: {ex.Message}");
+            }
+            _codexBridges.Remove(sessionId);
         }
 
         _proxy?.RemoveSession(sessionId);
@@ -855,6 +968,18 @@ public class WebSocketClient : IAsyncDisposable
             }
         }
         _claudeSdkProcesses.Clear();
+
+        // Dispose any running Codex bridges
+        foreach (var (sessionId, bridge) in _codexBridges)
+        {
+            try
+            {
+                await bridge.DisposeAsync();
+                Log($"Disposed Codex bridge for session {sessionId}");
+            }
+            catch { }
+        }
+        _codexBridges.Clear();
 
         if (_ptyExecutor != null)
         {

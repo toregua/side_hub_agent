@@ -125,6 +125,9 @@ public class IncomingMessage
 
     [JsonPropertyName("resumeCliSessionId")]
     public string? ResumeCliSessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public string? Provider { get; init; }
 }
 
 public class PtyOutputMessage
