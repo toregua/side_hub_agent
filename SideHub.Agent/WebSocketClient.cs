@@ -899,7 +899,8 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandleGeminiSpawnAsync(IncomingMessage message, string sessionId, string sdkUrl, CancellationToken ct)
     {
-        Log($"Spawning Gemini CLI for session {sessionId}");
+        var resumeCliSessionId = message.ResumeCliSessionId;
+        Log($"Spawning Gemini CLI for session {sessionId}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
 
         try
         {
@@ -912,7 +913,7 @@ public class WebSocketClient : IAsyncDisposable
             var uriObj = new Uri(sdkUrl);
             var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
 
-            var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log);
+            var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log, resumeCliSessionId);
 
             // Register virtual session so bridge can send messages to backend via proxy
             _proxy!.RegisterVirtualSession(

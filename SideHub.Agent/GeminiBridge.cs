@@ -20,6 +20,8 @@ public class GeminiBridge : IAsyncDisposable
     private readonly string _model;
     private readonly string _workingDirectory;
     private string _permissionMode;
+    private readonly string? _resumeCliSessionId;
+    private bool _usedResumeId;
 
     private Process? _process;
     private bool _disposed;
@@ -46,13 +48,22 @@ public class GeminiBridge : IAsyncDisposable
         string model,
         string workingDirectory,
         string permissionMode,
-        Action<string> log)
+        Action<string> log,
+        string? resumeCliSessionId = null)
     {
         _sessionId = sessionId;
         _model = model;
         _workingDirectory = workingDirectory;
         _permissionMode = permissionMode;
         _log = log;
+        _resumeCliSessionId = resumeCliSessionId;
+
+        // If resuming a previous Gemini CLI session, skip the "first turn" flag
+        // so that SpawnGeminiTurnAsync uses --resume with the session ID
+        if (!string.IsNullOrEmpty(resumeCliSessionId))
+        {
+            _isFirstTurn = false;
+        }
     }
 
     public int? Pid => _lastPid ?? _process?.Id;
@@ -248,7 +259,17 @@ public class GeminiBridge : IAsyncDisposable
         if (!_isFirstTurn)
         {
             startInfo.ArgumentList.Add("--resume");
-            startInfo.ArgumentList.Add("latest");
+            // First resume after construction with a specific CLI session ID:
+            // use that ID. Subsequent turns use "latest".
+            if (!string.IsNullOrEmpty(_resumeCliSessionId) && !_usedResumeId)
+            {
+                startInfo.ArgumentList.Add(_resumeCliSessionId);
+                _usedResumeId = true;
+            }
+            else
+            {
+                startInfo.ArgumentList.Add("latest");
+            }
         }
 
         startInfo.ArgumentList.Add("-p");
@@ -377,10 +398,24 @@ public class GeminiBridge : IAsyncDisposable
         switch (type)
         {
             case "init":
-                // Gemini session initialized — we already sent system/init, so just log
-                var geminiSessionId = root.TryGetProperty("session_id", out var sid) ? sid.GetString() : "unknown";
+                // Gemini session initialized — re-send system/init with the REAL Gemini CLI
+                // session_id so the backend/proxy caches the correct cliSessionId for resume.
+                var geminiSessionId = root.TryGetProperty("session_id", out var sid) ? sid.GetString() : null;
                 var geminiModel = root.TryGetProperty("model", out var mdl) ? mdl.GetString() : _model;
                 _log($"[GeminiBridge] Gemini init: session={geminiSessionId}, model={geminiModel}");
+
+                if (!string.IsNullOrEmpty(geminiSessionId))
+                {
+                    var updatedInit = JsonSerializer.Serialize(new
+                    {
+                        type = "system",
+                        subtype = "init",
+                        model = geminiModel ?? _model,
+                        tools = Array.Empty<string>(),
+                        session_id = geminiSessionId
+                    }, JsonOptions);
+                    await SendToBackendAsync(updatedInit, ct);
+                }
                 break;
 
             case "message":
