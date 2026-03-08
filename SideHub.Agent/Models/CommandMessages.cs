@@ -110,7 +110,7 @@ public class IncomingMessage
     [JsonPropertyName("ptyPaste")]
     public string? PtyPaste { get; init; }
 
-    // claude-sdk fields
+    // agent-sdk fields
     [JsonPropertyName("sessionId")]
     public string? SessionId { get; init; }
 
@@ -172,10 +172,10 @@ public class PtyHistoryMessage
     public required string RequestId { get; init; }
 }
 
-public class ClaudeSdkSpawnedMessage
+public class AgentSdkSpawnedMessage
 {
     [JsonPropertyName("type")]
-    public string Type => "claude-sdk.spawned";
+    public string Type => "agent-sdk.spawned";
 
     [JsonPropertyName("sessionId")]
     public required string SessionId { get; init; }
@@ -184,10 +184,10 @@ public class ClaudeSdkSpawnedMessage
     public required int Pid { get; init; }
 }
 
-public class ClaudeSdkSpawnFailedMessage
+public class AgentSdkSpawnFailedMessage
 {
     [JsonPropertyName("type")]
-    public string Type => "claude-sdk.spawn-failed";
+    public string Type => "agent-sdk.spawn-failed";
 
     [JsonPropertyName("sessionId")]
     public required string SessionId { get; init; }
@@ -196,10 +196,10 @@ public class ClaudeSdkSpawnFailedMessage
     public required string Error { get; init; }
 }
 
-public class ClaudeSdkExitedMessage
+public class AgentSdkExitedMessage
 {
     [JsonPropertyName("type")]
-    public string Type => "claude-sdk.exited";
+    public string Type => "agent-sdk.exited";
 
     [JsonPropertyName("sessionId")]
     public required string SessionId { get; init; }
@@ -208,10 +208,10 @@ public class ClaudeSdkExitedMessage
     public required int ExitCode { get; init; }
 }
 
-public class ClaudeSdkSessionsAliveMessage
+public class AgentSdkSessionsAliveMessage
 {
     [JsonPropertyName("type")]
-    public string Type => "claude-sdk.sessions-alive";
+    public string Type => "agent-sdk.sessions-alive";
 
     [JsonPropertyName("sessions")]
     public required List<Dictionary<string, string?>> Sessions { get; init; }

@@ -10,7 +10,7 @@ namespace SideHub.Agent;
 /// CLI connects locally (stable), agent relays to backend (reconnectable).
 /// When backend drops, CLI keeps running and messages are buffered.
 /// </summary>
-public class ClaudeSdkProxy : IAsyncDisposable
+public class AgentSdkProxy : IAsyncDisposable
 {
     private HttpListener? _listener;
     private int _port;
@@ -26,7 +26,7 @@ public class ClaudeSdkProxy : IAsyncDisposable
 
     private Action<string>? _onSessionTimeout;
 
-    public ClaudeSdkProxy(Action<string> log)
+    public AgentSdkProxy(Action<string> log)
     {
         _log = log;
     }
@@ -68,7 +68,7 @@ public class ClaudeSdkProxy : IAsyncDisposable
         _log($"[Proxy] Local WebSocket server started on port {_port}");
     }
 
-    public string GetLocalUrl(string sessionId) => $"ws://127.0.0.1:{_port}/ws/claude/{sessionId}";
+    public string GetLocalUrl(string sessionId) => $"ws://127.0.0.1:{_port}/ws/agent/{sessionId}";
 
     public void RegisterSession(string sessionId, string backendUrl, string token, string permissionMode)
     {
@@ -168,7 +168,7 @@ public class ClaudeSdkProxy : IAsyncDisposable
                     continue;
                 }
 
-                // Extract sessionId from path: /ws/claude/{sessionId}
+                // Extract sessionId from path: /ws/agent/{sessionId}
                 var path = context.Request.Url?.AbsolutePath ?? "";
                 var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
                 if (segments.Length != 3 || segments[0] != "ws" || segments[1] != "claude")

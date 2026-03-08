@@ -19,7 +19,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
     private readonly Dictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
     private readonly Dictionary<string, CodexBridge> _codexBridges = new();
-    private ClaudeSdkProxy? _proxy;
+    private AgentSdkProxy? _proxy;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -245,11 +245,11 @@ public class WebSocketClient : IAsyncDisposable
                 case "file.write.end":
                     await HandleFileWriteEndAsync(message, ct);
                     break;
-                case "claude-sdk.spawn":
-                    await HandleClaudeSdkSpawnAsync(message, ct);
+                case "agent-sdk.spawn":
+                    await HandleAgentSdkSpawnAsync(message, ct);
                     break;
-                case "claude-sdk.stop":
-                    HandleClaudeSdkStop(message);
+                case "agent-sdk.stop":
+                    HandleAgentSdkStop(message);
                     break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
@@ -546,7 +546,7 @@ public class WebSocketClient : IAsyncDisposable
     private async Task EnsureProxyStartedAsync()
     {
         if (_proxy is not null && _proxy.IsRunning) return;
-        _proxy = new ClaudeSdkProxy(Log);
+        _proxy = new AgentSdkProxy(Log);
         _proxy.OnSessionTimeout(sessionId =>
         {
             if (_claudeSdkProcesses.TryGetValue(sessionId, out var process))
@@ -586,14 +586,14 @@ public class WebSocketClient : IAsyncDisposable
             ["cliSessionId"] = s.CliSessionId
         }).ToList();
 
-        await SendAsync(new ClaudeSdkSessionsAliveMessage { Sessions = sessionsPayload }, ct);
+        await SendAsync(new AgentSdkSessionsAliveMessage { Sessions = sessionsPayload }, ct);
 
         // Give backend a moment to recreate sessions before proxy reconnects
         await Task.Delay(1000, ct);
         await _proxy.ReconnectAllToBackendAsync(ct);
     }
 
-    private async Task HandleClaudeSdkSpawnAsync(IncomingMessage message, CancellationToken ct)
+    private async Task HandleAgentSdkSpawnAsync(IncomingMessage message, CancellationToken ct)
     {
         var sessionId = message.SessionId;
         var sdkUrl = message.SdkUrl;
@@ -601,7 +601,7 @@ public class WebSocketClient : IAsyncDisposable
 
         if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(sdkUrl))
         {
-            Log("Invalid claude-sdk.spawn message: missing sessionId or sdkUrl");
+            Log("Invalid agent-sdk.spawn message: missing sessionId or sdkUrl");
             return;
         }
 
@@ -688,7 +688,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 Log($"Failed to start Claude CLI process for session {sessionId}");
                 _proxy.RemoveSession(sessionId);
-                await SendAsync(new ClaudeSdkSpawnFailedMessage
+                await SendAsync(new AgentSdkSpawnFailedMessage
                 {
                     SessionId = sessionId,
                     Error = "Failed to start process"
@@ -702,7 +702,7 @@ public class WebSocketClient : IAsyncDisposable
             // but closing stdin sends EOF which causes the CLI to exit after the first turn.
 
             Log($"Claude CLI started for session {sessionId} (PID {process.Id})");
-            await SendAsync(new ClaudeSdkSpawnedMessage
+            await SendAsync(new AgentSdkSpawnedMessage
             {
                 SessionId = sessionId,
                 Pid = process.Id
@@ -757,7 +757,7 @@ public class WebSocketClient : IAsyncDisposable
                     if (elapsed.TotalSeconds < 5 && !string.IsNullOrEmpty(resumeCliSessionId))
                     {
                         Log($"Resume failed for session {sessionId} (CLI exited too quickly)");
-                        await SendAsync(new ClaudeSdkSpawnFailedMessage
+                        await SendAsync(new AgentSdkSpawnFailedMessage
                         {
                             SessionId = sessionId,
                             Error = "Resume failed - CLI session may no longer exist"
@@ -765,7 +765,7 @@ public class WebSocketClient : IAsyncDisposable
                     }
                     else
                     {
-                        await SendAsync(new ClaudeSdkExitedMessage
+                        await SendAsync(new AgentSdkExitedMessage
                         {
                             SessionId = sessionId,
                             ExitCode = exitCode
@@ -790,7 +790,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             Log($"Failed to spawn Claude CLI for session {sessionId}: {ex.Message}");
             _proxy?.RemoveSession(sessionId);
-            await SendAsync(new ClaudeSdkSpawnFailedMessage
+            await SendAsync(new AgentSdkSpawnFailedMessage
             {
                 SessionId = sessionId,
                 Error = ex.Message
@@ -828,7 +828,7 @@ public class WebSocketClient : IAsyncDisposable
             if (bridge.Pid is null)
             {
                 _proxy.RemoveSession(sessionId);
-                await SendAsync(new ClaudeSdkSpawnFailedMessage
+                await SendAsync(new AgentSdkSpawnFailedMessage
                 {
                     SessionId = sessionId,
                     Error = "Failed to start codex process"
@@ -839,7 +839,7 @@ public class WebSocketClient : IAsyncDisposable
             _codexBridges[sessionId] = bridge;
 
             Log($"Codex CLI started for session {sessionId} (PID {bridge.Pid})");
-            await SendAsync(new ClaudeSdkSpawnedMessage
+            await SendAsync(new AgentSdkSpawnedMessage
             {
                 SessionId = sessionId,
                 Pid = bridge.Pid.Value
@@ -857,7 +857,7 @@ public class WebSocketClient : IAsyncDisposable
                     _codexBridges.Remove(sessionId);
                     _proxy?.RemoveSession(sessionId);
 
-                    await SendAsync(new ClaudeSdkExitedMessage
+                    await SendAsync(new AgentSdkExitedMessage
                     {
                         SessionId = sessionId,
                         ExitCode = exitCode
@@ -881,7 +881,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             Log($"Failed to spawn Codex CLI for session {sessionId}: {ex.Message}");
             _proxy?.RemoveSession(sessionId);
-            await SendAsync(new ClaudeSdkSpawnFailedMessage
+            await SendAsync(new AgentSdkSpawnFailedMessage
             {
                 SessionId = sessionId,
                 Error = ex.Message
@@ -889,12 +889,12 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    private void HandleClaudeSdkStop(IncomingMessage message)
+    private void HandleAgentSdkStop(IncomingMessage message)
     {
         var sessionId = message.SessionId;
         if (string.IsNullOrEmpty(sessionId))
         {
-            Log("Invalid claude-sdk.stop message: missing sessionId");
+            Log("Invalid agent-sdk.stop message: missing sessionId");
             return;
         }
 

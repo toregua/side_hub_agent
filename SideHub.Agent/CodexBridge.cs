@@ -9,7 +9,7 @@ namespace SideHub.Agent;
 
 /// <summary>
 /// Bridge between Codex CLI (JSON-RPC 2.0 over stdin/stdout) and the Side Hub
-/// NDJSON protocol (over WebSocket via ClaudeSdkProxy).
+/// NDJSON protocol (over WebSocket via AgentSdkProxy).
 ///
 /// The bridge spawns `codex app-server`, translates messages bidirectionally,
 /// and presents itself to the backend as if it were a Claude CLI connecting

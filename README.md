@@ -176,7 +176,7 @@ sidehub-agent stop
           │
           ├── CommandExecutor     Shell command execution
           ├── NodePtyExecutor     PTY terminal sessions
-          ├── ClaudeSdkProxy      Claude Code proxy
+          ├── AgentSdkProxy      Claude Code proxy
           ├── DaemonManager       Background process management
           └── RotatingLogWriter   Log rotation (10 MB)
 ```
@@ -191,7 +191,7 @@ sidehub-agent stop
 | **WebSocket client** | `WebSocketClient.cs` | Maintains persistent connection to SideHub backend with auto-reconnection |
 | **Command executor** | `CommandExecutor.cs` | Executes shell commands with real-time stdout/stderr streaming |
 | **PTY executor** | `NodePtyExecutor.cs` | Full terminal emulation via Node.js PTY helper |
-| **Claude SDK proxy** | `ClaudeSdkProxy.cs` | Local WebSocket proxy for Claude Code sessions |
+| **Agent SDK proxy** | `AgentSdkProxy.cs` | Local WebSocket proxy for Claude Code sessions |
 | **Daemon manager** | `DaemonManager.cs` | PID file management, process lifecycle |
 | **Log writer** | `RotatingLogWriter.cs` | Automatic log rotation with configurable size |
 
@@ -282,7 +282,7 @@ side_hub_agent/
 │   ├── WebSocketClient.cs         # WebSocket connection
 │   ├── CommandExecutor.cs         # Shell command execution
 │   ├── NodePtyExecutor.cs         # PTY terminal emulation
-│   ├── ClaudeSdkProxy.cs          # Claude Code proxy
+│   ├── AgentSdkProxy.cs          # Claude Code proxy
 │   ├── DaemonManager.cs           # Daemon process management
 │   ├── RotatingLogWriter.cs       # Log rotation
 │   ├── SystemInfoProvider.cs      # Platform detection
