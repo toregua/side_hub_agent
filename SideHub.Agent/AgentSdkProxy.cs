@@ -171,7 +171,7 @@ public class AgentSdkProxy : IAsyncDisposable
                 // Extract sessionId from path: /ws/agent/{sessionId}
                 var path = context.Request.Url?.AbsolutePath ?? "";
                 var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (segments.Length != 3 || segments[0] != "ws" || segments[1] != "claude")
+                if (segments.Length != 3 || segments[0] != "ws" || segments[1] != "agent")
                 {
                     context.Response.StatusCode = 404;
                     context.Response.Close();
