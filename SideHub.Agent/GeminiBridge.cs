@@ -297,6 +297,23 @@ public class GeminiBridge : IAsyncDisposable
             _log($"[GeminiBridge] Gemini process exited with code {exitCode}");
 
             await Task.WhenAll(stdoutTask, stderrTask);
+
+            // If process exited with error, send a result message so the frontend
+            // doesn't stay stuck on "Thinking..." / "Ready"
+            if (exitCode != 0)
+            {
+                var errMsg = JsonSerializer.Serialize(new
+                {
+                    type = "result",
+                    subtype = "error_max_turns",
+                    error = $"Gemini process exited with code {exitCode}",
+                    cost_usd = 0,
+                    duration_ms = 0,
+                    duration_api_ms = 0,
+                    session_id = _sessionId
+                }, JsonOptions);
+                await SendToBackendAsync(errMsg, ct);
+            }
         }
         catch (OperationCanceledException)
         {

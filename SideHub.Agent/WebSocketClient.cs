@@ -903,7 +903,7 @@ public class WebSocketClient : IAsyncDisposable
 
         try
         {
-            var model = message.Model ?? "gemini-3.1-pro";
+            var model = message.Model ?? "gemini-2.5-pro";
             var cwd = message.WorkingDirectory ?? _workingDirectory;
             var rawPermissionMode = message.PermissionMode ?? "default";
 
