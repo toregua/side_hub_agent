@@ -19,6 +19,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
     private readonly Dictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
     private readonly Dictionary<string, CodexBridge> _codexBridges = new();
+    private readonly Dictionary<string, GeminiBridge> _geminiBridges = new();
     private AgentSdkProxy? _proxy;
 
     private const int MinReconnectDelayMs = 1000;
@@ -611,6 +612,12 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
+        if (provider == "gemini")
+        {
+            await HandleGeminiSpawnAsync(message, sessionId, sdkUrl, ct);
+            return;
+        }
+
         var resumeCliSessionId = message.ResumeCliSessionId;
         Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {sdkUrl}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
 
@@ -890,6 +897,85 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
+    private async Task HandleGeminiSpawnAsync(IncomingMessage message, string sessionId, string sdkUrl, CancellationToken ct)
+    {
+        Log($"Spawning Gemini CLI for session {sessionId}");
+
+        try
+        {
+            var model = message.Model ?? "gemini-3.1-pro";
+            var cwd = message.WorkingDirectory ?? _workingDirectory;
+            var rawPermissionMode = message.PermissionMode ?? "default";
+
+            await EnsureProxyStartedAsync();
+
+            var uriObj = new Uri(sdkUrl);
+            var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+
+            var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log);
+
+            // Register virtual session so bridge can send messages to backend via proxy
+            _proxy!.RegisterVirtualSession(
+                sessionId, sdkUrl, token, rawPermissionMode,
+                (msg, cancelToken) => bridge.HandleBackendMessageAsync(msg, cancelToken));
+
+            // Start bridge with callback to send NDJSON to backend
+            await bridge.StartAsync(
+                (msg, cancelToken) => _proxy.SendVirtualMessageToBackendAsync(sessionId, msg, cancelToken),
+                ct);
+
+            _geminiBridges[sessionId] = bridge;
+
+            Log($"Gemini CLI ready for session {sessionId}");
+            await SendAsync(new AgentSdkSpawnedMessage
+            {
+                SessionId = sessionId,
+                Pid = bridge.Pid ?? 0
+            }, ct);
+
+            // Monitor bridge lifecycle in background
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await bridge.WaitForExitAsync(ct);
+                    Log($"Gemini bridge for session {sessionId} stopped");
+
+                    _geminiBridges.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
+
+                    await SendAsync(new AgentSdkExitedMessage
+                    {
+                        SessionId = sessionId,
+                        ExitCode = bridge.ExitCode
+                    }, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    await bridge.DisposeAsync();
+                    _geminiBridges.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error monitoring Gemini bridge: {ex.Message}");
+                    _geminiBridges.Remove(sessionId);
+                    _proxy?.RemoveSession(sessionId);
+                }
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to spawn Gemini CLI for session {sessionId}: {ex.Message}");
+            _proxy?.RemoveSession(sessionId);
+            await SendAsync(new AgentSdkSpawnFailedMessage
+            {
+                SessionId = sessionId,
+                Error = ex.Message
+            }, ct);
+        }
+    }
+
     private void HandleAgentSdkStop(IncomingMessage message)
     {
         var sessionId = message.SessionId;
@@ -930,6 +1016,20 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"Error stopping Codex bridge for session {sessionId}: {ex.Message}");
             }
             _codexBridges.Remove(sessionId);
+        }
+
+        if (_geminiBridges.TryGetValue(sessionId, out var geminiBridge))
+        {
+            try
+            {
+                geminiBridge.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                Log($"Stopped Gemini bridge for session {sessionId}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error stopping Gemini bridge for session {sessionId}: {ex.Message}");
+            }
+            _geminiBridges.Remove(sessionId);
         }
 
         _proxy?.RemoveSession(sessionId);
@@ -981,6 +1081,18 @@ public class WebSocketClient : IAsyncDisposable
             catch { }
         }
         _codexBridges.Clear();
+
+        // Dispose any running Gemini bridges
+        foreach (var (sessionId2, geminiBridge) in _geminiBridges)
+        {
+            try
+            {
+                await geminiBridge.DisposeAsync();
+                Log($"Disposed Gemini bridge for session {sessionId2}");
+            }
+            catch { }
+        }
+        _geminiBridges.Clear();
 
         if (_ptyExecutor != null)
         {
