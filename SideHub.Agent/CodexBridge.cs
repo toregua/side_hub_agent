@@ -718,6 +718,152 @@ public class CodexBridge : IAsyncDisposable
                 }
                 break;
 
+            case "codex/event/agent_message_delta":
+            case "codex/event/agent_message_content_delta":
+                // Streaming text delta via codex/event protocol
+                // Format: params.msg.delta = text string
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("msg", out var evtDeltaMsg) &&
+                    evtDeltaMsg.TryGetProperty("delta", out var evtDelta))
+                {
+                    var text = evtDelta.ValueKind == JsonValueKind.String ? evtDelta.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        var streamMsg = JsonSerializer.Serialize(new
+                        {
+                            type = "stream_event",
+                            @event = new { type = "content_block_delta", delta = new { type = "text_delta", text } }
+                        }, JsonOptions);
+                        await SendToBackendAsync(streamMsg, ct);
+                    }
+                }
+                break;
+
+            case "codex/event/agent_message":
+                // Completed agent message via codex/event protocol
+                // Format: params.msg.message = full text
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("msg", out var evtAgentMsg))
+                {
+                    var messageText = evtAgentMsg.TryGetProperty("message", out var msgText) ? msgText.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(messageText))
+                    {
+                        var assistantEvtMsg = JsonSerializer.Serialize(new
+                        {
+                            type = "assistant",
+                            message = new
+                            {
+                                role = "assistant",
+                                content = new[] { new { type = "text", text = messageText } }
+                            }
+                        }, JsonOptions);
+                        await SendToBackendAsync(assistantEvtMsg, ct);
+                    }
+                }
+                break;
+
+            case "codex/event/exec_command_begin":
+                // Command execution started via codex/event protocol
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("msg", out var execBeginMsg))
+                {
+                    var command = "";
+                    if (execBeginMsg.TryGetProperty("command", out var cmdArr) && cmdArr.ValueKind == JsonValueKind.Array)
+                    {
+                        var parts = new List<string>();
+                        foreach (var part in cmdArr.EnumerateArray())
+                            parts.Add(part.GetString() ?? "");
+                        command = string.Join(" ", parts);
+                    }
+                    var msg = JsonSerializer.Serialize(new
+                    {
+                        type = "tool_progress",
+                        tool_name = "Bash",
+                        data = new { status = "started", command }
+                    }, JsonOptions);
+                    await SendToBackendAsync(msg, ct);
+                }
+                break;
+
+            case "codex/event/exec_command_end":
+                // Command execution completed via codex/event protocol
+                {
+                    var summaryEvt = JsonSerializer.Serialize(new
+                    {
+                        type = "tool_use_summary",
+                        message = new
+                        {
+                            content = new[] { new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" } }
+                        }
+                    }, JsonOptions);
+                    await SendToBackendAsync(summaryEvt, ct);
+                }
+                break;
+
+            case "codex/event/patch_apply_begin":
+                // File patch started via codex/event protocol
+                {
+                    var patchMsg = JsonSerializer.Serialize(new
+                    {
+                        type = "tool_progress",
+                        tool_name = "Edit",
+                        data = new { status = "started" }
+                    }, JsonOptions);
+                    await SendToBackendAsync(patchMsg, ct);
+                }
+                break;
+
+            case "codex/event/patch_apply_end":
+                // File patch completed via codex/event protocol
+                {
+                    var patchSummary = JsonSerializer.Serialize(new
+                    {
+                        type = "tool_use_summary",
+                        message = new
+                        {
+                            content = new[] { new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" } }
+                        }
+                    }, JsonOptions);
+                    await SendToBackendAsync(patchSummary, ct);
+                }
+                break;
+
+            case "codex/event/exec_approval_request":
+                // Approval request via codex/event protocol (notification, not server-initiated request)
+                // Format: params.msg.command, params.msg.reason, params.msg.call_id
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("msg", out var approvalEvtMsg))
+                {
+                    var command = "";
+                    if (approvalEvtMsg.TryGetProperty("command", out var cmdEvtArr) && cmdEvtArr.ValueKind == JsonValueKind.Array)
+                    {
+                        var parts = new List<string>();
+                        foreach (var part in cmdEvtArr.EnumerateArray())
+                            parts.Add(part.GetString() ?? "");
+                        command = string.Join(" ", parts);
+                    }
+                    var callId = approvalEvtMsg.TryGetProperty("call_id", out var cid) ? cid.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString();
+                    var reason = approvalEvtMsg.TryGetProperty("reason", out var rn) ? rn.GetString() ?? "" : "";
+                    var requestId = Guid.NewGuid().ToString();
+
+                    _log($"[CodexBridge] codex/event approval request: command={command}, reason={reason}");
+
+                    var permMsg = JsonSerializer.Serialize(new
+                    {
+                        type = "control_request",
+                        request_id = requestId,
+                        request = new
+                        {
+                            subtype = "can_use_tool",
+                            tool_name = "Bash",
+                            input = new { command },
+                            tool_use_id = callId
+                        }
+                    }, JsonOptions);
+                    await SendToBackendAsync(permMsg, ct);
+                }
+                break;
+
             case "codex/event/error":
                 // Codex event error — log full details
                 var codexError = paramsEl.ValueKind != JsonValueKind.Undefined ? paramsEl.ToString() : "no details";
@@ -787,6 +933,24 @@ public class CodexBridge : IAsyncDisposable
                 await SendToBackendAsync(taskResultMsg, ct);
                 break;
 
+            case "codex/event/plan_update":
+                // Plan update via codex/event protocol — forward as thinking
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("msg", out var planMsg))
+                {
+                    var planText = planMsg.TryGetProperty("plan", out var planProp) ? planProp.GetString() ?? "" : planMsg.ToString();
+                    if (!string.IsNullOrEmpty(planText))
+                    {
+                        var msg = JsonSerializer.Serialize(new
+                        {
+                            type = "stream_event",
+                            @event = new { type = "content_block_delta", delta = new { type = "thinking_delta", thinking = planText } }
+                        }, JsonOptions);
+                        await SendToBackendAsync(msg, ct);
+                    }
+                }
+                break;
+
             case "turn/started":
             case "thread/started":
             case "thread/status/changed":
@@ -800,6 +964,9 @@ public class CodexBridge : IAsyncDisposable
             case "codex/event/task_started":
             case "codex/event/user_message":
             case "codex/event/warning":
+            case "codex/event/exec_command_output_delta":
+            case "codex/event/token_count":
+            case "codex/event/turn_diff":
                 // Informational, no translation needed
                 break;
 
