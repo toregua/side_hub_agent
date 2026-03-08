@@ -621,12 +621,13 @@ public class WebSocketClient : IAsyncDisposable
 
             // Map Side Hub permission modes to valid CLI permission modes.
             // CLI accepts: acceptEdits, bypassPermissions, default, dontAsk, plan
-            // Side Hub uses 'pipeline' and 'auto' as custom modes handled server-side.
+            // Side Hub uses 'pipeline', 'auto', 'safe' as custom modes handled server-side.
             var rawPermissionMode = message.PermissionMode ?? "default";
             var permissionMode = rawPermissionMode switch
             {
                 "pipeline" => "bypassPermissions",
                 "auto" => "bypassPermissions",
+                "safe" => "default",
                 _ => rawPermissionMode
             };
 

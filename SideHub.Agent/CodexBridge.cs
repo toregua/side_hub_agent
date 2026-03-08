@@ -21,7 +21,7 @@ public class CodexBridge : IAsyncDisposable
     private readonly string _sessionId;
     private readonly string _model;
     private readonly string _workingDirectory;
-    private readonly string _permissionMode;
+    private string _permissionMode;
 
     private Process? _process;
     private string? _threadId;
@@ -150,10 +150,22 @@ public class CodexBridge : IAsyncDisposable
 
                 case "control_request":
                     if (root.TryGetProperty("request", out var req) &&
-                        req.TryGetProperty("subtype", out var subtype) &&
-                        subtype.GetString() == "interrupt")
+                        req.TryGetProperty("subtype", out var subtype))
                     {
-                        await SendInterruptAsync(ct);
+                        switch (subtype.GetString())
+                        {
+                            case "interrupt":
+                                await SendInterruptAsync(ct);
+                                break;
+                            case "set_permission_mode":
+                                if (req.TryGetProperty("permission_mode", out var permMode))
+                                {
+                                    var newMode = permMode.GetString() ?? "default";
+                                    _permissionMode = newMode;
+                                    _log($"[CodexBridge] Permission mode updated to {_permissionMode} (applied on next turn)");
+                                }
+                                break;
+                        }
                     }
                     break;
 
@@ -291,6 +303,8 @@ public class CodexBridge : IAsyncDisposable
             }
         };
 
+        var (sandbox, approval) = MapPermissionMode(_permissionMode);
+
         var msg = new JsonObject
         {
             ["jsonrpc"] = "2.0",
@@ -299,11 +313,13 @@ public class CodexBridge : IAsyncDisposable
             ["params"] = new JsonObject
             {
                 ["threadId"] = _threadId,
-                ["input"] = inputArray
+                ["input"] = inputArray,
+                ["sandbox"] = sandbox,
+                ["approvalPolicy"] = approval
             }
         };
 
-        _log($"[CodexBridge] Sending turn/start (threadId={_threadId}, input length={textContent.Length})");
+        _log($"[CodexBridge] Sending turn/start (threadId={_threadId}, sandbox={sandbox}, approval={approval}, input length={textContent.Length})");
         await WriteToStdinAsync(msg.ToJsonString(JsonOptions));
     }
 
@@ -1133,7 +1149,7 @@ public class CodexBridge : IAsyncDisposable
             "auto" or "pipeline" or "bypasspermissions" => ("danger-full-access", "never"),
             "plan" => ("read-only", "never"),
             "manual" => ("workspace-write", "untrusted"),
-            _ => ("workspace-write", "on-request") // safe / default
+            "safe" or "default" or _ => ("workspace-write", "on-request")
         };
     }
 
