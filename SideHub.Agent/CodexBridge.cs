@@ -511,6 +511,10 @@ public class CodexBridge : IAsyncDisposable
     /// </summary>
     private async Task HandleServerRequestAsync(string method, JsonElement paramsEl, int rpcId, CancellationToken ct)
     {
+        await EmitNativeStreamEventAsync("request", method, paramsEl, ct,
+            correlationId: ExtractCorrelationId(paramsEl),
+            itemType: ExtractItemType(paramsEl));
+
         switch (method)
         {
             case "item/commandExecution/requestApproval":
@@ -545,6 +549,10 @@ public class CodexBridge : IAsyncDisposable
 
     private async Task HandleRpcNotificationAsync(string method, JsonElement paramsEl, CancellationToken ct)
     {
+        await EmitNativeStreamEventAsync("notification", method, paramsEl, ct,
+            correlationId: ExtractCorrelationId(paramsEl),
+            itemType: ExtractItemType(paramsEl));
+
         switch (method)
         {
             case "item/agentMessage/delta":
@@ -622,7 +630,7 @@ public class CodexBridge : IAsyncDisposable
                             {
                                 content = new[]
                                 {
-                                    new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" }
+                                    new { type = "tool_result", tool_use_id = completedItem.TryGetProperty("id", out var citemId) ? citemId.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString(), content = "completed" }
                                 }
                             }
                         }, JsonOptions);
@@ -804,12 +812,16 @@ public class CodexBridge : IAsyncDisposable
             case "codex/event/exec_command_end":
                 // Command execution completed via codex/event protocol
                 {
+                    var toolUseId = paramsEl.TryGetProperty("msg", out var execEndMsg) &&
+                                    execEndMsg.TryGetProperty("call_id", out var execEndCallId)
+                        ? execEndCallId.GetString() ?? Guid.NewGuid().ToString()
+                        : Guid.NewGuid().ToString();
                     var summaryEvt = JsonSerializer.Serialize(new
                     {
                         type = "tool_use_summary",
                         message = new
                         {
-                            content = new[] { new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" } }
+                            content = new[] { new { type = "tool_result", tool_use_id = toolUseId, content = "completed" } }
                         }
                     }, JsonOptions);
                     await SendToBackendAsync(summaryEvt, ct);
@@ -832,12 +844,16 @@ public class CodexBridge : IAsyncDisposable
             case "codex/event/patch_apply_end":
                 // File patch completed via codex/event protocol
                 {
+                    var patchUseId = paramsEl.TryGetProperty("msg", out var patchEndMsg) &&
+                                     patchEndMsg.TryGetProperty("call_id", out var patchCallId)
+                        ? patchCallId.GetString() ?? Guid.NewGuid().ToString()
+                        : Guid.NewGuid().ToString();
                     var patchSummary = JsonSerializer.Serialize(new
                     {
                         type = "tool_use_summary",
                         message = new
                         {
-                            content = new[] { new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" } }
+                            content = new[] { new { type = "tool_result", tool_use_id = patchUseId, content = "completed" } }
                         }
                     }, JsonOptions);
                     await SendToBackendAsync(patchSummary, ct);
@@ -922,12 +938,15 @@ public class CodexBridge : IAsyncDisposable
                     }
                     else
                     {
+                        var summaryUseId = paramsEl.TryGetProperty("id", out var completedEvtId)
+                            ? completedEvtId.GetString() ?? Guid.NewGuid().ToString()
+                            : Guid.NewGuid().ToString();
                         var summaryMsg2 = JsonSerializer.Serialize(new
                         {
                             type = "tool_use_summary",
                             message = new
                             {
-                                content = new[] { new { type = "tool_result", tool_use_id = Guid.NewGuid().ToString(), content = "completed" } }
+                                content = new[] { new { type = "tool_result", tool_use_id = summaryUseId, content = "completed" } }
                             }
                         }, JsonOptions);
                         await SendToBackendAsync(summaryMsg2, ct);
@@ -1036,6 +1055,72 @@ public class CodexBridge : IAsyncDisposable
         }, JsonOptions);
 
         await SendToBackendAsync(permMsg, ct);
+    }
+
+    private async Task EmitNativeStreamEventAsync(
+        string phase,
+        string method,
+        JsonElement paramsEl,
+        CancellationToken ct,
+        string? correlationId = null,
+        string? itemType = null)
+    {
+        var paramsJson = paramsEl.ValueKind != JsonValueKind.Undefined ? paramsEl.GetRawText() : null;
+
+        var nativeMsg = JsonSerializer.Serialize(new
+        {
+            type = "stream_event",
+            @event = new
+            {
+                type = "codex_native",
+                native = new
+                {
+                    provider = "codex",
+                    phase,
+                    method,
+                    correlation_id = correlationId,
+                    item_type = itemType,
+                    params_json = paramsJson
+                }
+            }
+        }, JsonOptions);
+
+        await SendToBackendAsync(nativeMsg, ct);
+    }
+
+    private static string? ExtractCorrelationId(JsonElement paramsEl)
+    {
+        if (paramsEl.ValueKind != JsonValueKind.Object) return null;
+
+        if (paramsEl.TryGetProperty("approvalId", out var approvalId)) return approvalId.GetString();
+        if (paramsEl.TryGetProperty("itemId", out var itemId)) return itemId.GetString();
+        if (paramsEl.TryGetProperty("id", out var id)) return id.GetString();
+
+        if (paramsEl.TryGetProperty("item", out var item) && item.ValueKind == JsonValueKind.Object)
+        {
+            if (item.TryGetProperty("id", out var nestedId)) return nestedId.GetString();
+        }
+
+        if (paramsEl.TryGetProperty("msg", out var msg) && msg.ValueKind == JsonValueKind.Object)
+        {
+            if (msg.TryGetProperty("call_id", out var callId)) return callId.GetString();
+        }
+
+        return null;
+    }
+
+    private static string? ExtractItemType(JsonElement paramsEl)
+    {
+        if (paramsEl.ValueKind != JsonValueKind.Object) return null;
+
+        if (paramsEl.TryGetProperty("type", out var type)) return type.GetString();
+
+        if (paramsEl.TryGetProperty("item", out var item) && item.ValueKind == JsonValueKind.Object)
+        {
+            if (item.TryGetProperty("type", out var itemType)) return itemType.GetString();
+        }
+
+        return null;
     }
 
     private static object[] ExtractContentBlocks(JsonElement item)
