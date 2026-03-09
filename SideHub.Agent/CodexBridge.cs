@@ -641,8 +641,9 @@ public class CodexBridge : IAsyncDisposable
                     }
                     else
                     {
-                        // Tool execution completed (command or file change)
-                        var toolName = itemType is "commandExecution" or "shellExecution" ? "Bash" : "Edit";
+                        // Tool execution completed (command/file/tool call). Emit enriched progress so UI can show file paths.
+                        var fallbackToolName = itemType is "commandExecution" or "shellExecution" ? "Bash" : null;
+                        await EmitToolProgressFromItemAsync(completedItem, ct, fallbackToolName, "completed");
                         var summaryMsg = JsonSerializer.Serialize(new
                         {
                             type = "tool_use_summary",
@@ -851,11 +852,13 @@ public class CodexBridge : IAsyncDisposable
             case "codex/event/patch_apply_begin":
                 // File patch started via codex/event protocol
                 {
+                    var detail = ExtractPathFromItem(paramsEl);
                     var patchMsg = JsonSerializer.Serialize(new
                     {
                         type = "tool_progress",
                         tool_name = "Edit",
-                        data = new { status = "started" }
+                        data = new { status = "started", file_path = detail, path = detail },
+                        tool_input = new { file_path = detail, path = detail }
                     }, JsonOptions);
                     await SendToBackendAsync(patchMsg, ct);
                 }
@@ -958,6 +961,10 @@ public class CodexBridge : IAsyncDisposable
                     }
                     else
                     {
+                        var fallbackToolName = evtItemType2 is "command" or "shell" or "commandExecution" or "shellExecution"
+                            ? "Bash"
+                            : null;
+                        await EmitToolProgressFromItemAsync(paramsEl, ct, fallbackToolName, "completed");
                         var summaryUseId = paramsEl.TryGetProperty("id", out var completedEvtId)
                             ? completedEvtId.GetString() ?? Guid.NewGuid().ToString()
                             : Guid.NewGuid().ToString();
@@ -1166,10 +1173,55 @@ public class CodexBridge : IAsyncDisposable
             {
                 foreach (var block in content.EnumerateArray())
                 {
-                    if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text" &&
-                        block.TryGetProperty("text", out var txt))
+                    if (!block.TryGetProperty("type", out var bt)) continue;
+                    var blockType = bt.GetString();
+
+                    if (blockType == "text" && block.TryGetProperty("text", out var txt))
                     {
                         blocks.Add(new { type = "text", text = txt.GetString() ?? "" });
+                        continue;
+                    }
+
+                    if (blockType is "tool_use" or "toolUse")
+                    {
+                        var id =
+                            (block.TryGetProperty("id", out var idEl) ? idEl.GetString() : null) ??
+                            (block.TryGetProperty("call_id", out var callIdEl) ? callIdEl.GetString() : null) ??
+                            Guid.NewGuid().ToString();
+                        var rawName =
+                            (block.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null) ??
+                            (block.TryGetProperty("tool_name", out var toolNameEl) ? toolNameEl.GetString() : null) ??
+                            "unknown";
+                        var mappedName = NormalizeToolName(rawName);
+                        object input = block.TryGetProperty("input", out var inputEl) ? inputEl : new { };
+                        if (block.TryGetProperty("args", out var argsEl)) input = argsEl;
+                        if (block.TryGetProperty("arguments", out var argumentsEl)) input = argumentsEl;
+
+                        blocks.Add(new
+                        {
+                            type = "tool_use",
+                            id,
+                            name = mappedName,
+                            input
+                        });
+                        continue;
+                    }
+
+                    if (blockType == "tool_result")
+                    {
+                        var toolUseId =
+                            (block.TryGetProperty("tool_use_id", out var toolUseIdEl) ? toolUseIdEl.GetString() : null) ??
+                            (block.TryGetProperty("id", out var resultIdEl) ? resultIdEl.GetString() : null) ??
+                            Guid.NewGuid().ToString();
+                        object contentValue = block.TryGetProperty("content", out var contentEl) ? contentEl : "";
+                        var isError = block.TryGetProperty("is_error", out var isErrorEl) && isErrorEl.ValueKind == JsonValueKind.True;
+                        blocks.Add(new
+                        {
+                            type = "tool_result",
+                            tool_use_id = toolUseId,
+                            content = contentValue,
+                            is_error = isError
+                        });
                     }
                 }
             }
@@ -1181,6 +1233,174 @@ public class CodexBridge : IAsyncDisposable
         }
 
         return blocks.ToArray();
+    }
+
+    private async Task EmitToolProgressFromItemAsync(
+        JsonElement item,
+        CancellationToken ct,
+        string? fallbackToolName = null,
+        string status = "completed")
+    {
+        var toolName = ResolveToolName(item, fallbackToolName);
+        if (string.IsNullOrWhiteSpace(toolName)) return;
+
+        var filePath = ExtractPathFromItem(item);
+
+        var payload = new JsonObject
+        {
+            ["type"] = "tool_progress",
+            ["tool_name"] = toolName
+        };
+
+        var data = new JsonObject { ["status"] = status };
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            data["file_path"] = filePath;
+            data["path"] = filePath;
+            payload["tool_input"] = new JsonObject
+            {
+                ["file_path"] = filePath,
+                ["path"] = filePath
+            };
+        }
+
+        payload["data"] = data;
+        await SendToBackendAsync(payload.ToJsonString(JsonOptions), ct);
+    }
+
+    private static string ResolveToolName(JsonElement item, string? fallbackToolName = null)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+            return NormalizeToolName(fallbackToolName);
+
+        var type = GetString(item, "type");
+        var name = GetString(item, "name")
+            ?? GetString(item, "tool_name")
+            ?? GetString(item, "toolName");
+
+        if (string.Equals(type, "mcpToolCall", StringComparison.OrdinalIgnoreCase))
+        {
+            name ??= GetString(item, "mcpToolName")
+                ?? (TryGetProperty(item, "tool", out var toolObj) ? GetString(toolObj, "name") : null);
+        }
+
+        if (TryGetProperty(item, "input", out var input))
+        {
+            name ??= GetString(input, "tool_name") ?? GetString(input, "toolName");
+        }
+
+        if (TryGetProperty(item, "args", out var args))
+        {
+            name ??= GetString(args, "tool_name") ?? GetString(args, "toolName");
+        }
+
+        var candidate = name ?? type ?? fallbackToolName;
+        if (string.IsNullOrWhiteSpace(candidate))
+            return "";
+
+        if (string.Equals(type, "commandExecution", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "shellExecution", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "command", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "shell", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Bash";
+        }
+
+        if (string.Equals(type, "fileChange", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Edit";
+        }
+
+        return NormalizeToolName(candidate);
+    }
+
+    private static string NormalizeToolName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var key = raw.Trim().Replace("-", "_");
+        return key.ToLowerInvariant() switch
+        {
+            "read" or "read_file" => "Read",
+            "write" or "write_file" => "Write",
+            "edit" or "apply_patch" or "patch_apply" or "file_change" => "Edit",
+            "multiedit" or "multi_edit" => "MultiEdit",
+            "notebookedit" or "notebook_edit" => "NotebookEdit",
+            "glob" => "Glob",
+            "grep" or "search" => "Grep",
+            "bash" or "commandexecution" or "shellexecution" or "command" or "shell" => "Bash",
+            _ => raw.Trim()
+        };
+    }
+
+    private static string? ExtractPathFromItem(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object) return null;
+
+        var candidates = new[]
+        {
+            GetString(item, "file_path"),
+            GetString(item, "path"),
+            GetString(item, "target_file"),
+            GetString(item, "filePath"),
+            GetString(item, "file"),
+            GetFirstString(item, "paths"),
+            GetFirstString(item, "files"),
+            TryGetProperty(item, "input", out var input) ? ExtractPathFromItem(input) : null,
+            TryGetProperty(item, "args", out var args) ? ExtractPathFromItem(args) : null,
+            TryGetProperty(item, "arguments", out var arguments) ? ExtractPathFromItem(arguments) : null,
+            TryGetProperty(item, "change", out var change) ? ExtractPathFromItem(change) : null,
+            TryGetProperty(item, "changes", out var changes) ? GetFirstPathFromArray(changes) : null,
+            TryGetProperty(item, "msg", out var msg) ? ExtractPathFromItem(msg) : null
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            return candidate.Trim().Trim('"', '\'');
+        }
+
+        return null;
+    }
+
+    private static string? GetFirstPathFromArray(JsonElement array)
+    {
+        if (array.ValueKind != JsonValueKind.Array) return null;
+        foreach (var entry in array.EnumerateArray())
+        {
+            if (entry.ValueKind == JsonValueKind.String) return entry.GetString();
+            if (entry.ValueKind == JsonValueKind.Object)
+            {
+                var nested = ExtractPathFromItem(entry);
+                if (!string.IsNullOrWhiteSpace(nested)) return nested;
+            }
+        }
+        return null;
+    }
+
+    private static string? GetString(JsonElement obj, string propertyName)
+    {
+        if (obj.ValueKind != JsonValueKind.Object) return null;
+        return obj.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.String
+            ? prop.GetString()
+            : null;
+    }
+
+    private static bool TryGetProperty(JsonElement obj, string propertyName, out JsonElement value)
+    {
+        if (obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(propertyName, out value))
+            return true;
+        value = default;
+        return false;
+    }
+
+    private static string? GetFirstString(JsonElement obj, string propertyName)
+    {
+        if (!TryGetProperty(obj, propertyName, out var array) || array.ValueKind != JsonValueKind.Array) return null;
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String) return item.GetString();
+        }
+        return null;
     }
 
     #endregion
