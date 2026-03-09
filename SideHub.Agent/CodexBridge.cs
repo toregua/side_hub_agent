@@ -613,6 +613,18 @@ public class CodexBridge : IAsyncDisposable
                         }, JsonOptions);
                         await SendToBackendAsync(msg, ct);
                     }
+                    else if (itemType is "fileChange")
+                    {
+                        var filePath = ExtractPathFromItem(startedItem);
+                        var msg = JsonSerializer.Serialize(new
+                        {
+                            type = "tool_progress",
+                            tool_name = "Edit",
+                            data = new { status = "started", file_path = filePath, path = filePath },
+                            tool_input = new { file_path = filePath, path = filePath }
+                        }, JsonOptions);
+                        await SendToBackendAsync(msg, ct);
+                    }
                 }
                 break;
 
@@ -824,7 +836,8 @@ public class CodexBridge : IAsyncDisposable
                     {
                         type = "tool_progress",
                         tool_name = "Bash",
-                        data = new { status = "started", command }
+                        data = new { status = "started", command },
+                        tool_input = new { command }
                     }, JsonOptions);
                     await SendToBackendAsync(msg, ct);
                 }
@@ -940,6 +953,18 @@ public class CodexBridge : IAsyncDisposable
                         }, JsonOptions);
                         await SendToBackendAsync(msg, ct);
                     }
+                    else if (evtItemType is "fileChange" or "file_change" or "patch")
+                    {
+                        var filePath = ExtractPathFromItem(paramsEl);
+                        var msg = JsonSerializer.Serialize(new
+                        {
+                            type = "tool_progress",
+                            tool_name = "Edit",
+                            data = new { status = "started", file_path = filePath, path = filePath },
+                            tool_input = new { file_path = filePath, path = filePath }
+                        }, JsonOptions);
+                        await SendToBackendAsync(msg, ct);
+                    }
                 }
                 break;
 
@@ -1022,6 +1047,38 @@ public class CodexBridge : IAsyncDisposable
             case "turn/diff/updated":
             case "turn/plan/updated":
             case "serverRequest/resolved":
+            case "codex/event/web_search_begin":
+                // Web search started
+                {
+                    var wsMsg = JsonSerializer.Serialize(new
+                    {
+                        type = "tool_progress",
+                        tool_name = "WebSearch",
+                        data = new { status = "started" }
+                    }, JsonOptions);
+                    await SendToBackendAsync(wsMsg, ct);
+                }
+                break;
+
+            case "codex/event/web_search_end":
+                // Web search completed
+                {
+                    var wsUseId = paramsEl.TryGetProperty("msg", out var wsEndMsg) &&
+                                   wsEndMsg.TryGetProperty("call_id", out var wsCallId)
+                        ? wsCallId.GetString() ?? Guid.NewGuid().ToString()
+                        : Guid.NewGuid().ToString();
+                    var wsSummary = JsonSerializer.Serialize(new
+                    {
+                        type = "tool_use_summary",
+                        message = new
+                        {
+                            content = new[] { new { type = "tool_result", tool_use_id = wsUseId, content = "completed" } }
+                        }
+                    }, JsonOptions);
+                    await SendToBackendAsync(wsSummary, ct);
+                }
+                break;
+
             case "codex/event/mcp_startup_complete":
             case "codex/event/task_started":
             case "codex/event/user_message":
@@ -1029,6 +1086,9 @@ public class CodexBridge : IAsyncDisposable
             case "codex/event/exec_command_output_delta":
             case "codex/event/token_count":
             case "codex/event/turn_diff":
+            case "codex/event/terminal_interaction":
+            case "account/rateLimits/updated":
+            case "item/commandExecution/terminalInteraction":
                 // Informational, no translation needed
                 break;
 
