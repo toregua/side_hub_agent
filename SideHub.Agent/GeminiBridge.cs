@@ -31,6 +31,17 @@ public class GeminiBridge : IAsyncDisposable
     // Track pending permission requests: requestId -> pending state
     private readonly ConcurrentDictionary<string, string> _pendingPermissions = new();
 
+    // Buffer tool execution state to emit rich assistant messages with tool_use/tool_result blocks
+    private readonly ConcurrentDictionary<string, GeminiToolBuffer> _toolBuffers = new();
+    private const int MaxOutputLength = 4000; // Frontend truncates display at 500 chars with "Show all"
+
+    private class GeminiToolBuffer
+    {
+        public string ToolName { get; set; } = "";
+        public string ToolId { get; set; } = "";
+        public JsonElement? Args { get; set; }
+    }
+
     // Callback to send NDJSON messages to the backend (through proxy)
     private Func<string, CancellationToken, Task>? _sendToBackend;
     private CancellationTokenSource? _cts;
@@ -434,6 +445,24 @@ public class GeminiBridge : IAsyncDisposable
                 await HandleGeminiResultAsync(root, ct);
                 break;
 
+            case "thinking":
+                // Forward as thinking_delta stream event
+                var thinkContent = root.TryGetProperty("content", out var tc) ? tc.GetString() ?? "" : "";
+                if (!string.IsNullOrEmpty(thinkContent))
+                {
+                    var thinkEvt = JsonSerializer.Serialize(new
+                    {
+                        type = "stream_event",
+                        @event = new
+                        {
+                            type = "content_block_delta",
+                            delta = new { type = "thinking_delta", thinking = thinkContent }
+                        }
+                    }, JsonOptions);
+                    await SendToBackendAsync(thinkEvt, ct);
+                }
+                break;
+
             default:
                 _log($"[GeminiBridge] Unknown Gemini message type: {type}");
                 break;
@@ -452,7 +481,27 @@ public class GeminiBridge : IAsyncDisposable
             return;
         }
 
-        if (role == "assistant")
+        // Handle thinking/reasoning messages
+        if (role == "model" || role == "assistant")
+        {
+            var isThought = root.TryGetProperty("thought", out var tp) && tp.GetBoolean();
+            if (isThought && !string.IsNullOrEmpty(content))
+            {
+                var thinkMsg = JsonSerializer.Serialize(new
+                {
+                    type = "stream_event",
+                    @event = new
+                    {
+                        type = "content_block_delta",
+                        delta = new { type = "thinking_delta", thinking = content }
+                    }
+                }, JsonOptions);
+                await SendToBackendAsync(thinkMsg, ct);
+                return;
+            }
+        }
+
+        if (role == "assistant" || role == "model")
         {
             if (isDelta)
             {
@@ -497,21 +546,27 @@ public class GeminiBridge : IAsyncDisposable
         var toolId = root.TryGetProperty("tool_id", out var tid) ? tid.GetString() ?? "" : "";
 
         // Map Gemini tool names to Side Hub tool names
-        var mappedToolName = toolName switch
-        {
-            "run_shell_command" => "Bash",
-            "write_file" or "replace" => "Edit",
-            "read_file" => "Read",
-            "list_directory" or "glob" => "Glob",
-            "grep_search" => "Grep",
-            _ => toolName
-        };
+        var mappedToolName = MapGeminiToolName(toolName);
+
+        // Extract tool arguments (Gemini uses "parameters")
+        JsonElement? args = null;
+        if (root.TryGetProperty("parameters", out var paramsEl)) args = paramsEl.Clone();
+        else if (root.TryGetProperty("args", out var argsEl)) args = argsEl.Clone();
+        else if (root.TryGetProperty("input", out var inputEl)) args = inputEl.Clone();
+
+        // Buffer for later use in tool_result
+        _toolBuffers[toolId] = new GeminiToolBuffer { ToolName = mappedToolName, ToolId = toolId, Args = args };
+
+        // Build enriched tool_progress
+        object? toolInput = BuildGeminiToolInput(mappedToolName, args);
+        string? command = mappedToolName == "Bash" ? GetCommandFromGeminiArgs(args) : null;
 
         var progressMsg = JsonSerializer.Serialize(new
         {
             type = "tool_progress",
             tool_name = mappedToolName,
-            data = new { status = "started", tool_id = toolId }
+            data = new { status = "started", tool_id = toolId, command },
+            tool_input = toolInput
         }, JsonOptions);
         await SendToBackendAsync(progressMsg, ct);
     }
@@ -520,7 +575,52 @@ public class GeminiBridge : IAsyncDisposable
     {
         var toolId = root.TryGetProperty("tool_id", out var tid) ? tid.GetString() ?? "" : "";
         var status = root.TryGetProperty("status", out var st) ? st.GetString() ?? "" : "";
+        var isError = status == "error";
 
+        // Extract the real output from the tool result
+        var output = "";
+        if (root.TryGetProperty("output", out var outEl))
+            output = outEl.ValueKind == JsonValueKind.String ? outEl.GetString() ?? "" : outEl.ToString();
+        else if (root.TryGetProperty("content", out var cEl))
+            output = cEl.ValueKind == JsonValueKind.String ? cEl.GetString() ?? "" : cEl.ToString();
+        else if (root.TryGetProperty("result", out var rEl))
+            output = rEl.ValueKind == JsonValueKind.String ? rEl.GetString() ?? "" : rEl.ToString();
+
+        // Truncate output if too long
+        if (output.Length > MaxOutputLength)
+            output = output[..MaxOutputLength] + "\n... (truncated)";
+
+        // If we have an error object, include error message
+        if (isError && root.TryGetProperty("error", out var errEl) && errEl.ValueKind == JsonValueKind.Object)
+        {
+            var errMsg = errEl.TryGetProperty("message", out var em)
+                ? em.GetString() ?? "" : errEl.ToString();
+            if (!string.IsNullOrEmpty(errMsg) && string.IsNullOrEmpty(output))
+                output = errMsg;
+        }
+
+        if (string.IsNullOrWhiteSpace(output))
+            output = status;
+
+        // Recover the buffered tool_use data
+        _toolBuffers.TryRemove(toolId, out var buffer);
+        var toolName = buffer?.ToolName ?? "unknown";
+        object toolInput = BuildGeminiToolInput(toolName, buffer?.Args) ?? new { };
+
+        // Emit rich assistant message with tool_use + tool_result blocks
+        var blocks = new object[]
+        {
+            new { type = "tool_use", id = toolId, name = toolName, input = toolInput },
+            new { type = "tool_result", tool_use_id = toolId, content = output, is_error = isError }
+        };
+        var assistantMsg = JsonSerializer.Serialize(new
+        {
+            type = "assistant",
+            message = new { role = "assistant", content = blocks }
+        }, JsonOptions);
+        await SendToBackendAsync(assistantMsg, ct);
+
+        // Keep the tool_use_summary for the activity timeline
         var summaryMsg = JsonSerializer.Serialize(new
         {
             type = "tool_use_summary",
@@ -609,6 +709,48 @@ public class GeminiBridge : IAsyncDisposable
         catch { }
     }
 
+    private static string MapGeminiToolName(string toolName)
+    {
+        return toolName switch
+        {
+            "run_shell_command" => "Bash",
+            "write_file" or "replace" or "edit_file" => "Edit",
+            "read_file" => "Read",
+            "list_directory" or "glob" => "Glob",
+            "grep_search" or "search" => "Grep",
+            _ => toolName
+        };
+    }
+
+    private static object? BuildGeminiToolInput(string toolName, JsonElement? args)
+    {
+        if (args == null || args.Value.ValueKind != JsonValueKind.Object) return null;
+
+        return toolName switch
+        {
+            "Bash" => new { command = GetCommandFromGeminiArgs(args) ?? "" },
+            "Read" => new { file_path = GetStringProp(args.Value, "file_path") ?? GetStringProp(args.Value, "path") ?? "" },
+            "Edit" => new { file_path = GetStringProp(args.Value, "file_path") ?? GetStringProp(args.Value, "path") ?? "" },
+            "Write" => new { file_path = GetStringProp(args.Value, "file_path") ?? GetStringProp(args.Value, "path") ?? "" },
+            "Glob" => new { pattern = GetStringProp(args.Value, "pattern") ?? GetStringProp(args.Value, "path") ?? "" },
+            "Grep" => new { pattern = GetStringProp(args.Value, "pattern") ?? GetStringProp(args.Value, "query") ?? "" },
+            _ => (object)new { }
+        };
+    }
+
+    private static string? GetCommandFromGeminiArgs(JsonElement? args)
+    {
+        if (args == null || args.Value.ValueKind != JsonValueKind.Object) return null;
+        return GetStringProp(args.Value, "command")
+            ?? GetStringProp(args.Value, "shell_command");
+    }
+
+    private static string? GetStringProp(JsonElement obj, string name)
+    {
+        return obj.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String
+            ? prop.GetString() : null;
+    }
+
     private static string MapPermissionMode(string permissionMode)
     {
         // Map Side Hub permission modes to Gemini --approval-mode values
@@ -648,6 +790,7 @@ public class GeminiBridge : IAsyncDisposable
         }
         catch { }
 
+        _toolBuffers.Clear();
         _processExitTcs?.TrySetResult();
         _cts?.Dispose();
         _process?.Dispose();

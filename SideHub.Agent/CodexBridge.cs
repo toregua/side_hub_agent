@@ -44,6 +44,20 @@ public class CodexBridge : IAsyncDisposable
     private Task? _stderrReadTask;
     private Task? _keepAliveTask;
 
+    // Buffer tool execution output to emit rich assistant messages with tool_use/tool_result blocks
+    private readonly ConcurrentDictionary<string, ToolExecutionBuffer> _toolBuffers = new();
+    private const int MaxOutputLength = 4000; // Frontend truncates display at 500 chars with "Show all"
+
+    private class ToolExecutionBuffer
+    {
+        public string ToolName { get; set; } = "";
+        public string? Command { get; set; }
+        public string? FilePath { get; set; }
+        public StringBuilder OutputBuffer { get; } = new();
+        public int? ExitCode { get; set; }
+        public string ToolUseId { get; set; } = "";
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -603,19 +617,32 @@ public class CodexBridge : IAsyncDisposable
                     paramsEl.TryGetProperty("item", out var startedItem))
                 {
                     var itemType = startedItem.TryGetProperty("type", out var st) ? st.GetString() : null;
+                    var itemId = startedItem.TryGetProperty("id", out var sid)
+                        ? sid.GetString() ?? Guid.NewGuid().ToString()
+                        : Guid.NewGuid().ToString();
                     if (itemType is "commandExecution" or "shellExecution")
                     {
+                        var command = ExtractCommandFromItem(startedItem);
+                        _toolBuffers[itemId] = new ToolExecutionBuffer
+                        {
+                            ToolName = "Bash", Command = command, ToolUseId = itemId
+                        };
                         var msg = JsonSerializer.Serialize(new
                         {
                             type = "tool_progress",
                             tool_name = "Bash",
-                            data = new { status = "started" }
+                            data = new { status = "started", command },
+                            tool_input = new { command }
                         }, JsonOptions);
                         await SendToBackendAsync(msg, ct);
                     }
                     else if (itemType is "fileChange")
                     {
                         var filePath = ExtractPathFromItem(startedItem);
+                        _toolBuffers[itemId] = new ToolExecutionBuffer
+                        {
+                            ToolName = "Edit", FilePath = filePath, ToolUseId = itemId
+                        };
                         var msg = JsonSerializer.Serialize(new
                         {
                             type = "tool_progress",
@@ -653,6 +680,12 @@ public class CodexBridge : IAsyncDisposable
                     }
                     else
                     {
+                        // Emit rich assistant message with tool_use/tool_result blocks
+                        var completedItemId = completedItem.TryGetProperty("id", out var citemId)
+                            ? citemId.GetString() ?? Guid.NewGuid().ToString()
+                            : Guid.NewGuid().ToString();
+                        await EmitToolBlockAssistantMessageAsync(completedItemId, completedItem, ct);
+
                         // Tool execution completed (command/file/tool call). Emit enriched progress so UI can show file paths.
                         var fallbackToolName = itemType is "commandExecution" or "shellExecution" ? "Bash" : null;
                         await EmitToolProgressFromItemAsync(completedItem, ct, fallbackToolName, "completed");
@@ -663,7 +696,7 @@ public class CodexBridge : IAsyncDisposable
                             {
                                 content = new[]
                                 {
-                                    new { type = "tool_result", tool_use_id = completedItem.TryGetProperty("id", out var citemId) ? citemId.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString(), content = "completed" }
+                                    new { type = "tool_result", tool_use_id = completedItemId, content = "completed" }
                                 }
                             }
                         }, JsonOptions);
@@ -731,7 +764,22 @@ public class CodexBridge : IAsyncDisposable
 
             case "item/commandExecution/outputDelta":
             case "item/fileChange/outputDelta":
-                // Tool output streaming — forward as tool progress
+                // Tool output streaming — buffer for rich tool blocks
+                if (paramsEl.ValueKind != JsonValueKind.Undefined)
+                {
+                    var outputItemId = ExtractCorrelationId(paramsEl) ?? "unknown";
+                    var deltaText = paramsEl.TryGetProperty("delta", out var outputDelta) && outputDelta.ValueKind == JsonValueKind.String
+                        ? outputDelta.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(deltaText) &&
+                        _toolBuffers.TryGetValue(outputItemId, out var outputBuffer) &&
+                        outputBuffer.OutputBuffer.Length < MaxOutputLength)
+                    {
+                        var remaining = MaxOutputLength - outputBuffer.OutputBuffer.Length;
+                        outputBuffer.OutputBuffer.Append(deltaText.Length <= remaining
+                            ? deltaText
+                            : deltaText[..remaining] + "\n... (truncated)");
+                    }
+                }
                 break;
 
             case "error":
@@ -832,6 +880,13 @@ public class CodexBridge : IAsyncDisposable
                             parts.Add(part.GetString() ?? "");
                         command = string.Join(" ", parts);
                     }
+                    var execCallId = execBeginMsg.TryGetProperty("call_id", out var execCid)
+                        ? execCid.GetString() ?? Guid.NewGuid().ToString()
+                        : Guid.NewGuid().ToString();
+                    _toolBuffers[execCallId] = new ToolExecutionBuffer
+                    {
+                        ToolName = "Bash", Command = command, ToolUseId = execCallId
+                    };
                     var msg = JsonSerializer.Serialize(new
                     {
                         type = "tool_progress",
@@ -850,6 +905,16 @@ public class CodexBridge : IAsyncDisposable
                                     execEndMsg.TryGetProperty("call_id", out var execEndCallId)
                         ? execEndCallId.GetString() ?? Guid.NewGuid().ToString()
                         : Guid.NewGuid().ToString();
+
+                    // Extract exit code if available
+                    int? execExitCode = null;
+                    if (execEndMsg.ValueKind == JsonValueKind.Object &&
+                        execEndMsg.TryGetProperty("exit_code", out var ecProp) && ecProp.TryGetInt32(out var ecVal))
+                        execExitCode = ecVal;
+
+                    // Emit rich assistant message with tool blocks
+                    await EmitToolBlockAssistantMessageAsync(toolUseId, execEndMsg.ValueKind == JsonValueKind.Object ? execEndMsg : null, ct, execExitCode);
+
                     var summaryEvt = JsonSerializer.Serialize(new
                     {
                         type = "tool_use_summary",
@@ -866,6 +931,14 @@ public class CodexBridge : IAsyncDisposable
                 // File patch started via codex/event protocol
                 {
                     var detail = ExtractPathFromItem(paramsEl);
+                    var patchCallId = paramsEl.TryGetProperty("msg", out var patchBeginMsg) &&
+                                      patchBeginMsg.TryGetProperty("call_id", out var patchCid)
+                        ? patchCid.GetString() ?? Guid.NewGuid().ToString()
+                        : Guid.NewGuid().ToString();
+                    _toolBuffers[patchCallId] = new ToolExecutionBuffer
+                    {
+                        ToolName = "Edit", FilePath = detail, ToolUseId = patchCallId
+                    };
                     var patchMsg = JsonSerializer.Serialize(new
                     {
                         type = "tool_progress",
@@ -884,6 +957,10 @@ public class CodexBridge : IAsyncDisposable
                                      patchEndMsg.TryGetProperty("call_id", out var patchCallId)
                         ? patchCallId.GetString() ?? Guid.NewGuid().ToString()
                         : Guid.NewGuid().ToString();
+
+                    // Emit rich assistant message with tool blocks
+                    await EmitToolBlockAssistantMessageAsync(patchUseId, patchEndMsg.ValueKind == JsonValueKind.Object ? patchEndMsg : null, ct);
+
                     var patchSummary = JsonSerializer.Serialize(new
                     {
                         type = "tool_use_summary",
@@ -1079,11 +1156,33 @@ public class CodexBridge : IAsyncDisposable
                 }
                 break;
 
+            case "codex/event/exec_command_output_delta":
+                // Buffer command output from codex/event protocol
+                if (paramsEl.ValueKind != JsonValueKind.Undefined &&
+                    paramsEl.TryGetProperty("msg", out var outputEvtMsg))
+                {
+                    var outputCallId = outputEvtMsg.TryGetProperty("call_id", out var outputCid)
+                        ? outputCid.GetString() : null;
+                    var outputText = outputEvtMsg.TryGetProperty("output", out var outProp) && outProp.ValueKind == JsonValueKind.String
+                        ? outProp.GetString() ?? ""
+                        : outputEvtMsg.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == JsonValueKind.String
+                            ? dataProp.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(outputCallId) && !string.IsNullOrEmpty(outputText) &&
+                        _toolBuffers.TryGetValue(outputCallId, out var evtBuffer) &&
+                        evtBuffer.OutputBuffer.Length < MaxOutputLength)
+                    {
+                        var rem = MaxOutputLength - evtBuffer.OutputBuffer.Length;
+                        evtBuffer.OutputBuffer.Append(outputText.Length <= rem
+                            ? outputText
+                            : outputText[..rem] + "\n... (truncated)");
+                    }
+                }
+                break;
+
             case "codex/event/mcp_startup_complete":
             case "codex/event/task_started":
             case "codex/event/user_message":
             case "codex/event/warning":
-            case "codex/event/exec_command_output_delta":
             case "codex/event/token_count":
             case "codex/event/turn_diff":
             case "codex/event/terminal_interaction":
@@ -1463,6 +1562,88 @@ public class CodexBridge : IAsyncDisposable
         return null;
     }
 
+    private async Task EmitToolBlockAssistantMessageAsync(
+        string itemId,
+        JsonElement? completedItem,
+        CancellationToken ct,
+        int? overrideExitCode = null)
+    {
+        if (!_toolBuffers.TryRemove(itemId, out var buffer)) return;
+
+        // Extract exit code from completed item if not overridden
+        if (overrideExitCode.HasValue)
+        {
+            buffer.ExitCode = overrideExitCode;
+        }
+        else if (completedItem.HasValue)
+        {
+            if (completedItem.Value.TryGetProperty("exitCode", out var ec) && ec.TryGetInt32(out var code))
+                buffer.ExitCode = code;
+            else if (completedItem.Value.TryGetProperty("exit_code", out var ec2) && ec2.TryGetInt32(out var code2))
+                buffer.ExitCode = code2;
+        }
+
+        // Build tool_use input based on tool type
+        object toolInput = buffer.ToolName switch
+        {
+            "Bash" => new { command = buffer.Command ?? "" },
+            _ => new { file_path = buffer.FilePath ?? "" }
+        };
+
+        // Build tool_result output
+        var output = buffer.OutputBuffer.ToString();
+        if (string.IsNullOrWhiteSpace(output))
+            output = buffer.ExitCode.HasValue ? $"Exit code: {buffer.ExitCode}" : "completed";
+
+        var isError = buffer.ExitCode.HasValue && buffer.ExitCode != 0;
+
+        var blocks = new object[]
+        {
+            new { type = "tool_use", id = buffer.ToolUseId, name = buffer.ToolName, input = toolInput },
+            new { type = "tool_result", tool_use_id = buffer.ToolUseId, content = output, is_error = isError }
+        };
+
+        var msg = JsonSerializer.Serialize(new
+        {
+            type = "assistant",
+            message = new { role = "assistant", content = blocks }
+        }, JsonOptions);
+        await SendToBackendAsync(msg, ct);
+    }
+
+    private static string? ExtractCommandFromItem(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object) return null;
+
+        // Direct string command
+        if (item.TryGetProperty("command", out var cmd))
+        {
+            if (cmd.ValueKind == JsonValueKind.String)
+                return cmd.GetString();
+            if (cmd.ValueKind == JsonValueKind.Array)
+            {
+                var parts = new List<string>();
+                foreach (var part in cmd.EnumerateArray())
+                    parts.Add(part.GetString() ?? "");
+                return string.Join(" ", parts);
+            }
+        }
+
+        // Nested in input/args
+        if (item.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object)
+        {
+            var nested = ExtractCommandFromItem(input);
+            if (nested != null) return nested;
+        }
+        if (item.TryGetProperty("args", out var args) && args.ValueKind == JsonValueKind.Object)
+        {
+            var nested = ExtractCommandFromItem(args);
+            if (nested != null) return nested;
+        }
+
+        return null;
+    }
+
     #endregion
 
     #region Helpers
@@ -1575,6 +1756,7 @@ public class CodexBridge : IAsyncDisposable
         }
         catch { }
 
+        _toolBuffers.Clear();
         _cts?.Dispose();
         _process?.Dispose();
     }
