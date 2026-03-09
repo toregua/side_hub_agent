@@ -490,6 +490,26 @@ public class CodexBridge : IAsyncDisposable
                 }
                 _log($"[CodexBridge] Thread started: {_threadId}");
 
+                // Find the real Codex session file and send updated system/init
+                // so the frontend gets the correct cliSessionId for resume
+                if (_threadId is not null)
+                {
+                    var codexSessionId = FindCodexSessionFile(_threadId);
+                    if (codexSessionId is not null)
+                    {
+                        _log($"[CodexBridge] Found Codex session file: {codexSessionId}");
+                        var updatedInit = JsonSerializer.Serialize(new
+                        {
+                            type = "system",
+                            subtype = "init",
+                            model = _model,
+                            tools = Array.Empty<string>(),
+                            session_id = codexSessionId
+                        }, JsonOptions);
+                        await SendToBackendAsync(updatedInit, ct);
+                    }
+                }
+
                 // Now send the actual user message as turn/start
                 if (_pendingUserMessage is not null && _threadId is not null)
                 {
@@ -1277,5 +1297,31 @@ public class CodexBridge : IAsyncDisposable
 
         _cts?.Dispose();
         _process?.Dispose();
+    }
+
+    /// <summary>
+    /// Search ~/.codex/sessions/ for a session file whose name contains the given thread ID.
+    /// Returns the filename without extension (= the session ID used by the picker).
+    /// </summary>
+    private string? FindCodexSessionFile(string threadId)
+    {
+        try
+        {
+            var sessionsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+            if (!Directory.Exists(sessionsDir)) return null;
+
+            var files = Directory.GetFiles(sessionsDir, "*.jsonl", SearchOption.AllDirectories);
+            foreach (var file in files)
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                if (name.Contains(threadId))
+                    return name;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"[CodexBridge] Error searching for Codex session file: {ex.Message}");
+        }
+        return null;
     }
 }
