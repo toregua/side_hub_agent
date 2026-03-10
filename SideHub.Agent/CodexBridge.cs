@@ -19,7 +19,7 @@ public class CodexBridge : IAsyncDisposable
 {
     private readonly Action<string> _log;
     private readonly string _sessionId;
-    private readonly string _model;
+    private string _model;
     private readonly string _workingDirectory;
     private string _permissionMode;
 
@@ -170,6 +170,17 @@ public class CodexBridge : IAsyncDisposable
                         {
                             case "interrupt":
                                 await SendInterruptAsync(ct);
+                                break;
+                            case "set_model":
+                                if (req.TryGetProperty("model", out var modelEl))
+                                {
+                                    var newModel = modelEl.GetString();
+                                    if (!string.IsNullOrEmpty(newModel))
+                                    {
+                                        _model = newModel;
+                                        _log($"[CodexBridge] Model updated to {_model} (applied on next turn)");
+                                    }
+                                }
                                 break;
                             case "set_permission_mode":
                                 if (req.TryGetProperty("permission_mode", out var permMode))
@@ -328,12 +339,13 @@ public class CodexBridge : IAsyncDisposable
             {
                 ["threadId"] = _threadId,
                 ["input"] = inputArray,
+                ["model"] = _model,
                 ["sandbox"] = sandbox,
                 ["approvalPolicy"] = approval
             }
         };
 
-        _log($"[CodexBridge] Sending turn/start (threadId={_threadId}, sandbox={sandbox}, approval={approval}, input length={textContent.Length})");
+        _log($"[CodexBridge] Sending turn/start (threadId={_threadId}, model={_model}, sandbox={sandbox}, approval={approval}, input length={textContent.Length})");
         await WriteToStdinAsync(msg.ToJsonString(JsonOptions));
     }
 
@@ -480,13 +492,15 @@ public class CodexBridge : IAsyncDisposable
                 _log($"[CodexBridge] Initialize response received");
                 // Send system/init immediately so the backend transitions to AwaitingInput
                 // and the frontend moves from "connecting" to "ready"
+                var codexAuthMode = ReadCodexAuthMode();
                 var initMsg = JsonSerializer.Serialize(new
                 {
                     type = "system",
                     subtype = "init",
                     model = _model,
                     tools = Array.Empty<string>(),
-                    session_id = _sessionId
+                    session_id = _sessionId,
+                    codex_auth_mode = codexAuthMode
                 }, JsonOptions);
                 await SendToBackendAsync(initMsg, ct);
                 break;
@@ -1717,6 +1731,18 @@ public class CodexBridge : IAsyncDisposable
             "manual" => ("workspace-write", "untrusted"),
             "safe" or "default" or _ => ("workspace-write", "on-request")
         };
+    }
+
+    private static string? ReadCodexAuthMode()
+    {
+        try
+        {
+            var authPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "auth.json");
+            if (!File.Exists(authPath)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(authPath));
+            return doc.RootElement.TryGetProperty("auth_mode", out var mode) ? mode.GetString() : null;
+        }
+        catch { return null; }
     }
 
     #endregion
