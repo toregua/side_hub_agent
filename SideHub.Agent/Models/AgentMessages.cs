@@ -21,6 +21,9 @@ public class AgentConnectedMessage
 
     [JsonPropertyName("availableShells")]
     public required string[] AvailableShells { get; init; }
+
+    [JsonPropertyName("rootPath")]
+    public string? RootPath { get; init; }
 }
 
 public class AgentHeartbeatMessage

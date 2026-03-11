@@ -137,7 +137,8 @@ public class WebSocketClient : IAsyncDisposable
             WorkspaceId = _config.WorkspaceId!,
             Capabilities = _config.Capabilities!,
             DefaultShell = defaultShell,
-            AvailableShells = availableShells
+            AvailableShells = availableShells,
+            RootPath = _workingDirectory
         };
         await SendAsync(message, ct);
     }
