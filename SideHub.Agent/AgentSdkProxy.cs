@@ -20,6 +20,7 @@ public class AgentSdkProxy : IAsyncDisposable
     private CancellationTokenSource? _listenerCts;
     private Task? _acceptLoopTask;
     private const int MaxBufferedMessages = 1000;
+    private const int BufferMessageTtlMs = 120_000; // 2 minutes
     private const int BackendReconnectDelayMs = 3000;
     private const int CliKeepAliveIntervalMs = 10000;
     private const int InactivityTimeoutMs = 300_000; // 5 minutes
@@ -528,12 +529,25 @@ public class AgentSdkProxy : IAsyncDisposable
     private async Task ReplayBufferedMessagesAsync(ProxySession session, CancellationToken ct)
     {
         var count = 0;
-        while (session.BufferedMessages.TryDequeue(out var msg))
+        var expired = 0;
+        var now = DateTime.UtcNow;
+
+        while (session.BufferedMessages.TryDequeue(out var entry))
         {
             if (session.BackendSocket?.State != WebSocketState.Open) break;
-            await SendToBackendAsync(session, msg, ct);
+
+            if ((now - entry.BufferedAt).TotalMilliseconds > BufferMessageTtlMs)
+            {
+                expired++;
+                continue;
+            }
+
+            await SendToBackendAsync(session, entry.Message, ct);
             count++;
         }
+
+        if (expired > 0)
+            _log($"[Proxy] Dropped {expired} expired buffered message(s) for session {session.SessionId}");
         if (count > 0)
             _log($"[Proxy] Replayed {count} buffered message(s) for session {session.SessionId}");
     }
@@ -570,7 +584,7 @@ public class AgentSdkProxy : IAsyncDisposable
             _log($"[Proxy] Buffer full for {session.SessionId}, dropping oldest message");
             session.BufferedMessages.TryDequeue(out _);
         }
-        session.BufferedMessages.Enqueue(rawMessage);
+        session.BufferedMessages.Enqueue((rawMessage, DateTime.UtcNow));
     }
 
     private static async Task SendToBackendAsync(ProxySession session, string message, CancellationToken ct)
@@ -653,7 +667,7 @@ public class AgentSdkProxy : IAsyncDisposable
 
         public string? SystemInitMessage { get; set; }
         public string? CliSessionId { get; set; }
-        public ConcurrentQueue<string> BufferedMessages { get; } = new();
+        public ConcurrentQueue<(string Message, DateTime BufferedAt)> BufferedMessages { get; } = new();
 
         public SemaphoreSlim CliSendLock { get; } = new(1, 1);
         public SemaphoreSlim BackendSendLock { get; } = new(1, 1);
