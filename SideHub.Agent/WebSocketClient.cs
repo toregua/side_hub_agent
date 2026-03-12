@@ -294,7 +294,7 @@ public class WebSocketClient : IAsyncDisposable
                     await HandleAgentSdkSpawnAsync(message, ct);
                     break;
                 case "agent-sdk.stop":
-                    HandleAgentSdkStop(message);
+                    await HandleAgentSdkStopAsync(message);
                     break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
@@ -1058,7 +1058,7 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    private void HandleAgentSdkStop(IncomingMessage message)
+    private async Task HandleAgentSdkStopAsync(IncomingMessage message)
     {
         var sessionId = message.SessionId;
         if (string.IsNullOrEmpty(sessionId))
@@ -1090,7 +1090,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             try
             {
-                bridge.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                await bridge.DisposeAsync();
                 Log($"Stopped Codex bridge for session {sessionId}");
             }
             catch (Exception ex)
@@ -1104,7 +1104,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             try
             {
-                geminiBridge.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                await geminiBridge.DisposeAsync();
                 Log($"Stopped Gemini bridge for session {sessionId}");
             }
             catch (Exception ex)
