@@ -42,18 +42,20 @@ public class CommandExecutor
 
         try
         {
-            var (fileName, arguments) = GetShellCommand(shell, command);
+            var (fileName, args) = GetShellCommand(shell, command);
 
             var psi = new ProcessStartInfo
             {
                 FileName = fileName,
-                Arguments = arguments,
                 WorkingDirectory = _workingDirectory,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true
             };
+
+            foreach (var arg in args)
+                psi.ArgumentList.Add(arg);
 
             using var process = new Process { StartInfo = psi };
             _currentProcess = process;
@@ -102,30 +104,23 @@ public class CommandExecutor
         }
     }
 
-    private static (string fileName, string arguments) GetShellCommand(string shell, string command)
+    private static (string fileName, string[] args) GetShellCommand(string shell, string command)
     {
         // Note: Don't use -i (interactive) flag for non-interactive command execution.
         // It requires a real TTY for job control and produces warnings like:
         // "bash: initialize_job_control: no job control in background: Bad file descriptor"
+        //
+        // Uses ArgumentList (via string[]) instead of a single Arguments string
+        // so .NET handles escaping correctly across all platforms.
         return shell.ToLowerInvariant() switch
         {
-            "bash" => ("/bin/bash", $"-l -c \"{EscapeForShell(command)}\""),
-            "sh" => ("/bin/sh", $"-l -c \"{EscapeForShell(command)}\""),
-            "zsh" => ("/bin/zsh", $"-l -c \"{EscapeForShell(command)}\""),
-            "powershell" or "pwsh" => ("pwsh", $"-Command \"{EscapeForPowerShell(command)}\""),
-            "cmd" => ("cmd.exe", $"/c {command}"),
+            "bash" => ("/bin/bash", new[] { "-l", "-c", command }),
+            "sh" => ("/bin/sh", new[] { "-l", "-c", command }),
+            "zsh" => ("/bin/zsh", new[] { "-l", "-c", command }),
+            "powershell" or "pwsh" => ("pwsh", new[] { "-Command", command }),
+            "cmd" => ("cmd.exe", new[] { "/c", command }),
             _ => throw new ArgumentException($"Unsupported shell: {shell}")
         };
-    }
-
-    private static string EscapeForShell(string command)
-    {
-        return command.Replace("\\", "\\\\").Replace("\"", "\\\"");
-    }
-
-    private static string EscapeForPowerShell(string command)
-    {
-        return command.Replace("\"", "\\\"");
     }
 
     private static async Task ReadStreamAsync(
