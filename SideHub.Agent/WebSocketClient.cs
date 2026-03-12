@@ -49,6 +49,38 @@ public class WebSocketClient : IAsyncDisposable
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
 
+    /// <summary>Mask sensitive query-string values (token, key, secret) in URLs for safe logging.</summary>
+    private static string MaskUrl(string url)
+    {
+        try
+        {
+            var uri = new Uri(url);
+            if (string.IsNullOrEmpty(uri.Query) || uri.Query == "?") return $"{uri.GetLeftPart(UriPartial.Path)}";
+            var qs = System.Web.HttpUtility.ParseQueryString(uri.Query);
+            var sensitiveKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "token", "key", "secret", "apikey", "api_key" };
+            foreach (var key in qs.AllKeys)
+            {
+                if (key != null && sensitiveKeys.Contains(key))
+                {
+                    var val = qs[key] ?? "";
+                    qs[key] = val.Length > 4 ? val[..4] + "***" : "***";
+                }
+            }
+            return $"{uri.GetLeftPart(UriPartial.Path)}?{qs}";
+        }
+        catch
+        {
+            return "***masked-url***";
+        }
+    }
+
+    /// <summary>Truncate a shell command for safe logging (first 80 chars).</summary>
+    private static string TruncateCommand(string command)
+    {
+        if (command.Length <= 80) return command;
+        return command[..80] + "...";
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         var reconnectAttempts = 0;
@@ -301,7 +333,7 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        Log($"Executing: {message.Command}");
+        Log($"Executing: {TruncateCommand(message.Command)}");
 
         try
         {
@@ -654,7 +686,7 @@ public class WebSocketClient : IAsyncDisposable
         }
 
         var resumeCliSessionId = message.ResumeCliSessionId;
-        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {sdkUrl}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
+        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {MaskUrl(sdkUrl)}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
 
         try
         {
@@ -688,7 +720,7 @@ public class WebSocketClient : IAsyncDisposable
             _proxy!.RegisterSession(sessionId, sdkUrl, token, rawPermissionMode);
             var localUrl = _proxy.GetLocalUrl(sessionId);
 
-            Log($"CLI will connect to local proxy: {localUrl}");
+            Log($"CLI will connect to local proxy: {MaskUrl(localUrl)}");
 
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
