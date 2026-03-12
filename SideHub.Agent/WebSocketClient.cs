@@ -676,9 +676,13 @@ public class WebSocketClient : IAsyncDisposable
             // instead of directly to backend (drops on deploy).
             await EnsureProxyStartedAsync();
 
-            // Extract token from backend URL for reconnection
-            var uriObj = new Uri(sdkUrl);
-            var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+            // Read token from dedicated field, fallback to URL parsing for backward compat
+            var token = message.SdkToken ?? "";
+            if (string.IsNullOrEmpty(token))
+            {
+                var uriObj = new Uri(sdkUrl);
+                token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+            }
 
             _proxy!.RegisterSession(sessionId, sdkUrl, token, rawPermissionMode);
             var localUrl = _proxy.GetLocalUrl(sessionId);
@@ -852,8 +856,13 @@ public class WebSocketClient : IAsyncDisposable
 
             await EnsureProxyStartedAsync();
 
-            var uriObj = new Uri(sdkUrl);
-            var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+            // Read token from dedicated field, fallback to URL parsing for backward compat
+            var token = message.SdkToken ?? "";
+            if (string.IsNullOrEmpty(token))
+            {
+                var uriObj = new Uri(sdkUrl);
+                token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+            }
 
             var bridge = new CodexBridge(sessionId, model, cwd, rawPermissionMode, Log);
 
@@ -944,8 +953,13 @@ public class WebSocketClient : IAsyncDisposable
 
             await EnsureProxyStartedAsync();
 
-            var uriObj = new Uri(sdkUrl);
-            var token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+            // Read token from dedicated field, fallback to URL parsing for backward compat
+            var token = message.SdkToken ?? "";
+            if (string.IsNullOrEmpty(token))
+            {
+                var uriObj = new Uri(sdkUrl);
+                token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
+            }
 
             var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log, resumeCliSessionId);
 

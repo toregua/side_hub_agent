@@ -38,6 +38,15 @@ public class AgentSdkProxy : IAsyncDisposable
         return Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
     }
 
+    private static string StripTokenFromUrl(string url)
+    {
+        var uriBuilder = new UriBuilder(url);
+        var query = System.Web.HttpUtility.ParseQueryString(uriBuilder.Query);
+        query.Remove("token");
+        uriBuilder.Query = query.ToString();
+        return uriBuilder.Uri.ToString();
+    }
+
     /// <summary>
     /// Called when a session is reaped due to inactivity. The callback receives the sessionId.
     /// </summary>
@@ -88,7 +97,7 @@ public class AgentSdkProxy : IAsyncDisposable
         var session = new ProxySession
         {
             SessionId = sessionId,
-            BackendUrl = backendUrl,
+            BackendUrl = StripTokenFromUrl(backendUrl),
             Token = token,
             PermissionMode = permissionMode,
             ConnectionToken = connectionToken
@@ -125,7 +134,7 @@ public class AgentSdkProxy : IAsyncDisposable
         var session = new ProxySession
         {
             SessionId = sessionId,
-            BackendUrl = backendUrl,
+            BackendUrl = StripTokenFromUrl(backendUrl),
             Token = token,
             PermissionMode = permissionMode,
             ConnectionToken = connectionToken,
@@ -393,6 +402,8 @@ public class AgentSdkProxy : IAsyncDisposable
             try
             {
                 var ws = new ClientWebSocket();
+                if (!string.IsNullOrEmpty(session.Token))
+                    ws.Options.SetRequestHeader("X-Session-Token", session.Token);
                 var uri = new Uri(session.BackendUrl);
 
                 _log($"[Proxy] Connecting to backend for session {session.SessionId}...{(attempt > 0 ? $" (attempt {attempt + 1})" : "")}");

@@ -128,6 +128,9 @@ public class IncomingMessage
 
     [JsonPropertyName("provider")]
     public string? Provider { get; init; }
+
+    [JsonPropertyName("sdkToken")]
+    public string? SdkToken { get; init; }
 }
 
 public class PtyOutputMessage
