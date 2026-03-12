@@ -90,7 +90,24 @@ public class AgentConfig
         var errors = new List<string>();
 
         if (string.IsNullOrWhiteSpace(SidehubUrl))
+        {
             errors.Add("sidehubUrl is required");
+        }
+        else if (!Uri.TryCreate(SidehubUrl, UriKind.Absolute, out var uri)
+                 || (uri.Scheme != "wss" && uri.Scheme != "ws"))
+        {
+            errors.Add("sidehubUrl must be a valid WebSocket URL (wss:// or ws://)");
+        }
+        else if (uri.Scheme == "ws"
+                 && uri.Host != "localhost"
+                 && uri.Host != "127.0.0.1"
+                 && uri.Host != "::1")
+        {
+            errors.Add(
+                "sidehubUrl uses ws:// (unencrypted) with a remote host. " +
+                "Use wss:// to protect the agent token in transit. " +
+                "ws:// is only allowed for localhost development.");
+        }
 
         if (string.IsNullOrWhiteSpace(AgentId))
             errors.Add("agentId is required");
