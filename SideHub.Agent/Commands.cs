@@ -87,6 +87,8 @@ public static class Commands
             Console.WriteLine($"[SideHub] Use 'sidehub-agent logs' to view logs");
             Console.WriteLine($"[SideHub] Use 'sidehub-agent stop' to stop");
 
+            InstanceRegistry.Register(baseDirectory);
+
             return 0;
         }
         catch (Exception ex)
@@ -310,6 +312,169 @@ public static class Commands
         }
     }
 
+    public static int Restart(string baseDirectory, bool daemon, CancellationToken ct)
+    {
+        var manager = new DaemonManager(baseDirectory);
+
+        if (manager.IsRunning())
+        {
+            var pid = manager.ReadPid();
+            Console.WriteLine($"[SideHub] Stopping agent (PID: {pid})...");
+            manager.StopDaemon();
+            Thread.Sleep(1000);
+        }
+
+        Console.WriteLine($"[SideHub] Starting agent in {baseDirectory}...");
+        return daemon ? StartDaemon(baseDirectory, manager) : RunForeground(baseDirectory, ct).GetAwaiter().GetResult();
+    }
+
+    public static async Task<int> StartAll(bool daemon, CancellationToken ct)
+    {
+        if (!daemon)
+        {
+            Console.WriteLine("[SideHub] Error: --all requires -d (daemon mode)");
+            return 1;
+        }
+
+        var instances = InstanceRegistry.LoadValid();
+        if (instances.Count == 0)
+        {
+            Console.WriteLine("[SideHub] No registered instances found");
+            Console.WriteLine("[SideHub] Start agents individually first: cd /path/to/repo && sidehub-agent start -d");
+            return 0;
+        }
+
+        int started = 0, skipped = 0;
+
+        foreach (var instance in instances)
+        {
+            var manager = new DaemonManager(instance.Directory);
+            if (manager.IsRunning())
+            {
+                var pid = manager.ReadPid();
+                Console.WriteLine($"[SideHub] {instance.Directory} — already running (PID: {pid}), skipping");
+                skipped++;
+                continue;
+            }
+
+            Console.WriteLine($"[SideHub] Starting {instance.Directory}...");
+            var result = await Start(instance.Directory, daemon: true, ct);
+            if (result == 0) started++;
+        }
+
+        Console.WriteLine($"[SideHub] Done: {started} started, {skipped} already running");
+        return 0;
+    }
+
+    public static int StopAll()
+    {
+        var instances = InstanceRegistry.LoadValid();
+        if (instances.Count == 0)
+        {
+            Console.WriteLine("[SideHub] No registered instances found");
+            return 0;
+        }
+
+        int stopped = 0, failures = 0;
+
+        foreach (var instance in instances)
+        {
+            var manager = new DaemonManager(instance.Directory);
+            if (!manager.IsRunning())
+            {
+                Console.WriteLine($"[SideHub] {instance.Directory} — not running");
+                manager.RemovePidFile();
+                continue;
+            }
+
+            var pid = manager.ReadPid();
+            Console.WriteLine($"[SideHub] Stopping {instance.Directory} (PID: {pid})...");
+            if (manager.StopDaemon())
+            {
+                stopped++;
+            }
+            else
+            {
+                Console.WriteLine($"[SideHub] Failed to stop {instance.Directory}");
+                failures++;
+            }
+        }
+
+        Console.WriteLine($"[SideHub] Done: {stopped} stopped");
+        return failures > 0 ? 1 : 0;
+    }
+
+    public static async Task<int> RestartAll(bool daemon, CancellationToken ct)
+    {
+        if (!daemon)
+        {
+            Console.WriteLine("[SideHub] Error: --all requires -d (daemon mode)");
+            return 1;
+        }
+
+        var instances = InstanceRegistry.LoadValid();
+        if (instances.Count == 0)
+        {
+            Console.WriteLine("[SideHub] No registered instances found");
+            return 0;
+        }
+
+        // Phase 1: Stop all running agents
+        Console.WriteLine("[SideHub] Phase 1: Stopping all agents...");
+        foreach (var instance in instances)
+        {
+            var manager = new DaemonManager(instance.Directory);
+            if (manager.IsRunning())
+            {
+                var pid = manager.ReadPid();
+                Console.WriteLine($"[SideHub]   Stopping {instance.Directory} (PID: {pid})...");
+                manager.StopDaemon();
+            }
+        }
+
+        Thread.Sleep(1000);
+
+        // Phase 2: Start all agents
+        Console.WriteLine("[SideHub] Phase 2: Starting all agents...");
+        int started = 0;
+
+        foreach (var instance in instances)
+        {
+            Console.WriteLine($"[SideHub]   Starting {instance.Directory}...");
+            var result = await Start(instance.Directory, daemon: true, ct);
+            if (result == 0) started++;
+        }
+
+        Console.WriteLine($"[SideHub] Done: {started}/{instances.Count} restarted");
+        return 0;
+    }
+
+    public static int StatusAll()
+    {
+        var instances = InstanceRegistry.LoadValid();
+        if (instances.Count == 0)
+        {
+            Console.WriteLine("[SideHub] No registered instances found");
+            return 0;
+        }
+
+        Console.WriteLine($"[SideHub] Registered instances ({instances.Count}):");
+        Console.WriteLine();
+
+        foreach (var instance in instances)
+        {
+            var manager = new DaemonManager(instance.Directory);
+            var pid = manager.ReadPid();
+            var running = manager.IsRunning();
+            var status = running ? $"running (PID: {pid})" : "stopped";
+            Console.WriteLine($"  {instance.Directory}");
+            Console.WriteLine($"    Status: {status}");
+        }
+
+        Console.WriteLine();
+        return 0;
+    }
+
     public static void PrintHelp()
     {
         Console.WriteLine("Usage: sidehub-agent [command] [options]");
@@ -317,18 +482,26 @@ public static class Commands
         Console.WriteLine("Commands:");
         Console.WriteLine("  start           Start the agent (default)");
         Console.WriteLine("    -d, --daemon  Run in background");
+        Console.WriteLine("    --all         Operate on all registered instances");
         Console.WriteLine("  stop            Stop the running agent");
+        Console.WriteLine("    --all         Stop all registered instances");
+        Console.WriteLine("  restart         Stop then start the agent");
+        Console.WriteLine("    -d, --daemon  Run in background");
+        Console.WriteLine("    --all         Restart all registered instances");
         Console.WriteLine("  logs            Show agent logs");
         Console.WriteLine("    -f, --follow  Follow log output (default)");
         Console.WriteLine("    --no-follow   Don't follow, just print current logs");
         Console.WriteLine("  status          Show agent status");
+        Console.WriteLine("    --all         Show all registered instances");
         Console.WriteLine("  help            Show this help");
         Console.WriteLine();
         Console.WriteLine("Examples:");
         Console.WriteLine("  sidehub-agent              # Start in foreground");
         Console.WriteLine("  sidehub-agent start -d     # Start in background");
+        Console.WriteLine("  sidehub-agent restart --all -d  # Restart all agents");
+        Console.WriteLine("  sidehub-agent status --all # Show all instances");
         Console.WriteLine("  sidehub-agent logs         # View and follow logs");
-        Console.WriteLine("  sidehub-agent stop         # Stop the agent");
+        Console.WriteLine("  sidehub-agent stop --all   # Stop all agents");
     }
 
     private static string FormatBytes(long bytes)

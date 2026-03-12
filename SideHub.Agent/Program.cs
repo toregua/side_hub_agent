@@ -43,9 +43,10 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
     return command switch
     {
         "start" => await HandleStart(args, baseDirectory, ct),
-        "stop" => Commands.Stop(baseDirectory),
+        "stop" => HandleStop(args, baseDirectory),
+        "restart" => await HandleRestart(args, baseDirectory, ct),
         "logs" => await HandleLogs(args, baseDirectory),
-        "status" => Commands.Status(baseDirectory),
+        "status" => HandleStatus(args, baseDirectory),
         "help" or "--help" or "-h" => ShowHelp(),
         "--foreground-daemon" => await HandleForegroundDaemon(args, baseDirectory, ct),
         _ => await HandleStart(args, baseDirectory, ct) // Default: treat unknown as start with possible flags
@@ -69,7 +70,39 @@ static async Task<int> HandleForegroundDaemon(string[] args, string baseDirector
 static async Task<int> HandleStart(string[] args, string baseDirectory, CancellationToken ct)
 {
     var daemon = args.Contains("-d") || args.Contains("--daemon");
+    var all = args.Contains("--all");
+
+    if (all)
+        return await Commands.StartAll(daemon, ct);
+
     return await Commands.Start(baseDirectory, daemon, ct);
+}
+
+static int HandleStop(string[] args, string baseDirectory)
+{
+    if (args.Contains("--all"))
+        return Commands.StopAll();
+
+    return Commands.Stop(baseDirectory);
+}
+
+static async Task<int> HandleRestart(string[] args, string baseDirectory, CancellationToken ct)
+{
+    var daemon = args.Contains("-d") || args.Contains("--daemon");
+    var all = args.Contains("--all");
+
+    if (all)
+        return await Commands.RestartAll(daemon, ct);
+
+    return Commands.Restart(baseDirectory, daemon, ct);
+}
+
+static int HandleStatus(string[] args, string baseDirectory)
+{
+    if (args.Contains("--all"))
+        return Commands.StatusAll();
+
+    return Commands.Status(baseDirectory);
 }
 
 static async Task<int> HandleLogs(string[] args, string baseDirectory)
