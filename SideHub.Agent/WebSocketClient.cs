@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -16,10 +17,10 @@ public class WebSocketClient : IAsyncDisposable
     private Timer? _heartbeatTimer;
     private string? _currentPtyShell;
     private NodePtyExecutor? _ptyExecutor;
-    private readonly Dictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
-    private readonly Dictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
-    private readonly Dictionary<string, CodexBridge> _codexBridges = new();
-    private readonly Dictionary<string, GeminiBridge> _geminiBridges = new();
+    private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
+    private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
+    private readonly ConcurrentDictionary<string, CodexBridge> _codexBridges = new();
+    private readonly ConcurrentDictionary<string, GeminiBridge> _geminiBridges = new();
     private AgentSdkProxy? _proxy;
 
     private const int MinReconnectDelayMs = 1000;
@@ -391,7 +392,7 @@ public class WebSocketClient : IAsyncDisposable
             Log("file.write.end received for unknown commandId");
             return;
         }
-        _pendingFileWrites.Remove(message.CommandId);
+        _pendingFileWrites.TryRemove(message.CommandId, out _);
 
         try
         {
@@ -595,7 +596,7 @@ public class WebSocketClient : IAsyncDisposable
                     }
                 }
                 catch { }
-                _claudeSdkProcesses.Remove(sessionId);
+                _claudeSdkProcesses.TryRemove(sessionId, out _);
             }
         });
         await _proxy.StartAsync();
@@ -795,7 +796,7 @@ public class WebSocketClient : IAsyncDisposable
                     var exitCode = process.ExitCode;
                     var elapsed = DateTime.UtcNow - spawnedAt;
                     Log($"Claude CLI for session {sessionId} exited with code {exitCode} after {elapsed.TotalSeconds:F1}s");
-                    _claudeSdkProcesses.Remove(sessionId);
+                    _claudeSdkProcesses.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
 
                     await Task.WhenAll(stdoutTask, stderrTask);
@@ -821,13 +822,13 @@ public class WebSocketClient : IAsyncDisposable
                 catch (OperationCanceledException)
                 {
                     try { process.Kill(); } catch { }
-                    _claudeSdkProcesses.Remove(sessionId);
+                    _claudeSdkProcesses.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
                 catch (Exception ex)
                 {
                     Log($"Error monitoring Claude CLI process: {ex.Message}");
-                    _claudeSdkProcesses.Remove(sessionId);
+                    _claudeSdkProcesses.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
             }, ct);
@@ -905,7 +906,7 @@ public class WebSocketClient : IAsyncDisposable
                     var exitCode = bridge.ExitCode;
                     Log($"Codex CLI for session {sessionId} exited with code {exitCode}");
 
-                    _codexBridges.Remove(sessionId);
+                    _codexBridges.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
 
                     await SendAsync(new AgentSdkExitedMessage
@@ -917,13 +918,13 @@ public class WebSocketClient : IAsyncDisposable
                 catch (OperationCanceledException)
                 {
                     await bridge.DisposeAsync();
-                    _codexBridges.Remove(sessionId);
+                    _codexBridges.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
                 catch (Exception ex)
                 {
                     Log($"Error monitoring Codex process: {ex.Message}");
-                    _codexBridges.Remove(sessionId);
+                    _codexBridges.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
             }, ct);
@@ -990,7 +991,7 @@ public class WebSocketClient : IAsyncDisposable
                     await bridge.WaitForExitAsync(ct);
                     Log($"Gemini bridge for session {sessionId} stopped");
 
-                    _geminiBridges.Remove(sessionId);
+                    _geminiBridges.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
 
                     await SendAsync(new AgentSdkExitedMessage
@@ -1002,13 +1003,13 @@ public class WebSocketClient : IAsyncDisposable
                 catch (OperationCanceledException)
                 {
                     await bridge.DisposeAsync();
-                    _geminiBridges.Remove(sessionId);
+                    _geminiBridges.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
                 catch (Exception ex)
                 {
                     Log($"Error monitoring Gemini bridge: {ex.Message}");
-                    _geminiBridges.Remove(sessionId);
+                    _geminiBridges.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
             }, ct);
@@ -1050,7 +1051,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 Log($"Error killing Claude CLI for session {sessionId}: {ex.Message}");
             }
-            _claudeSdkProcesses.Remove(sessionId);
+            _claudeSdkProcesses.TryRemove(sessionId, out _);
         }
 
         if (_codexBridges.TryGetValue(sessionId, out var bridge))
@@ -1064,7 +1065,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 Log($"Error stopping Codex bridge for session {sessionId}: {ex.Message}");
             }
-            _codexBridges.Remove(sessionId);
+            _codexBridges.TryRemove(sessionId, out _);
         }
 
         if (_geminiBridges.TryGetValue(sessionId, out var geminiBridge))
@@ -1078,7 +1079,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 Log($"Error stopping Gemini bridge for session {sessionId}: {ex.Message}");
             }
-            _geminiBridges.Remove(sessionId);
+            _geminiBridges.TryRemove(sessionId, out _);
         }
 
         _proxy?.RemoveSession(sessionId);
