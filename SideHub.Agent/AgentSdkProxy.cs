@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace SideHub.Agent;
@@ -29,6 +30,11 @@ public class AgentSdkProxy : IAsyncDisposable
     public AgentSdkProxy(Action<string> log)
     {
         _log = log;
+    }
+
+    private static string GenerateConnectionToken()
+    {
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
     }
 
     /// <summary>
@@ -68,16 +74,23 @@ public class AgentSdkProxy : IAsyncDisposable
         _log($"[Proxy] Local WebSocket server started on port {_port}");
     }
 
-    public string GetLocalUrl(string sessionId) => $"ws://127.0.0.1:{_port}/ws/agent/{sessionId}";
+    public string GetLocalUrl(string sessionId)
+    {
+        if (_sessions.TryGetValue(sessionId, out var session))
+            return $"ws://127.0.0.1:{_port}/ws/agent/{sessionId}?connectionToken={session.ConnectionToken}";
+        return $"ws://127.0.0.1:{_port}/ws/agent/{sessionId}";
+    }
 
     public void RegisterSession(string sessionId, string backendUrl, string token, string permissionMode)
     {
+        var connectionToken = GenerateConnectionToken();
         var session = new ProxySession
         {
             SessionId = sessionId,
             BackendUrl = backendUrl,
             Token = token,
-            PermissionMode = permissionMode
+            PermissionMode = permissionMode,
+            ConnectionToken = connectionToken
         };
         _sessions[sessionId] = session;
         _log($"[Proxy] Session {sessionId} registered (mode={permissionMode})");
@@ -107,12 +120,14 @@ public class AgentSdkProxy : IAsyncDisposable
         string permissionMode,
         Func<string, CancellationToken, Task> onBackendMessage)
     {
+        var connectionToken = GenerateConnectionToken();
         var session = new ProxySession
         {
             SessionId = sessionId,
             BackendUrl = backendUrl,
             Token = token,
             PermissionMode = permissionMode,
+            ConnectionToken = connectionToken,
             CliConnected = true,           // Virtual CLI is always "connected"
             IsVirtual = true,
             VirtualOnBackendMessage = onBackendMessage
@@ -183,6 +198,18 @@ public class AgentSdkProxy : IAsyncDisposable
                 {
                     _log($"[Proxy] CLI connected for unknown session {sessionId}");
                     context.Response.StatusCode = 404;
+                    context.Response.Close();
+                    continue;
+                }
+
+                // Verify connection token to prevent unauthorized local connections
+                var queryToken = context.Request.QueryString["connectionToken"];
+                if (!CryptographicOperations.FixedTimeEquals(
+                        Encoding.UTF8.GetBytes(queryToken ?? ""),
+                        Encoding.UTF8.GetBytes(session.ConnectionToken)))
+                {
+                    _log($"[Proxy] Rejected CLI connection for session {sessionId}: invalid connectionToken");
+                    context.Response.StatusCode = 403;
                     context.Response.Close();
                     continue;
                 }
@@ -581,6 +608,7 @@ public class AgentSdkProxy : IAsyncDisposable
         public required string BackendUrl { get; set; }
         public required string Token { get; init; }
         public required string PermissionMode { get; init; }
+        public required string ConnectionToken { get; init; }
 
         public WebSocket? CliSocket { get; set; }
         public ClientWebSocket? BackendSocket { get; set; }
