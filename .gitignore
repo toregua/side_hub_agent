@@ -36,6 +36,7 @@ coverage/
 
 # Local configuration (contains secrets)
 agent.json
+.sidehub/
 .env
 
 # OS files
