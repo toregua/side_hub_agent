@@ -239,7 +239,7 @@ public class WebSocketClient : IAsyncDisposable
                     await HandlePtyHistoryRequestAsync(message, ct);
                     break;
                 case "file.write.start":
-                    HandleFileWriteStart(message);
+                    await HandleFileWriteStartAsync(message, ct);
                     break;
                 case "file.write.chunk":
                     HandleFileWriteChunk(message);
@@ -329,13 +329,36 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    private void HandleFileWriteStart(IncomingMessage message)
+    private bool IsPathWithinWorkingDirectory(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var allowedDir = Path.GetFullPath(_workingDirectory);
+        if (!allowedDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
+            allowedDir += Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(allowedDir, StringComparison.Ordinal)
+            || fullPath == allowedDir.TrimEnd(Path.DirectorySeparatorChar);
+    }
+
+    private async Task HandleFileWriteStartAsync(IncomingMessage message, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Path))
         {
             Log("Invalid file.write.start message");
             return;
         }
+
+        if (!IsPathWithinWorkingDirectory(message.Path))
+        {
+            Log($"SECURITY: file write rejected — path '{message.Path}' is outside working directory '{_workingDirectory}'");
+            await SendAsync(new CommandFailedMessage
+            {
+                CommandId = message.CommandId,
+                ExitCode = -1,
+                Error = $"Path '{message.Path}' is outside the allowed working directory"
+            }, ct);
+            return;
+        }
+
         _pendingFileWrites[message.CommandId] = (message.Path, new StringBuilder(), message.PtyPaste);
         Log($"File write started: {message.Path}");
     }
