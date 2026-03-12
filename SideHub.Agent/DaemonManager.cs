@@ -85,7 +85,7 @@ public class DaemonManager
         try
         {
             var process = Process.GetProcessById(pid.Value);
-            if (!process.HasExited)
+            if (!process.HasExited && process.ProcessName.Contains("sidehub-agent", StringComparison.OrdinalIgnoreCase))
                 return process;
         }
         catch (ArgumentException) { }
