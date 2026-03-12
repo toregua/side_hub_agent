@@ -28,6 +28,7 @@ public class WebSocketClient : IAsyncDisposable
     private const int HeartbeatIntervalMs = 15000;
     private const int MaxMissedHeartbeatAcks = 3;
     private const int StableConnectionThresholdMs = 60000; // 60s before resetting backoff
+    private const int MaxWebSocketMessageSize = 50 * 1024 * 1024; // 50 MB
 
     private int _missedHeartbeatAcks;
     private DateTime _connectedAt;
@@ -200,6 +201,15 @@ public class WebSocketClient : IAsyncDisposable
             if (result.MessageType == WebSocketMessageType.Text)
             {
                 messageBuffer.AddRange(buffer.Take(result.Count));
+
+                if (messageBuffer.Count > MaxWebSocketMessageSize)
+                {
+                    Log($"Message exceeded {MaxWebSocketMessageSize / (1024 * 1024)}MB limit, closing connection");
+                    messageBuffer.Clear();
+                    if (_ws?.State == WebSocketState.Open)
+                        await _ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ct);
+                    break;
+                }
 
                 if (result.EndOfMessage)
                 {

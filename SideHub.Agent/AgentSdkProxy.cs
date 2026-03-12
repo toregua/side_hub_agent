@@ -24,6 +24,7 @@ public class AgentSdkProxy : IAsyncDisposable
     private const int CliKeepAliveIntervalMs = 10000;
     private const int InactivityTimeoutMs = 300_000; // 5 minutes
     private const int InactivityCheckIntervalMs = 60_000; // Check every minute
+    private const int MaxWebSocketMessageSize = 50 * 1024 * 1024; // 50 MB
 
     private Action<string>? _onSessionTimeout;
 
@@ -271,6 +272,15 @@ public class AgentSdkProxy : IAsyncDisposable
                 {
                     messageBuffer.AddRange(buffer.Take(result.Count));
 
+                    if (messageBuffer.Count > MaxWebSocketMessageSize)
+                    {
+                        _log($"[Proxy] CLI message exceeded {MaxWebSocketMessageSize / (1024 * 1024)}MB limit for session {session.SessionId}, closing");
+                        messageBuffer.Clear();
+                        if (session.CliSocket?.State == WebSocketState.Open)
+                            await session.CliSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ct);
+                        break;
+                    }
+
                     if (result.EndOfMessage)
                     {
                         var rawMessage = Encoding.UTF8.GetString(messageBuffer.ToArray());
@@ -464,6 +474,15 @@ public class AgentSdkProxy : IAsyncDisposable
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
                     messageBuffer.AddRange(buffer.Take(result.Count));
+
+                    if (messageBuffer.Count > MaxWebSocketMessageSize)
+                    {
+                        _log($"[Proxy] Backend message exceeded {MaxWebSocketMessageSize / (1024 * 1024)}MB limit for session {session.SessionId}, closing");
+                        messageBuffer.Clear();
+                        if (session.BackendSocket?.State == WebSocketState.Open)
+                            await session.BackendSocket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ct);
+                        break;
+                    }
 
                     if (result.EndOfMessage)
                     {
