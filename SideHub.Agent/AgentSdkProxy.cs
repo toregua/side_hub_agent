@@ -383,6 +383,8 @@ public class AgentSdkProxy : IAsyncDisposable
     private async Task ConnectToBackendAsync(ProxySession session, CancellationToken ct)
     {
         var attempt = 0;
+        var consecutive409Count = 0;
+        const int max409Retries = 5;
 
         while (session.CliConnected && !ct.IsCancellationRequested)
         {
@@ -413,6 +415,7 @@ public class AgentSdkProxy : IAsyncDisposable
                 session.BackendSocket = ws;
                 session.BackendConnected = true;
                 attempt = 0;
+                consecutive409Count = 0; // Reset on successful connection
                 _log($"[Proxy] Backend connected for session {session.SessionId}");
 
                 // Replay system/init if we have it cached (reconnection scenario)
@@ -441,6 +444,20 @@ public class AgentSdkProxy : IAsyncDisposable
                 RemoveSession(session.SessionId);
                 _onSessionTimeout?.Invoke(session.SessionId);
                 return;
+            }
+            catch (WebSocketException ex) when (ex.Message.Contains("409"))
+            {
+                consecutive409Count++;
+                _log($"[Proxy] Backend returned 409 for session {session.SessionId} ({consecutive409Count}/{max409Retries})");
+                session.BackendConnected = false;
+
+                if (consecutive409Count >= max409Retries)
+                {
+                    _log($"[Proxy] Session {session.SessionId} got {max409Retries} consecutive 409s — abandoning session");
+                    RemoveSession(session.SessionId);
+                    _onSessionTimeout?.Invoke(session.SessionId);
+                    return;
+                }
             }
             catch (Exception ex)
             {
