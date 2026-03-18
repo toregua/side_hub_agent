@@ -688,6 +688,21 @@ public class WebSocketClient : IAsyncDisposable
         var resumeCliSessionId = message.ResumeCliSessionId;
         Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {MaskUrl(sdkUrl)}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
 
+        // Kill any existing process for this session before spawning a new one
+        // to prevent zombie accumulation when backend retries or reconnects
+        if (_claudeSdkProcesses.TryRemove(sessionId, out var existingProcess))
+        {
+            try
+            {
+                if (!existingProcess.HasExited)
+                {
+                    existingProcess.Kill();
+                    Log($"Killed previous Claude CLI process for session {sessionId} before re-spawn");
+                }
+            }
+            catch { }
+        }
+
         try
         {
             var model = message.Model ?? "claude-sonnet-4-20250514";
@@ -868,6 +883,11 @@ public class WebSocketClient : IAsyncDisposable
         catch (Exception ex)
         {
             Log($"Failed to spawn Claude CLI for session {sessionId}: {ex.Message}");
+            // Kill the process if it was started but something failed after
+            if (_claudeSdkProcesses.TryRemove(sessionId, out var leakedProcess))
+            {
+                try { if (!leakedProcess.HasExited) leakedProcess.Kill(); } catch { }
+            }
             _proxy?.RemoveSession(sessionId);
             await SendAsync(new AgentSdkSpawnFailedMessage
             {
@@ -880,6 +900,17 @@ public class WebSocketClient : IAsyncDisposable
     private async Task HandleCodexSpawnAsync(IncomingMessage message, string sessionId, string sdkUrl, CancellationToken ct)
     {
         Log($"Spawning Codex CLI for session {sessionId}");
+
+        // Kill any existing Codex bridge for this session before spawning a new one
+        if (_codexBridges.TryRemove(sessionId, out var existingBridge))
+        {
+            try
+            {
+                await existingBridge.DisposeAsync();
+                Log($"Disposed previous Codex bridge for session {sessionId} before re-spawn");
+            }
+            catch { }
+        }
 
         try
         {
@@ -964,6 +995,10 @@ public class WebSocketClient : IAsyncDisposable
         catch (Exception ex)
         {
             Log($"Failed to spawn Codex CLI for session {sessionId}: {ex.Message}");
+            if (_codexBridges.TryRemove(sessionId, out var leakedBridge))
+            {
+                try { await leakedBridge.DisposeAsync(); } catch { }
+            }
             _proxy?.RemoveSession(sessionId);
             await SendAsync(new AgentSdkSpawnFailedMessage
             {
@@ -977,6 +1012,17 @@ public class WebSocketClient : IAsyncDisposable
     {
         var resumeCliSessionId = message.ResumeCliSessionId;
         Log($"Spawning Gemini CLI for session {sessionId}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
+
+        // Kill any existing Gemini bridge for this session before spawning a new one
+        if (_geminiBridges.TryRemove(sessionId, out var existingGeminiBridge))
+        {
+            try
+            {
+                await existingGeminiBridge.DisposeAsync();
+                Log($"Disposed previous Gemini bridge for session {sessionId} before re-spawn");
+            }
+            catch { }
+        }
 
         try
         {
@@ -1049,6 +1095,10 @@ public class WebSocketClient : IAsyncDisposable
         catch (Exception ex)
         {
             Log($"Failed to spawn Gemini CLI for session {sessionId}: {ex.Message}");
+            if (_geminiBridges.TryRemove(sessionId, out var leakedGeminiBridge))
+            {
+                try { await leakedGeminiBridge.DisposeAsync(); } catch { }
+            }
             _proxy?.RemoveSession(sessionId);
             await SendAsync(new AgentSdkSpawnFailedMessage
             {
