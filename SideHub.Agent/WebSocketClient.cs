@@ -15,10 +15,13 @@ public class WebSocketClient : IAsyncDisposable
     private readonly string _displayName;
     private ClientWebSocket? _ws;
     private Timer? _heartbeatTimer;
+    private Timer? _ptyReaperTimer;
     private string? _currentPtyShell;
     private NodePtyExecutor? _ptyExecutor;
     // Multi-PTY: keyed by ptySessionId
     private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
+    private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
+    private const int PtyIdleTimeoutMinutes = 30;
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
     private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
     private readonly ConcurrentDictionary<string, CodexBridge> _codexBridges = new();
@@ -153,6 +156,7 @@ public class WebSocketClient : IAsyncDisposable
                 await SendConnectedMessageAsync(ct);
                 await ReportAliveSessionsAsync(ct);
                 StartHeartbeat(ct);
+                StartPtyReaper();
 
                 Log("Waiting for commands...");
                 await ReceiveLoopAsync(ct);
@@ -166,6 +170,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 Log($"Error: {ex.Message}");
                 StopHeartbeat();
+                StopPtyReaper();
 
                 // Only reset backoff if connection was stable for at least 60 seconds
                 var connectionDuration = (DateTime.UtcNow - _connectedAt).TotalMilliseconds;
@@ -190,6 +195,7 @@ public class WebSocketClient : IAsyncDisposable
             finally
             {
                 StopHeartbeat();
+                StopPtyReaper();
                 if (_ws != null)
                 {
                     if (_ws.State == WebSocketState.Open)
@@ -265,6 +271,37 @@ public class WebSocketClient : IAsyncDisposable
     {
         _heartbeatTimer?.Dispose();
         _heartbeatTimer = null;
+    }
+
+    private void StartPtyReaper()
+    {
+        _ptyReaperTimer = new Timer(
+            async _ =>
+            {
+                var now = DateTime.UtcNow;
+                foreach (var (sid, lastActivity) in _ptyLastActivity)
+                {
+                    if ((now - lastActivity).TotalMinutes > PtyIdleTimeoutMinutes)
+                    {
+                        if (_ptySessions.TryRemove(sid, out var session))
+                        {
+                            _ptyLastActivity.TryRemove(sid, out DateTime _);
+                            Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
+                            try { await session.Executor.DisposeAsync(); } catch { }
+                        }
+                    }
+                }
+            },
+            null,
+            TimeSpan.FromMinutes(5),
+            TimeSpan.FromMinutes(5)
+        );
+    }
+
+    private void StopPtyReaper()
+    {
+        _ptyReaperTimer?.Dispose();
+        _ptyReaperTimer = null;
     }
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
@@ -567,12 +604,14 @@ public class WebSocketClient : IAsyncDisposable
                     {
                         Log($"PTY {ptySessionId} exited with code {exitCode}");
                         _ptySessions.TryRemove(ptySessionId, out _);
+                        _ptyLastActivity.TryRemove(ptySessionId, out _);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
                     },
                     columns, rows, ct
                 );
 
                 _ptySessions[ptySessionId] = (executor, shell);
+                _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
                 Log($"PTY session {ptySessionId} started");
             }
@@ -642,6 +681,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             if (_ptySessions.TryGetValue(ptySessionId, out var session) && session.Executor.IsRunning && !string.IsNullOrEmpty(message.Input))
             {
+                _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { await session.Executor.WriteAsync(message.Input, ct); }
                 catch (Exception ex) { Log($"Failed to write to PTY {ptySessionId}: {ex.Message}"); }
             }
@@ -692,6 +732,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             if (_ptySessions.TryRemove(ptySessionId, out var session))
             {
+                _ptyLastActivity.TryRemove(ptySessionId, out _);
                 Log($"Stopping PTY session {ptySessionId}");
                 try { await session.Executor.DisposeAsync(); }
                 catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
@@ -1389,6 +1430,7 @@ public class WebSocketClient : IAsyncDisposable
             try { await session.Executor.DisposeAsync(); } catch { }
         }
         _ptySessions.Clear();
+        _ptyLastActivity.Clear();
 
         if (_ptyExecutor != null)
         {
