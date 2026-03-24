@@ -7,6 +7,7 @@ set -e
 SIDEHUB_API="${SIDEHUB_API:-https://www.sidehub.io/api}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/sidehub-agent}"
 BIN_LINK="/usr/local/bin/sidehub-agent"
+CLI_BIN_LINK="/usr/local/bin/sidehub-cli"
 
 # Check Node.js
 check_nodejs() {
@@ -76,12 +77,20 @@ install() {
         cp -r "$tmp_dir/"* "$INSTALL_DIR/"
         rm -f "$BIN_LINK"
         ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
+        if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
+            rm -f "$CLI_BIN_LINK"
+            ln -s "$INSTALL_DIR/sidehub-cli" "$CLI_BIN_LINK"
+        fi
     else
         sudo rm -rf "$INSTALL_DIR"
         sudo mkdir -p "$INSTALL_DIR"
         sudo cp -r "$tmp_dir/"* "$INSTALL_DIR/"
         sudo rm -f "$BIN_LINK"
         sudo ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
+        if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
+            sudo rm -f "$CLI_BIN_LINK"
+            sudo ln -s "$INSTALL_DIR/sidehub-cli" "$CLI_BIN_LINK"
+        fi
     fi
 
     rm -rf "$tmp_dir"

@@ -81,6 +81,9 @@ public class GeminiBridge : IAsyncDisposable
     public bool IsRunning => !_disposed;
     public int ExitCode => _process?.ExitCode ?? 0;
 
+    /// <summary>Extra environment variables to inject into the spawned process (e.g. SIDEHUB_*).</summary>
+    public Dictionary<string, string>? ExtraEnvironment { get; set; }
+
     /// <summary>
     /// Initialize the bridge (no process spawned yet — that happens on first user message).
     /// Sends system/init to backend so the frontend transitions from "connecting" to "ready".
@@ -291,6 +294,13 @@ public class GeminiBridge : IAsyncDisposable
         startInfo.ArgumentList.Add(_model);
         startInfo.ArgumentList.Add("--approval-mode");
         startInfo.ArgumentList.Add(approvalMode);
+
+        // Inject Side Hub CLI env vars
+        if (ExtraEnvironment is not null)
+        {
+            foreach (var (key, value) in ExtraEnvironment)
+                startInfo.Environment[key] = value;
+        }
 
         _log($"[GeminiBridge] Spawning gemini (turn={(_isFirstTurn ? "first" : "resume")}, approval={approvalMode}, prompt length={prompt.Length})");
 

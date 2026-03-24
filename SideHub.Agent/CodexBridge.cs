@@ -81,6 +81,9 @@ public class CodexBridge : IAsyncDisposable
     public int? Pid => _process?.Id;
     public bool IsRunning => _process is not null && !_process.HasExited;
 
+    /// <summary>Extra environment variables to inject into the spawned process (e.g. SIDEHUB_*).</summary>
+    public Dictionary<string, string>? ExtraEnvironment { get; set; }
+
     /// <summary>
     /// Start the Codex app-server process and begin translating messages.
     /// </summary>
@@ -113,6 +116,13 @@ public class CodexBridge : IAsyncDisposable
 
         // Pass environment
         startInfo.Environment["CODEX_QUIET"] = "1";
+
+        // Inject Side Hub CLI env vars
+        if (ExtraEnvironment is not null)
+        {
+            foreach (var (key, value) in ExtraEnvironment)
+                startInfo.Environment[key] = value;
+        }
 
         _log($"[CodexBridge] Starting: codex app-server (sandbox={sandbox}, approval={approval}, model={_model}, cwd={_workingDirectory})");
 

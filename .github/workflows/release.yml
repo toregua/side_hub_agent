@@ -43,9 +43,13 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Publish
+      - name: Publish Agent
         run: |
           dotnet publish SideHub.Agent -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
+
+      - name: Publish CLI
+        run: |
+          dotnet publish SideHub.Cli -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish-cli
 
       - name: Create tar.gz archive (Unix)
         if: runner.os != 'Windows'
@@ -54,6 +58,7 @@ jobs:
           mv sidehub-agent sidehub-agent-binary
           mkdir -p package
           mv sidehub-agent-binary package/sidehub-agent
+          cp ../publish-cli/sidehub-cli package/sidehub-cli
           cp -r pty-helper package/
           cd package
           tar -czvf ../${{ matrix.artifact }}.tar.gz *
@@ -64,6 +69,7 @@ jobs:
           cd publish
           mkdir package
           move sidehub-agent.exe package\sidehub-agent.exe
+          copy ..\publish-cli\sidehub-cli.exe package\sidehub-cli.exe
           xcopy pty-helper package\pty-helper\ /E /I
           cd package
           Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip

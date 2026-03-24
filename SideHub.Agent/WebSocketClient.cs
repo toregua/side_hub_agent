@@ -74,6 +74,55 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Derive HTTP API URL from WebSocket URL (wss://host/ws/agent → https://host).</summary>
+    private static string DeriveApiUrl(string wsUrl)
+    {
+        var uri = new Uri(wsUrl);
+        var scheme = uri.Scheme == "wss" ? "https" : "http";
+        return $"{scheme}://{uri.Host}{(uri.IsDefaultPort ? "" : $":{uri.Port}")}";
+    }
+
+    /// <summary>Inject Side Hub CLI environment variables into a ProcessStartInfo.</summary>
+    private void InjectSideHubEnvVars(System.Diagnostics.ProcessStartInfo startInfo, string? taskId = null, string? taskTitle = null)
+    {
+        startInfo.Environment["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!);
+        startInfo.Environment["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken;
+        startInfo.Environment["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId;
+        if (!string.IsNullOrEmpty(taskId))
+            startInfo.Environment["SIDEHUB_TASK_ID"] = taskId;
+        if (!string.IsNullOrEmpty(taskTitle))
+            startInfo.Environment["SIDEHUB_TASK_TITLE"] = taskTitle;
+
+        // Ensure sidehub-cli is in PATH
+        var currentPath = startInfo.Environment.ContainsKey("PATH")
+            ? startInfo.Environment["PATH"]
+            : Environment.GetEnvironmentVariable("PATH") ?? "";
+        if (!currentPath!.Contains("/usr/local/lib/sidehub-agent"))
+            startInfo.Environment["PATH"] = $"/usr/local/lib/sidehub-agent:{currentPath}";
+    }
+
+    /// <summary>Build a dictionary of Side Hub CLI env vars (for bridges that manage their own ProcessStartInfo).</summary>
+    private Dictionary<string, string> BuildSideHubEnvVars(string? taskId = null, string? taskTitle = null)
+    {
+        var vars = new Dictionary<string, string>
+        {
+            ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
+            ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
+            ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!
+        };
+        if (!string.IsNullOrEmpty(taskId))
+            vars["SIDEHUB_TASK_ID"] = taskId;
+        if (!string.IsNullOrEmpty(taskTitle))
+            vars["SIDEHUB_TASK_TITLE"] = taskTitle;
+
+        // Ensure sidehub-cli is in PATH
+        var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+        if (!currentPath.Contains("/usr/local/lib/sidehub-agent"))
+            vars["PATH"] = $"/usr/local/lib/sidehub-agent:{currentPath}";
+
+        return vars;
+    }
+
     /// <summary>Truncate a shell command for safe logging (first 80 chars).</summary>
     private static string TruncateCommand(string command)
     {
@@ -775,6 +824,10 @@ public class WebSocketClient : IAsyncDisposable
             // "cannot be launched inside another Claude Code session" error.
             startInfo.Environment.Remove("CLAUDECODE");
 
+            // Install skill files and inject Side Hub CLI env vars
+            SkillInstaller.EnsureSkillFiles(cwd, "claude");
+            InjectSideHubEnvVars(startInfo, message.TaskId, message.TaskTitle);
+
             var spawnedAt = DateTime.UtcNow;
             var process = System.Diagnostics.Process.Start(startInfo);
 
@@ -928,7 +981,12 @@ public class WebSocketClient : IAsyncDisposable
                 token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
             }
 
-            var bridge = new CodexBridge(sessionId, model, cwd, rawPermissionMode, Log);
+            // Install skill files and prepare Side Hub CLI env vars
+            SkillInstaller.EnsureSkillFiles(cwd, "codex");
+            var bridge = new CodexBridge(sessionId, model, cwd, rawPermissionMode, Log)
+            {
+                ExtraEnvironment = BuildSideHubEnvVars(message.TaskId, message.TaskTitle)
+            };
 
             // Register virtual session so bridge can send messages to backend via proxy
             _proxy!.RegisterVirtualSession(
@@ -1040,7 +1098,12 @@ public class WebSocketClient : IAsyncDisposable
                 token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
             }
 
-            var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log, resumeCliSessionId);
+            // Install skill files and prepare Side Hub CLI env vars
+            SkillInstaller.EnsureSkillFiles(cwd, "gemini");
+            var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log, resumeCliSessionId)
+            {
+                ExtraEnvironment = BuildSideHubEnvVars(message.TaskId, message.TaskTitle)
+            };
 
             // Register virtual session so bridge can send messages to backend via proxy
             _proxy!.RegisterVirtualSession(

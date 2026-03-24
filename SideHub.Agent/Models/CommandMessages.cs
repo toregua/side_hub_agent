@@ -131,6 +131,12 @@ public class IncomingMessage
 
     [JsonPropertyName("sdkToken")]
     public string? SdkToken { get; init; }
+
+    [JsonPropertyName("taskId")]
+    public string? TaskId { get; init; }
+
+    [JsonPropertyName("taskTitle")]
+    public string? TaskTitle { get; init; }
 }
 
 public class PtyOutputMessage
