@@ -17,6 +17,8 @@ public class WebSocketClient : IAsyncDisposable
     private Timer? _heartbeatTimer;
     private string? _currentPtyShell;
     private NodePtyExecutor? _ptyExecutor;
+    // Multi-PTY: keyed by ptySessionId
+    private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
     private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
     private readonly ConcurrentDictionary<string, CodexBridge> _codexBridges = new();
@@ -325,7 +327,7 @@ public class WebSocketClient : IAsyncDisposable
                     HandlePtyResize(message);
                     break;
                 case "pty.stop":
-                    await HandlePtyStopAsync();
+                    await HandlePtyStopAsync(message);
                     break;
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
@@ -529,6 +531,59 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
+        var ptySessionId = message.PtySessionId;
+
+        // Multi-session mode (ptySessionId provided)
+        if (!string.IsNullOrEmpty(ptySessionId))
+        {
+            if (_ptySessions.TryGetValue(ptySessionId, out var existing) && existing.Executor.IsRunning)
+            {
+                var isHealthy = await existing.Executor.IsHealthyAsync();
+                if (isHealthy)
+                {
+                    Log($"PTY session {ptySessionId} already running, sending started event for reconnection");
+                    await SendAsync(new PtyStartedMessage { Shell = existing.Shell, PtySessionId = ptySessionId }, ct);
+                    return;
+                }
+                Log($"PTY session {ptySessionId} unhealthy, recreating");
+                await existing.Executor.DisposeAsync();
+                _ptySessions.TryRemove(ptySessionId, out _);
+            }
+
+            var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
+            var columns = message.Columns ?? 120;
+            var rows = message.Rows ?? 30;
+            var cwd = message.WorkingDirectory ?? _workingDirectory;
+
+            Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
+
+            try
+            {
+                var executor = new NodePtyExecutor(cwd);
+                await executor.StartAsync(
+                    shell,
+                    async output => await SendAsync(new PtyOutputMessage { Data = output, PtySessionId = ptySessionId }, ct),
+                    async exitCode =>
+                    {
+                        Log($"PTY {ptySessionId} exited with code {exitCode}");
+                        _ptySessions.TryRemove(ptySessionId, out _);
+                        await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
+                    },
+                    columns, rows, ct
+                );
+
+                _ptySessions[ptySessionId] = (executor, shell);
+                await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
+                Log($"PTY session {ptySessionId} started");
+            }
+            catch (Exception ex)
+            {
+                Log($"Failed to start PTY {ptySessionId}: {ex.Message}");
+            }
+            return;
+        }
+
+        // Legacy mode (no ptySessionId) — single PTY per agent
         if (_ptyExecutor?.IsRunning == true)
         {
             var isHealthy = await _ptyExecutor.IsHealthyAsync();
@@ -545,46 +600,54 @@ public class WebSocketClient : IAsyncDisposable
             _currentPtyShell = null;
         }
 
-        var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
-        var columns = message.Columns ?? 120;
-        var rows = message.Rows ?? 30;
-        var effectiveWorkingDirectory = message.WorkingDirectory ?? _workingDirectory;
-
-        Log($"Starting PTY session with {shell} ({columns}x{rows}) in {effectiveWorkingDirectory}");
-
-        try
         {
-            // Create fresh NodePtyExecutor for each session (uses node-pty for correct terminal dimensions)
-            _ptyExecutor = new NodePtyExecutor(effectiveWorkingDirectory);
-            await _ptyExecutor.StartAsync(
-                shell,
-                async output =>
-                {
-                    await SendAsync(new PtyOutputMessage { Data = output }, ct);
-                },
-                async exitCode =>
-                {
-                    Log($"PTY exited with code {exitCode}");
-                    _currentPtyShell = null;
-                    await SendAsync(new PtyExitedMessage { ExitCode = exitCode }, ct);
-                },
-                columns,
-                rows,
-                ct
-            );
+            var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
+            var columns = message.Columns ?? 120;
+            var rows = message.Rows ?? 30;
+            var effectiveWorkingDirectory = message.WorkingDirectory ?? _workingDirectory;
 
-            _currentPtyShell = shell;
-            await SendAsync(new PtyStartedMessage { Shell = shell }, ct);
-            Log("PTY session started");
-        }
-        catch (Exception ex)
-        {
-            Log($"Failed to start PTY: {ex.Message}");
+            Log($"Starting PTY session with {shell} ({columns}x{rows}) in {effectiveWorkingDirectory}");
+
+            try
+            {
+                _ptyExecutor = new NodePtyExecutor(effectiveWorkingDirectory);
+                await _ptyExecutor.StartAsync(
+                    shell,
+                    async output => await SendAsync(new PtyOutputMessage { Data = output }, ct),
+                    async exitCode =>
+                    {
+                        Log($"PTY exited with code {exitCode}");
+                        _currentPtyShell = null;
+                        await SendAsync(new PtyExitedMessage { ExitCode = exitCode }, ct);
+                    },
+                    columns, rows, ct
+                );
+
+                _currentPtyShell = shell;
+                await SendAsync(new PtyStartedMessage { Shell = shell }, ct);
+                Log("PTY session started");
+            }
+            catch (Exception ex)
+            {
+                Log($"Failed to start PTY: {ex.Message}");
+            }
         }
     }
 
     private async Task HandlePtyInputAsync(IncomingMessage message, CancellationToken ct)
     {
+        var ptySessionId = message.PtySessionId;
+
+        if (!string.IsNullOrEmpty(ptySessionId))
+        {
+            if (_ptySessions.TryGetValue(ptySessionId, out var session) && session.Executor.IsRunning && !string.IsNullOrEmpty(message.Input))
+            {
+                try { await session.Executor.WriteAsync(message.Input, ct); }
+                catch (Exception ex) { Log($"Failed to write to PTY {ptySessionId}: {ex.Message}"); }
+            }
+            return;
+        }
+
         if (_ptyExecutor?.IsRunning != true || string.IsNullOrEmpty(message.Input))
             return;
 
@@ -600,18 +663,43 @@ public class WebSocketClient : IAsyncDisposable
 
     private void HandlePtyResize(IncomingMessage message)
     {
-        if (_ptyExecutor?.IsRunning != true)
-            return;
-
+        var ptySessionId = message.PtySessionId;
         var columns = message.Columns ?? 120;
         var rows = message.Rows ?? 30;
+
+        if (!string.IsNullOrEmpty(ptySessionId))
+        {
+            if (_ptySessions.TryGetValue(ptySessionId, out var session) && session.Executor.IsRunning)
+            {
+                Log($"Resizing PTY {ptySessionId} to {columns}x{rows}");
+                session.Executor.Resize(columns, rows);
+            }
+            return;
+        }
+
+        if (_ptyExecutor?.IsRunning != true)
+            return;
 
         Log($"Resizing PTY to {columns}x{rows}");
         _ptyExecutor.Resize(columns, rows);
     }
 
-    private async Task HandlePtyStopAsync()
+    private async Task HandlePtyStopAsync(IncomingMessage? message = null)
     {
+        var ptySessionId = message?.PtySessionId;
+
+        if (!string.IsNullOrEmpty(ptySessionId))
+        {
+            if (_ptySessions.TryRemove(ptySessionId, out var session))
+            {
+                Log($"Stopping PTY session {ptySessionId}");
+                try { await session.Executor.DisposeAsync(); }
+                catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
+                Log($"PTY session {ptySessionId} stopped");
+            }
+            return;
+        }
+
         if (_ptyExecutor?.IsRunning != true)
         {
             Log("PTY session not running, ignoring stop");
@@ -635,29 +723,35 @@ public class WebSocketClient : IAsyncDisposable
     private async Task HandlePtyHistoryRequestAsync(IncomingMessage message, CancellationToken ct)
     {
         var requestId = message.RequestId ?? Guid.NewGuid().ToString();
+        var ptySessionId = message.PtySessionId;
+
+        if (!string.IsNullOrEmpty(ptySessionId))
+        {
+            if (_ptySessions.TryGetValue(ptySessionId, out var session) && session.Executor.IsRunning)
+            {
+                var hist = session.Executor.GetBufferedOutput();
+                var size = session.Executor.BufferSize;
+                Log($"Sending PTY {ptySessionId} history ({size} bytes)");
+                await SendAsync(new PtyHistoryMessage { Data = hist, BufferSize = size, RequestId = requestId, PtySessionId = ptySessionId }, ct);
+            }
+            else
+            {
+                await SendAsync(new PtyHistoryMessage { Data = "", BufferSize = 0, RequestId = requestId, PtySessionId = ptySessionId }, ct);
+            }
+            return;
+        }
 
         if (_ptyExecutor?.IsRunning != true)
         {
             Log("PTY history requested but no session running");
-            await SendAsync(new PtyHistoryMessage
-            {
-                Data = "",
-                BufferSize = 0,
-                RequestId = requestId
-            }, ct);
+            await SendAsync(new PtyHistoryMessage { Data = "", BufferSize = 0, RequestId = requestId }, ct);
             return;
         }
 
         var history = _ptyExecutor.GetBufferedOutput();
         var bufferSize = _ptyExecutor.BufferSize;
         Log($"Sending PTY history ({bufferSize} bytes)");
-
-        await SendAsync(new PtyHistoryMessage
-        {
-            Data = history,
-            BufferSize = bufferSize,
-            RequestId = requestId
-        }, ct);
+        await SendAsync(new PtyHistoryMessage { Data = history, BufferSize = bufferSize, RequestId = requestId }, ct);
     }
 
     private async Task EnsureProxyStartedAsync()
@@ -1288,6 +1382,13 @@ public class WebSocketClient : IAsyncDisposable
             catch { }
         }
         _geminiBridges.Clear();
+
+        // Dispose multi-PTY sessions
+        foreach (var (sid, session) in _ptySessions)
+        {
+            try { await session.Executor.DisposeAsync(); } catch { }
+        }
+        _ptySessions.Clear();
 
         if (_ptyExecutor != null)
         {

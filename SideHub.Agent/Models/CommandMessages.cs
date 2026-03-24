@@ -137,6 +137,9 @@ public class IncomingMessage
 
     [JsonPropertyName("taskTitle")]
     public string? TaskTitle { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public string? PtySessionId { get; init; }
 }
 
 public class PtyOutputMessage
@@ -146,6 +149,9 @@ public class PtyOutputMessage
 
     [JsonPropertyName("data")]
     public required string Data { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public string? PtySessionId { get; init; }
 }
 
 public class PtyStartedMessage
@@ -155,6 +161,9 @@ public class PtyStartedMessage
 
     [JsonPropertyName("shell")]
     public required string Shell { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public string? PtySessionId { get; init; }
 }
 
 public class PtyExitedMessage
@@ -164,6 +173,9 @@ public class PtyExitedMessage
 
     [JsonPropertyName("exitCode")]
     public required int ExitCode { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public string? PtySessionId { get; init; }
 }
 
 public class PtyHistoryMessage
@@ -179,6 +191,9 @@ public class PtyHistoryMessage
 
     [JsonPropertyName("requestId")]
     public required string RequestId { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public string? PtySessionId { get; init; }
 }
 
 public class AgentSdkSpawnedMessage
