@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -21,6 +22,7 @@ public class WebSocketClient : IAsyncDisposable
     // Multi-PTY: keyed by ptySessionId
     private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
+    private readonly ConcurrentDictionary<string, string> _ptyClaudeProxySessions = new();
     private const int PtyIdleTimeoutMinutes = 30;
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
     private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
@@ -126,6 +128,121 @@ public class WebSocketClient : IAsyncDisposable
             vars["PATH"] = $"/usr/local/lib/sidehub-agent:{currentPath}";
 
         return vars;
+    }
+
+    private static string? FindExecutableInPath(string executableName)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        var pathExts = OperatingSystem.IsWindows()
+            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.BAT;.CMD").Split(';', StringSplitOptions.RemoveEmptyEntries)
+            : new[] { string.Empty };
+
+        foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            foreach (var ext in pathExts)
+            {
+                var candidate = Path.Combine(dir, executableName + ext);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private string EnsureClaudeShimDirectory()
+    {
+        var shimDir = Path.Combine(Path.GetTempPath(), "sidehub-agent", "shims");
+        Directory.CreateDirectory(shimDir);
+
+        if (OperatingSystem.IsWindows())
+        {
+            var batPath = Path.Combine(shimDir, "claude.cmd");
+            if (!File.Exists(batPath))
+            {
+                File.WriteAllText(batPath, """
+@echo off
+setlocal
+if not "%SIDEHUB_CLAUDE_SDK_URL%"=="" (
+  "%SIDEHUB_REAL_CLAUDE_PATH%" --sdk-url "%SIDEHUB_CLAUDE_SDK_URL%" %*
+) else (
+  "%SIDEHUB_REAL_CLAUDE_PATH%" %*
+)
+""");
+            }
+
+            return shimDir;
+        }
+
+        var shimPath = Path.Combine(shimDir, "claude");
+        if (!File.Exists(shimPath))
+        {
+            File.WriteAllText(shimPath, """
+#!/usr/bin/env bash
+set -euo pipefail
+
+real="${SIDEHUB_REAL_CLAUDE_PATH:-}"
+sdk_url="${SIDEHUB_CLAUDE_SDK_URL:-}"
+
+if [[ -z "${real}" ]]; then
+  echo "SideHub: real claude binary path is not configured" >&2
+  exit 127
+fi
+
+for arg in "$@"; do
+  if [[ "${arg}" == "--sdk-url" ]]; then
+    exec "${real}" "$@"
+  fi
+done
+
+if [[ -n "${sdk_url}" ]]; then
+  exec "${real}" --sdk-url "${sdk_url}" "$@"
+fi
+
+exec "${real}" "$@"
+""");
+            try
+            {
+                File.SetUnixFileMode(
+                    shimPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+            catch { }
+        }
+
+        return shimDir;
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>?> BuildTerminalClaudeEnvironmentAsync(string ptySessionId)
+    {
+        var realClaudePath = FindExecutableInPath("claude");
+        if (string.IsNullOrWhiteSpace(realClaudePath))
+        {
+            Log($"Claude binary not found in PATH for PTY {ptySessionId}, terminal shim disabled");
+            return null;
+        }
+
+        await EnsureProxyStartedAsync();
+
+        var proxySessionId = $"terminal-{ptySessionId}";
+        _proxy!.RegisterLocalTerminalSession(proxySessionId);
+        _ptyClaudeProxySessions[ptySessionId] = proxySessionId;
+
+        var shimDir = EnsureClaudeShimDirectory();
+        var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+
+        return new Dictionary<string, string>
+        {
+            ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
+            ["SIDEHUB_CLAUDE_SDK_URL"] = _proxy.GetLocalUrl(proxySessionId),
+            ["SIDEHUB_REAL_CLAUDE_PATH"] = realClaudePath,
+            ["PATH"] = string.IsNullOrEmpty(currentPath) ? shimDir : $"{shimDir}{Path.PathSeparator}{currentPath}"
+        };
     }
 
     /// <summary>Truncate a shell command for safe logging (first 80 chars).</summary>
@@ -286,6 +403,8 @@ public class WebSocketClient : IAsyncDisposable
                         if (_ptySessions.TryRemove(sid, out var session))
                         {
                             _ptyLastActivity.TryRemove(sid, out DateTime _);
+                            if (_ptyClaudeProxySessions.TryRemove(sid, out var proxySessionId))
+                                _proxy?.RemoveSession(proxySessionId);
                             Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
                             try { await session.Executor.DisposeAsync(); } catch { }
                         }
@@ -378,6 +497,9 @@ public class WebSocketClient : IAsyncDisposable
                 case "file.write.end":
                     await HandleFileWriteEndAsync(message, ct);
                     break;
+                case "terminal.attachment.enqueue":
+                    await HandleTerminalAttachmentAsync(message, ct);
+                    break;
                 case "agent-sdk.spawn":
                     await HandleAgentSdkSpawnAsync(message, ct);
                     break;
@@ -401,6 +523,78 @@ public class WebSocketClient : IAsyncDisposable
         catch (JsonException ex)
         {
             Log($"Invalid JSON received: {ex.Message}");
+        }
+    }
+
+    private async Task HandleTerminalAttachmentAsync(IncomingMessage message, CancellationToken ct)
+    {
+        var provider = message.Provider?.Trim().ToLowerInvariant();
+        if (!string.Equals(provider, "claude", StringComparison.Ordinal))
+        {
+            Log($"Ignoring unsupported terminal attachment provider '{message.Provider}'");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(message.PtySessionId) || message.Attachment is null)
+        {
+            Log("Invalid terminal.attachment.enqueue message");
+            return;
+        }
+
+        var mimeType = message.Attachment.MimeType?.Trim();
+        var base64Data = message.Attachment.Base64Data?.Trim();
+        if (string.IsNullOrWhiteSpace(mimeType) || string.IsNullOrWhiteSpace(base64Data))
+        {
+            Log($"Terminal attachment for PTY {message.PtySessionId} is missing mimeType or base64Data");
+            return;
+        }
+
+        if (_proxy is null || !_ptyClaudeProxySessions.TryGetValue(message.PtySessionId, out var proxySessionId))
+        {
+            Log($"No Claude proxy session is registered for PTY {message.PtySessionId}");
+            return;
+        }
+
+        if (!_proxy.IsCliConnected(proxySessionId))
+        {
+            Log($"Claude terminal proxy session {proxySessionId} is not connected; image attachment ignored");
+            return;
+        }
+
+        var cliSessionId = _proxy.GetCliSessionId(proxySessionId) ?? string.Empty;
+        var payload = new
+        {
+            type = "user",
+            message = new
+            {
+                role = "user",
+                content = new object[]
+                {
+                    new
+                    {
+                        type = "image",
+                        source = new
+                        {
+                            type = "base64",
+                            media_type = mimeType,
+                            data = base64Data
+                        }
+                    }
+                }
+            },
+            parent_tool_use_id = (string?)null,
+            session_id = cliSessionId
+        };
+
+        var rawMessage = JsonSerializer.Serialize(payload, _jsonOptions) + "\n";
+        var sent = await _proxy.SendToCliSessionAsync(proxySessionId, rawMessage, ct);
+        if (sent)
+        {
+            Log($"Sent terminal image attachment to Claude proxy session {proxySessionId} for PTY {message.PtySessionId}");
+        }
+        else
+        {
+            Log($"Failed to send terminal image attachment to Claude proxy session {proxySessionId}");
         }
     }
 
@@ -621,6 +815,7 @@ public class WebSocketClient : IAsyncDisposable
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
             var cwd = message.WorkingDirectory ?? _workingDirectory;
+            var ptyEnv = await BuildTerminalClaudeEnvironmentAsync(ptySessionId);
 
             Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
 
@@ -635,9 +830,14 @@ public class WebSocketClient : IAsyncDisposable
                         Log($"PTY {ptySessionId} exited with code {exitCode}");
                         _ptySessions.TryRemove(ptySessionId, out _);
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
+                        if (_ptyClaudeProxySessions.TryRemove(ptySessionId, out var proxySessionId))
+                            _proxy?.RemoveSession(proxySessionId);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
                     },
-                    columns, rows, ct
+                    columns,
+                    rows,
+                    ptyEnv,
+                    ct
                 );
 
                 _ptySessions[ptySessionId] = (executor, shell);
@@ -647,6 +847,8 @@ public class WebSocketClient : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                if (_ptyClaudeProxySessions.TryRemove(ptySessionId, out var proxySessionId))
+                    _proxy?.RemoveSession(proxySessionId);
                 Log($"Failed to start PTY {ptySessionId}: {ex.Message}");
             }
             return;
@@ -689,7 +891,10 @@ public class WebSocketClient : IAsyncDisposable
                         _currentPtyShell = null;
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode }, ct);
                     },
-                    columns, rows, ct
+                    columns,
+                    rows,
+                    null,
+                    ct
                 );
 
                 _currentPtyShell = shell;
@@ -763,6 +968,8 @@ public class WebSocketClient : IAsyncDisposable
             if (_ptySessions.TryRemove(ptySessionId, out var session))
             {
                 _ptyLastActivity.TryRemove(ptySessionId, out _);
+                if (_ptyClaudeProxySessions.TryRemove(ptySessionId, out var proxySessionId))
+                    _proxy?.RemoveSession(proxySessionId);
                 Log($"Stopping PTY session {ptySessionId}");
                 try { await session.Executor.DisposeAsync(); }
                 catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
@@ -1461,6 +1668,7 @@ public class WebSocketClient : IAsyncDisposable
         }
         _ptySessions.Clear();
         _ptyLastActivity.Clear();
+        _ptyClaudeProxySessions.Clear();
 
         if (_ptyExecutor != null)
         {

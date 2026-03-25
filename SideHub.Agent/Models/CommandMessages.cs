@@ -140,6 +140,21 @@ public class IncomingMessage
 
     [JsonPropertyName("ptySessionId")]
     public string? PtySessionId { get; init; }
+
+    [JsonPropertyName("attachment")]
+    public TerminalAttachmentPayload? Attachment { get; init; }
+}
+
+public class TerminalAttachmentPayload
+{
+    [JsonPropertyName("fileName")]
+    public string? FileName { get; init; }
+
+    [JsonPropertyName("mimeType")]
+    public string? MimeType { get; init; }
+
+    [JsonPropertyName("base64Data")]
+    public string? Base64Data { get; init; }
 }
 
 public class PtyOutputMessage

@@ -99,6 +99,7 @@ public class NodePtyExecutor : IAsyncDisposable
         Func<int, Task> onExit,
         int columns = 80,
         int rows = 24,
+        IReadOnlyDictionary<string, string>? environment = null,
         CancellationToken ct = default)
     {
         lock (_lock)
@@ -149,7 +150,8 @@ public class NodePtyExecutor : IAsyncDisposable
             shell = shell,
             cwd = _workingDirectory,
             cols = columns,
-            rows = rows
+            rows = rows,
+            env = environment
         };
 
         await SendCommandAsync(startCmd, ct);

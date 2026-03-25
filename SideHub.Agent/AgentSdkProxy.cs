@@ -94,6 +94,7 @@ public class AgentSdkProxy : IAsyncDisposable
 
     public void RegisterSession(string sessionId, string backendUrl, string token, string permissionMode)
     {
+        RemoveSession(sessionId);
         var connectionToken = GenerateConnectionToken();
         var session = new ProxySession
         {
@@ -105,6 +106,23 @@ public class AgentSdkProxy : IAsyncDisposable
         };
         _sessions[sessionId] = session;
         _log($"[Proxy] Session {sessionId} registered (mode={permissionMode})");
+    }
+
+    public void RegisterLocalTerminalSession(string sessionId, string permissionMode = "default")
+    {
+        RemoveSession(sessionId);
+        var connectionToken = GenerateConnectionToken();
+        var session = new ProxySession
+        {
+            SessionId = sessionId,
+            BackendUrl = "",
+            Token = "",
+            PermissionMode = permissionMode,
+            ConnectionToken = connectionToken,
+            LocalOnly = true
+        };
+        _sessions[sessionId] = session;
+        _log($"[Proxy] Local terminal session {sessionId} registered");
     }
 
     /// <summary>
@@ -179,6 +197,21 @@ public class AgentSdkProxy : IAsyncDisposable
         }
     }
 
+    public bool IsCliConnected(string sessionId)
+        => _sessions.TryGetValue(sessionId, out var session) && session.CliConnected;
+
+    public string? GetCliSessionId(string sessionId)
+        => _sessions.TryGetValue(sessionId, out var session) ? session.CliSessionId : null;
+
+    public async Task<bool> SendToCliSessionAsync(string sessionId, string message, CancellationToken ct)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var session) || session.CliSocket?.State != WebSocketState.Open)
+            return false;
+
+        await SendToCliAsync(session, message, ct);
+        return true;
+    }
+
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested && _listener?.IsListening == true)
@@ -235,8 +268,9 @@ public class AgentSdkProxy : IAsyncDisposable
                 _ = Task.Run(() => CliReceiveLoopAsync(session, ct), ct);
                 _ = Task.Run(() => CliKeepAliveLoopAsync(session, ct), ct);
 
-                // Connect to backend
-                _ = Task.Run(() => ConnectToBackendAsync(session, ct), ct);
+                // Connect to backend for managed SDK sessions only.
+                if (!session.LocalOnly)
+                    _ = Task.Run(() => ConnectToBackendAsync(session, ct), ct);
             }
             catch (ObjectDisposedException)
             {
@@ -299,8 +333,12 @@ public class AgentSdkProxy : IAsyncDisposable
                         // Cache system/init message for replay on reconnect
                         CacheSystemInit(session, rawMessage);
 
-                        // Forward to backend or buffer
-                        if (session.BackendConnected && session.BackendSocket?.State == WebSocketState.Open)
+                        // Local-only terminal sessions don't relay upstream.
+                        if (session.LocalOnly)
+                        {
+                            session.LastActivity = DateTime.UtcNow;
+                        }
+                        else if (session.BackendConnected && session.BackendSocket?.State == WebSocketState.Open)
                         {
                             await SendToBackendAsync(session, rawMessage, ct);
                         }
@@ -677,6 +715,7 @@ public class AgentSdkProxy : IAsyncDisposable
         public bool BackendConnected { get; set; }
         public bool HasBeenConnectedBefore { get; set; }
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
+        public bool LocalOnly { get; init; }
 
         // Virtual session support (Codex bridge — no real CLI WebSocket)
         public bool IsVirtual { get; init; }

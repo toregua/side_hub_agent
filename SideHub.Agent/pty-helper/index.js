@@ -89,6 +89,7 @@ function startPty(config) {
   const cwd = config.cwd || process.cwd();
   const cols = config.cols || 80;
   const rows = config.rows || 24;
+  const extraEnv = config.env || {};
 
   try {
     ptyProcess = pty.spawn(shell, ['-l'], {
@@ -101,7 +102,8 @@ function startPty(config) {
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         COLUMNS: String(cols),
-        LINES: String(rows)
+        LINES: String(rows),
+        ...extraEnv
       }
     });
 
