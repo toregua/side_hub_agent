@@ -579,6 +579,11 @@ exec "${real}" "$@"
                             media_type = mimeType,
                             data = base64Data
                         }
+                    },
+                    new
+                    {
+                        type = "text",
+                        text = ""
                     }
                 }
             },
