@@ -22,7 +22,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
     private const int PtyIdleTimeoutMinutes = 30;
-    private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste)> _pendingFileWrites = new();
+    private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
     private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
     private readonly ConcurrentDictionary<string, CodexBridge> _codexBridges = new();
     private readonly ConcurrentDictionary<string, GeminiBridge> _geminiBridges = new();
@@ -478,20 +478,30 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        if (!IsPathWithinWorkingDirectory(message.Path))
+        // Resolve relative paths within the working directory
+        var resolvedPath = Path.IsPathRooted(message.Path)
+            ? message.Path
+            : Path.GetFullPath(Path.Combine(_workingDirectory, message.Path));
+
+        if (!IsPathWithinWorkingDirectory(resolvedPath))
         {
-            Log($"SECURITY: file write rejected — path '{message.Path}' is outside working directory '{_workingDirectory}'");
+            Log($"SECURITY: file write rejected — path '{resolvedPath}' is outside working directory '{_workingDirectory}'");
             await SendAsync(new CommandFailedMessage
             {
                 CommandId = message.CommandId,
                 ExitCode = -1,
-                Error = $"Path '{message.Path}' is outside the allowed working directory"
+                Error = $"Path '{resolvedPath}' is outside the allowed working directory"
             }, ct);
             return;
         }
 
-        _pendingFileWrites[message.CommandId] = (message.Path, new StringBuilder(), message.PtyPaste);
-        Log($"File write started: {message.Path}");
+        // Construct paste content: ask Claude CLI to read the image file
+        var ptyPaste = !string.IsNullOrEmpty(message.PtyPaste)
+            ? message.PtyPaste
+            : $"\x1b[200~Please look at this image I just uploaded: {resolvedPath}\x1b[201~";
+
+        _pendingFileWrites[message.CommandId] = (resolvedPath, new StringBuilder(), ptyPaste, message.PtySessionId);
+        Log($"File write started: {resolvedPath}");
     }
 
     private void HandleFileWriteChunk(IncomingMessage message)
@@ -525,17 +535,37 @@ public class WebSocketClient : IAsyncDisposable
 
             Log($"File written: {state.Path} ({bytes.Length} bytes)");
 
-            // Paste path into PTY if requested and PTY is running
-            if (!string.IsNullOrEmpty(state.PtyPaste) && _ptyExecutor?.IsRunning == true)
+            // Paste into the correct PTY session (multi-PTY first, then legacy fallback)
+            if (!string.IsNullOrEmpty(state.PtyPaste))
             {
                 try
                 {
-                    await _ptyExecutor.WriteAsync(state.PtyPaste, ct);
-                    Log($"Pasted path into PTY");
+                    var pasted = false;
+
+                    // Try multi-PTY session first
+                    if (!string.IsNullOrEmpty(state.PtySessionId) &&
+                        _ptySessions.TryGetValue(state.PtySessionId, out var ptySession) &&
+                        ptySession.Executor.IsRunning)
+                    {
+                        await ptySession.Executor.WriteAsync(state.PtyPaste, ct);
+                        pasted = true;
+                        Log($"Pasted image prompt into PTY session {state.PtySessionId}");
+                    }
+
+                    // Fall back to legacy single PTY
+                    if (!pasted && _ptyExecutor?.IsRunning == true)
+                    {
+                        await _ptyExecutor.WriteAsync(state.PtyPaste, ct);
+                        pasted = true;
+                        Log($"Pasted image prompt into legacy PTY");
+                    }
+
+                    if (!pasted)
+                        Log("No running PTY to paste image prompt into");
                 }
                 catch (Exception ex)
                 {
-                    Log($"Failed to paste path into PTY: {ex.Message}");
+                    Log($"Failed to paste image prompt into PTY: {ex.Message}");
                 }
             }
 
