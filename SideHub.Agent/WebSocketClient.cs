@@ -23,6 +23,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
     private readonly ConcurrentDictionary<string, string> _ptyClaudeProxySessions = new();
+    private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     private const int PtyIdleTimeoutMinutes = 30;
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
     private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
@@ -549,58 +550,93 @@ exec "${real}" "$@"
             return;
         }
 
-        if (_proxy is null || !_ptyClaudeProxySessions.TryGetValue(message.PtySessionId, out var proxySessionId))
+        // Try SDK proxy path first (Claude spawned via agent-sdk)
+        if (_proxy is not null
+            && _ptyClaudeProxySessions.TryGetValue(message.PtySessionId, out var proxySessionId)
+            && _proxy.IsCliConnected(proxySessionId))
         {
-            Log($"No Claude proxy session is registered for PTY {message.PtySessionId}");
-            return;
-        }
-
-        if (!_proxy.IsCliConnected(proxySessionId))
-        {
-            Log($"Claude terminal proxy session {proxySessionId} is not connected; image attachment ignored");
-            return;
-        }
-
-        var cliSessionId = _proxy.GetCliSessionId(proxySessionId) ?? string.Empty;
-        Log($"Preparing terminal image attachment for PTY {message.PtySessionId} via proxy {proxySessionId} (mime={mimeType}, chars={base64Data.Length}, cliSessionId={(string.IsNullOrEmpty(cliSessionId) ? "<none>" : cliSessionId)})");
-        var payload = new
-        {
-            type = "user",
-            message = new
+            var cliSessionId = _proxy.GetCliSessionId(proxySessionId) ?? string.Empty;
+            Log($"Preparing terminal image attachment for PTY {message.PtySessionId} via proxy {proxySessionId} (mime={mimeType}, chars={base64Data.Length}, cliSessionId={(string.IsNullOrEmpty(cliSessionId) ? "<none>" : cliSessionId)})");
+            var payload = new
             {
-                role = "user",
-                content = new object[]
+                type = "user",
+                message = new
                 {
-                    new
+                    role = "user",
+                    content = new object[]
                     {
-                        type = "image",
-                        source = new
+                        new
                         {
-                            type = "base64",
-                            media_type = mimeType,
-                            data = base64Data
+                            type = "image",
+                            source = new
+                            {
+                                type = "base64",
+                                media_type = mimeType,
+                                data = base64Data
+                            }
+                        },
+                        new
+                        {
+                            type = "text",
+                            text = ""
                         }
-                    },
-                    new
-                    {
-                        type = "text",
-                        text = ""
                     }
-                }
-            },
-            parent_tool_use_id = (string?)null,
-            session_id = cliSessionId
-        };
+                },
+                parent_tool_use_id = (string?)null,
+                session_id = cliSessionId
+            };
 
-        var rawMessage = JsonSerializer.Serialize(payload, _jsonOptions) + "\n";
-        var sent = await _proxy.SendToCliSessionAsync(proxySessionId, rawMessage, ct);
-        if (sent)
-        {
-            Log($"Sent terminal image attachment to Claude proxy session {proxySessionId} for PTY {message.PtySessionId}");
+            var rawMessage = JsonSerializer.Serialize(payload, _jsonOptions) + "\n";
+            var sent = await _proxy.SendToCliSessionAsync(proxySessionId, rawMessage, ct);
+            if (sent)
+                Log($"Sent terminal image attachment to Claude proxy session {proxySessionId} for PTY {message.PtySessionId}");
+            else
+                Log($"Failed to send terminal image attachment to Claude proxy session {proxySessionId}");
+            return;
         }
-        else
+
+        // Fallback: save image to file and paste [Image #N: path] into PTY
+        // Works when Claude is running manually in a shell (no SDK proxy session)
+        Log($"No proxy for PTY {message.PtySessionId}; falling back to file-based attachment");
+        try
         {
-            Log($"Failed to send terminal image attachment to Claude proxy session {proxySessionId}");
+            var bytes = Convert.FromBase64String(base64Data);
+            var imagesDir = Path.Combine(_workingDirectory, ".sidehub-images");
+            Directory.CreateDirectory(imagesDir);
+
+            var ext = mimeType switch
+            {
+                "image/png" => ".png",
+                "image/jpeg" or "image/jpg" => ".jpg",
+                "image/webp" => ".webp",
+                _ => ".png"
+            };
+            var safeName = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}{ext}";
+            var filePath = Path.Combine(imagesDir, safeName);
+            await File.WriteAllBytesAsync(filePath, bytes, ct);
+            Log($"Attachment saved: {filePath} ({bytes.Length} bytes)");
+
+            var imageNum = _ptyImageCounters.AddOrUpdate(message.PtySessionId, 1, (_, n) => n + 1);
+            var pasteText = $"\x1b[200~[Image #{imageNum}: {filePath}] \x1b[201~";
+
+            if (_ptySessions.TryGetValue(message.PtySessionId, out var session) && session.Executor.IsRunning)
+            {
+                await session.Executor.WriteAsync(pasteText, ct);
+                Log($"Pasted image path into PTY session {message.PtySessionId}");
+            }
+            else if (_ptyExecutor?.IsRunning == true)
+            {
+                await _ptyExecutor.WriteAsync(pasteText, ct);
+                Log($"Pasted image path into legacy PTY");
+            }
+            else
+            {
+                Log($"No running PTY for image paste");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"File-based attachment failed: {ex.Message}");
         }
     }
 
