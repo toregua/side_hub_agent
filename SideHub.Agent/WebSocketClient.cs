@@ -562,6 +562,7 @@ exec "${real}" "$@"
         }
 
         var cliSessionId = _proxy.GetCliSessionId(proxySessionId) ?? string.Empty;
+        Log($"Preparing terminal image attachment for PTY {message.PtySessionId} via proxy {proxySessionId} (mime={mimeType}, chars={base64Data.Length}, cliSessionId={(string.IsNullOrEmpty(cliSessionId) ? "<none>" : cliSessionId)})");
         var payload = new
         {
             type = "user",

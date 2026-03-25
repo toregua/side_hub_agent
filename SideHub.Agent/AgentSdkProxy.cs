@@ -208,6 +208,7 @@ public class AgentSdkProxy : IAsyncDisposable
         if (!_sessions.TryGetValue(sessionId, out var session) || session.CliSocket?.State != WebSocketState.Open)
             return false;
 
+        _log($"[Proxy] Sending message to CLI session {sessionId} (chars={message.Length}, cliSessionId={session.CliSessionId ?? "<none>"})");
         await SendToCliAsync(session, message, ct);
         return true;
     }
@@ -262,7 +263,7 @@ public class AgentSdkProxy : IAsyncDisposable
                 session.CliSocket = wsContext.WebSocket;
                 session.CliConnected = true;
 
-                _log($"[Proxy] CLI connected for session {sessionId}");
+                _log($"[Proxy] CLI connected for session {sessionId} (localOnly={session.LocalOnly})");
 
                 // Start CLI receive loop and keepalive in background
                 _ = Task.Run(() => CliReceiveLoopAsync(session, ct), ct);
@@ -329,6 +330,13 @@ public class AgentSdkProxy : IAsyncDisposable
                     {
                         var rawMessage = Encoding.UTF8.GetString(messageBuffer.ToArray());
                         messageBuffer.Clear();
+
+                        if (session.LocalOnly)
+                        {
+                            var preview = rawMessage.Replace('\n', ' ').Replace('\r', ' ');
+                            if (preview.Length > 240) preview = preview[..240] + "...";
+                            _log($"[Proxy] Local CLI message for {session.SessionId}: {preview}");
+                        }
 
                         // Cache system/init message for replay on reconnect
                         CacheSystemInit(session, rawMessage);
