@@ -273,6 +273,7 @@ exec "${real}" "$@"
 
                 await SendConnectedMessageAsync(ct);
                 await ReportAliveSessionsAsync(ct);
+                await ReportAlivePtySessionsAsync(ct);
                 StartHeartbeat(ct);
                 StartPtyReaper();
 
@@ -1122,6 +1123,31 @@ exec "${real}" "$@"
         // Give backend a moment to recreate sessions before proxy reconnects
         await Task.Delay(1000, ct);
         await _proxy.ReconnectAllToBackendAsync(ct);
+    }
+
+    /// <summary>
+    /// After reconnecting to backend, report any PTY sessions still alive
+    /// so the backend can restore PtyOutputNotifier state and notify frontends.
+    /// </summary>
+    private async Task ReportAlivePtySessionsAsync(CancellationToken ct)
+    {
+        foreach (var (ptySessionId, (executor, shell)) in _ptySessions)
+        {
+            if (executor.IsRunning)
+            {
+                Log($"Reporting alive PTY session {ptySessionId} (shell: {shell})");
+                await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
+            }
+        }
+
+        if (_ptyExecutor?.IsRunning == true)
+        {
+            Log("Reporting alive legacy PTY session");
+            await SendAsync(new PtyStartedMessage
+            {
+                Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell()
+            }, ct);
+        }
     }
 
     private async Task HandleAgentSdkSpawnAsync(IncomingMessage message, CancellationToken ct)
