@@ -13,6 +13,18 @@ if (string.IsNullOrEmpty(apiUrl) || string.IsNullOrEmpty(agentToken) || string.I
     return 1;
 }
 
+if (!apiUrl.StartsWith("https://") && !apiUrl.StartsWith("http://"))
+{
+    Console.Error.WriteLine($"Invalid SIDEHUB_API_URL: '{apiUrl}' — must start with http:// or https://");
+    return 1;
+}
+
+if (!agentToken.StartsWith("sh_agent_"))
+{
+    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format — must start with 'sh_agent_'.");
+    return 1;
+}
+
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");

@@ -25,14 +25,14 @@ public class SideHubApiClient : IDisposable
     public async Task<JsonElement> GetDriveTreeAsync()
     {
         var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/drive");
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     public async Task<JsonElement> GetDriveItemAsync(string itemId)
     {
         var resp = await _http.GetAsync($"api/drive/{itemId}");
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -43,7 +43,7 @@ public class SideHubApiClient : IDisposable
         if (parentId is not null) body["parentId"] = parentId;
 
         var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/drive", body);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -54,7 +54,7 @@ public class SideHubApiClient : IDisposable
         if (content is not null) body["content"] = content;
 
         var resp = await _http.PutAsJsonAsync($"api/drive/{itemId}", body);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -66,7 +66,7 @@ public class SideHubApiClient : IDisposable
         if (!string.IsNullOrEmpty(status)) url += $"?status={Uri.EscapeDataString(status)}";
 
         var resp = await _http.GetAsync(url);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -77,7 +77,7 @@ public class SideHubApiClient : IDisposable
         if (type is not null) body["type"] = type;
 
         var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/tasks", body);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -85,7 +85,7 @@ public class SideHubApiClient : IDisposable
     {
         var body = new { text };
         var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/tasks/{taskId}/comments", body);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -93,7 +93,7 @@ public class SideHubApiClient : IDisposable
     {
         var body = new { reason };
         var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/tasks/{taskId}/blocker", body);
-        resp.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
@@ -101,4 +101,29 @@ public class SideHubApiClient : IDisposable
 
     public static string Serialize(JsonElement element) =>
         JsonSerializer.Serialize(element, JsonOptions);
+
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response)
+    {
+        if (response.IsSuccessStatusCode) return;
+
+        var body = await response.Content.ReadAsStringAsync();
+        string? serverMessage = null;
+        try
+        {
+            var json = JsonSerializer.Deserialize<JsonElement>(body);
+            if (json.TryGetProperty("error", out var err))
+                serverMessage = err.GetString();
+        }
+        catch { /* body is not JSON */ }
+
+        var message = (int)response.StatusCode switch
+        {
+            401 => serverMessage ?? "Authentication failed. Check your SIDEHUB_AGENT_TOKEN.",
+            403 => serverMessage ?? "Access denied.",
+            404 => serverMessage ?? "Resource not found.",
+            _ => serverMessage ?? $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}"
+        };
+
+        throw new HttpRequestException(message);
+    }
 }
