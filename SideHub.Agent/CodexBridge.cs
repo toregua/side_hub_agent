@@ -1768,7 +1768,7 @@ public class CodexBridge : IAsyncDisposable
         {
             try
             {
-                _process.Kill();
+                _process.Kill(true);
                 _log($"[CodexBridge] Killed codex process (PID {_process.Id})");
             }
             catch { }

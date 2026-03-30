@@ -251,7 +251,7 @@ public class GeminiBridge : IAsyncDisposable
         // Kill any existing process from a previous turn that might still be running
         if (_process is not null && !_process.HasExited)
         {
-            try { _process.Kill(); } catch { }
+            try { _process.Kill(true); } catch { }
             _process.Dispose();
             _process = null;
         }
@@ -361,7 +361,7 @@ public class GeminiBridge : IAsyncDisposable
         {
             if (!_process.HasExited)
             {
-                try { _process.Kill(); } catch { }
+                try { _process.Kill(true); } catch { }
             }
         }
         catch (Exception ex)
@@ -375,7 +375,7 @@ public class GeminiBridge : IAsyncDisposable
         if (_process is not null && !_process.HasExited)
         {
             _log("[GeminiBridge] Interrupting current turn");
-            try { _process.Kill(); } catch { }
+            try { _process.Kill(true); } catch { }
         }
     }
 
@@ -788,7 +788,7 @@ public class GeminiBridge : IAsyncDisposable
         {
             try
             {
-                _process.Kill();
+                _process.Kill(true);
                 _log($"[GeminiBridge] Killed gemini process (PID {_process.Id})");
             }
             catch { }

@@ -300,7 +300,7 @@ public class NodePtyExecutor : IAsyncDisposable
 
                 if (!_nodeProcess.HasExited)
                 {
-                    _nodeProcess.Kill();
+                    _nodeProcess.Kill(true);
                 }
             }
             catch

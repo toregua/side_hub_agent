@@ -1087,7 +1087,7 @@ exec "${real}" "$@"
                 {
                     if (!process.HasExited)
                     {
-                        process.Kill();
+                        process.Kill(true);
                         Log($"Killed inactive Claude CLI process for session {sessionId}");
                     }
                 }
@@ -1185,7 +1185,7 @@ exec "${real}" "$@"
             {
                 if (!existingProcess.HasExited)
                 {
-                    existingProcess.Kill();
+                    existingProcess.Kill(true);
                     Log($"Killed previous Claude CLI process for session {sessionId} before re-spawn");
                 }
             }
@@ -1361,7 +1361,7 @@ exec "${real}" "$@"
                 }
                 catch (OperationCanceledException)
                 {
-                    try { process.Kill(); } catch { }
+                    try { process.Kill(true); } catch { }
                     _claudeSdkProcesses.TryRemove(sessionId, out _);
                     _proxy?.RemoveSession(sessionId);
                 }
@@ -1379,7 +1379,7 @@ exec "${real}" "$@"
             // Kill the process if it was started but something failed after
             if (_claudeSdkProcesses.TryRemove(sessionId, out var leakedProcess))
             {
-                try { if (!leakedProcess.HasExited) leakedProcess.Kill(); } catch { }
+                try { if (!leakedProcess.HasExited) leakedProcess.Kill(true); } catch { }
             }
             _proxy?.RemoveSession(sessionId);
             await SendAsync(new AgentSdkSpawnFailedMessage
@@ -1628,7 +1628,7 @@ exec "${real}" "$@"
             {
                 if (!process.HasExited)
                 {
-                    process.Kill();
+                    process.Kill(true);
                     Log($"Killed Claude CLI process for session {sessionId} (stop requested)");
                 }
             }
@@ -1694,7 +1694,7 @@ exec "${real}" "$@"
             {
                 if (!process.HasExited)
                 {
-                    process.Kill();
+                    process.Kill(true);
                     Log($"Killed Claude CLI process for session {sessionId}");
                 }
             }

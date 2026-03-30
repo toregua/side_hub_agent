@@ -23,8 +23,8 @@ public class AgentSdkProxy : IAsyncDisposable
     private const int BufferMessageTtlMs = 120_000; // 2 minutes
     private const int BackendReconnectDelayMs = 3000;
     private const int CliKeepAliveIntervalMs = 10000;
-    private const int InactivityTimeoutMs = 300_000; // 5 minutes
-    private const int InactivityCheckIntervalMs = 60_000; // Check every minute
+    private const int InactivityTimeoutMs = 86_400_000; // 24 hours
+    private const int InactivityCheckIntervalMs = 300_000; // Check every 5 minutes
     private const int MaxWebSocketMessageSize = 50 * 1024 * 1024; // 50 MB
 
     private Action<string>? _onSessionTimeout;
