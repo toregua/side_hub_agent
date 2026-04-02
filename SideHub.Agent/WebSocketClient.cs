@@ -237,13 +237,25 @@ exec "${real}" "$@"
         var shimDir = EnsureClaudeShimDirectory();
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
 
-        return new Dictionary<string, string>
+        // Ensure sidehub-cli is in PATH
+        var agentLibDir = "/usr/local/lib/sidehub-agent";
+        var fullPath = string.IsNullOrEmpty(currentPath) ? shimDir : $"{shimDir}{Path.PathSeparator}{currentPath}";
+        if (!fullPath.Contains(agentLibDir))
+            fullPath = $"{agentLibDir}{Path.PathSeparator}{fullPath}";
+
+        var env = new Dictionary<string, string>
         {
             ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
             ["SIDEHUB_CLAUDE_SDK_URL"] = _proxy.GetLocalUrl(proxySessionId),
             ["SIDEHUB_REAL_CLAUDE_PATH"] = realClaudePath,
-            ["PATH"] = string.IsNullOrEmpty(currentPath) ? shimDir : $"{shimDir}{Path.PathSeparator}{currentPath}"
+            ["PATH"] = fullPath,
+            // Side Hub CLI env vars (drive, tasks)
+            ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
+            ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
+            ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
         };
+
+        return env;
     }
 
     /// <summary>Truncate a shell command for safe logging (first 80 chars).</summary>
