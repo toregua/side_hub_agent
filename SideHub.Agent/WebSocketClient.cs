@@ -872,6 +872,9 @@ exec "${real}" "$@"
             var cwd = message.WorkingDirectory ?? _workingDirectory;
             var ptyEnv = await BuildTerminalClaudeEnvironmentAsync(ptySessionId);
 
+            // Install skill file so Claude launched from this terminal discovers sidehub-cli + drive index
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "claude", DeriveApiUrl(_config.SidehubUrl!), _config.AgentToken!, _config.WorkspaceId!);
+
             Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
 
             try
