@@ -131,6 +131,65 @@ public static class DriveCommands
         return 0;
     }
 
+    public static async Task<int> SearchAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var query = args.FirstOrDefault(a => !a.StartsWith("--"));
+        if (string.IsNullOrEmpty(query))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive search <query>");
+            return 1;
+        }
+
+        var result = await client.GetDriveTreeAsync();
+
+        if (!result.TryGetProperty("items", out var items) || items.GetArrayLength() == 0)
+        {
+            Console.WriteLine("No items in drive.");
+            return 0;
+        }
+
+        var matches = new List<(string Id, string Type, string Title, string Updated)>();
+        CollectMatches(items, query, matches);
+
+        if (matches.Count == 0)
+        {
+            Console.WriteLine($"No pages matching \"{query}\".");
+            return 0;
+        }
+
+        if (json)
+        {
+            var jsonArray = matches.Select(m => new { id = m.Id, type = m.Type, title = m.Title, updatedAt = m.Updated });
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(jsonArray, new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        Console.WriteLine($"{"ID",-38} {"TYPE",-8} {"TITLE",-40} {"UPDATED"}");
+        Console.WriteLine(new string('-', 110));
+        foreach (var m in matches)
+            Console.WriteLine($"{m.Id,-38} {m.Type,-8} {Truncate(m.Title, 40),-40} {m.Updated}");
+
+        return 0;
+    }
+
+    private static void CollectMatches(JsonElement items, string query, List<(string Id, string Type, string Title, string Updated)> matches)
+    {
+        foreach (var item in items.EnumerateArray())
+        {
+            var title = item.GetProperty("title").GetString() ?? "";
+            if (title.Contains(query, StringComparison.OrdinalIgnoreCase))
+            {
+                var id = item.GetProperty("id").GetString() ?? "";
+                var type = item.GetProperty("type").GetString() ?? "";
+                var updated = item.TryGetProperty("updatedAt", out var u) ? u.GetString()?[..10] ?? "" : "";
+                matches.Add((id, type, title, updated));
+            }
+
+            if (item.TryGetProperty("children", out var children) && children.GetArrayLength() > 0)
+                CollectMatches(children, query, matches);
+        }
+    }
+
     private static string? GetOption(string[] args, string flag)
     {
         for (int i = 0; i < args.Length - 1; i++)

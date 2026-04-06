@@ -33,6 +33,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive create --title \"...\" --content \"...\" [--parent <id>]");
     Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\"]");
+    Console.Error.WriteLine("  drive search <query>");
     Console.Error.WriteLine("  task list [--status <status>]");
     Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>]");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
@@ -63,6 +64,7 @@ try
         ("drive", "read") => await DriveCommands.ReadAsync(client, restArgs, jsonOutput),
         ("drive", "create") => await DriveCommands.CreateAsync(client, restArgs, jsonOutput),
         ("drive", "update") => await DriveCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("drive", "search") => await DriveCommands.SearchAsync(client, restArgs, jsonOutput),
         ("task", "list") => await TaskCommands.ListAsync(client, restArgs, jsonOutput),
         ("task", "create") => await TaskCommands.CreateAsync(client, restArgs, jsonOutput),
         ("task", "comment") => await TaskCommands.CommentAsync(client, restArgs, taskId, jsonOutput),

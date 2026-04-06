@@ -1276,8 +1276,9 @@ exec "${real}" "$@"
             // "cannot be launched inside another Claude Code session" error.
             startInfo.Environment.Remove("CLAUDECODE");
 
-            // Install skill files and inject Side Hub CLI env vars
-            SkillInstaller.EnsureSkillFiles(cwd, "claude");
+            // Install skill files (with dynamic drive index) and inject Side Hub CLI env vars
+            var apiUrl = DeriveApiUrl(_config.SidehubUrl!);
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "claude", apiUrl, _config.AgentToken!, _config.WorkspaceId!);
             InjectSideHubEnvVars(startInfo, message.TaskId, message.TaskTitle);
 
             var spawnedAt = DateTime.UtcNow;
@@ -1433,8 +1434,8 @@ exec "${real}" "$@"
                 token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
             }
 
-            // Install skill files and prepare Side Hub CLI env vars
-            SkillInstaller.EnsureSkillFiles(cwd, "codex");
+            // Install skill files (with dynamic drive index) and prepare Side Hub CLI env vars
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "codex", DeriveApiUrl(_config.SidehubUrl!), _config.AgentToken!, _config.WorkspaceId!);
             var bridge = new CodexBridge(sessionId, model, cwd, rawPermissionMode, Log)
             {
                 ExtraEnvironment = BuildSideHubEnvVars(message.TaskId, message.TaskTitle)
@@ -1550,8 +1551,8 @@ exec "${real}" "$@"
                 token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
             }
 
-            // Install skill files and prepare Side Hub CLI env vars
-            SkillInstaller.EnsureSkillFiles(cwd, "gemini");
+            // Install skill files (with dynamic drive index) and prepare Side Hub CLI env vars
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "gemini", DeriveApiUrl(_config.SidehubUrl!), _config.AgentToken!, _config.WorkspaceId!);
             var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log, resumeCliSessionId)
             {
                 ExtraEnvironment = BuildSideHubEnvVars(message.TaskId, message.TaskTitle)
