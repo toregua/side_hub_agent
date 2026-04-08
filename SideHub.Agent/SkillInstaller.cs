@@ -31,10 +31,21 @@ Environment variables are already configured in your session.
 - `sidehub-cli drive update <pageId> --title "..." --content "..."` — Update a page
 
 ### Tasks
-- `sidehub-cli task list` — List workspace tasks
-- `sidehub-cli task create --title "..." --description "..."` — Create a task
-- `sidehub-cli task comment --text "..."` — Comment on the current task
-- `sidehub-cli task blocker --reason "..."` — Report a blocker on the current task
+- `sidehub-cli task list [--status <status>]` — List workspace tasks (filter by status)
+- `sidehub-cli task create --title "..." [--description "..."] [--type <type>]` — Create a task
+- `sidehub-cli task comment [<taskId>] --text "..."` — Comment on the current task
+- `sidehub-cli task blocker [<taskId>] --reason "..."` — Report a blocker on the current task
+
+### Schedulers
+- `sidehub-cli scheduler list [--active | --paused]` — List scheduled prompts
+- `sidehub-cli scheduler get <id>` — Show scheduler details
+- `sidehub-cli scheduler create --title "..." --prompt "..." --cron "..." [--description "..."] [--provider <provider>]` — Create a scheduler
+- `sidehub-cli scheduler update <id> [--title "..."] [--prompt "..."] [--cron "..."] [--description "..."] [--provider <provider>]` — Update a scheduler
+- `sidehub-cli scheduler delete <id> [--yes]` — Delete a scheduler (use --yes to skip confirmation)
+- `sidehub-cli scheduler pause <id>` — Pause a scheduler
+- `sidehub-cli scheduler resume <id>` — Resume a paused scheduler
+- `sidehub-cli scheduler trigger <id>` — Trigger immediate execution
+- `sidehub-cli scheduler executions <id>` — Show execution history
 
 ## Workspace memory (Drive)
 
