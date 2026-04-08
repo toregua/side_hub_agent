@@ -97,6 +97,84 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    // --- Schedulers ---
+
+    public async Task<JsonElement> GetSchedulersAsync(bool? active)
+    {
+        var url = $"api/workspaces/{_workspaceId}/scheduled-prompts";
+        if (active is not null) url += $"?active={active.Value.ToString().ToLowerInvariant()}";
+
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetSchedulerAsync(string id)
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetSchedulerExecutionsAsync(string id)
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}/executions");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> CreateSchedulerAsync(string title, string prompt, string cron, string? description, string? provider)
+    {
+        var body = new Dictionary<string, object?> { ["title"] = title, ["prompt"] = prompt, ["cronExpression"] = cron };
+        if (description is not null) body["scheduleDescription"] = description;
+        if (provider is not null) body["provider"] = provider;
+
+        var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/scheduled-prompts", body);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> UpdateSchedulerAsync(string id, string? title, string? prompt, string? cron, string? description, string? provider)
+    {
+        var body = new Dictionary<string, object?>();
+        if (title is not null) body["title"] = title;
+        if (prompt is not null) body["prompt"] = prompt;
+        if (cron is not null) body["cronExpression"] = cron;
+        if (description is not null) body["scheduleDescription"] = description;
+        if (provider is not null) body["provider"] = provider;
+
+        var resp = await _http.PutAsJsonAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}", body);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task DeleteSchedulerAsync(string id)
+    {
+        var resp = await _http.DeleteAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}");
+        await EnsureSuccessAsync(resp);
+    }
+
+    public async Task<JsonElement> PauseSchedulerAsync(string id)
+    {
+        var resp = await _http.PostAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}/pause", null);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> ResumeSchedulerAsync(string id)
+    {
+        var resp = await _http.PostAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}/resume", null);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> TriggerSchedulerAsync(string id)
+    {
+        var resp = await _http.PostAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}/trigger", null);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     public void Dispose() => _http.Dispose();
 
     public static string Serialize(JsonElement element) =>

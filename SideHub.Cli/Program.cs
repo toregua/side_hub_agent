@@ -28,7 +28,7 @@ if (!agentToken.StartsWith("sh_agent_"))
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
-    Console.Error.WriteLine("Domains: drive, task");
+    Console.Error.WriteLine("Domains: drive, task, scheduler");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive create --title \"...\" --content \"...\" [--parent <id>]");
@@ -38,6 +38,15 @@ if (args.Length < 2)
     Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>]");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
     Console.Error.WriteLine("  task blocker [<taskId>] --reason \"...\"");
+    Console.Error.WriteLine("  scheduler list [--active | --paused]");
+    Console.Error.WriteLine("  scheduler get <id>");
+    Console.Error.WriteLine("  scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--description \"...\"] [--provider <provider>]");
+    Console.Error.WriteLine("  scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--provider <provider>]");
+    Console.Error.WriteLine("  scheduler delete <id> [--yes]");
+    Console.Error.WriteLine("  scheduler pause <id>");
+    Console.Error.WriteLine("  scheduler resume <id>");
+    Console.Error.WriteLine("  scheduler trigger <id>");
+    Console.Error.WriteLine("  scheduler executions <id>");
     return 1;
 }
 
@@ -47,7 +56,7 @@ var restArgs = args[2..];
 var jsonOutput = restArgs.Contains("--json");
 
 // Defense-in-depth: block write commands in plan mode
-var writeActions = new HashSet<string> { "create", "update", "comment", "blocker" };
+var writeActions = new HashSet<string> { "create", "update", "comment", "blocker", "delete", "pause", "resume", "trigger" };
 if (pipelineMode == "plan" && writeActions.Contains(action))
 {
     Console.Error.WriteLine($"Error: write command '{action}' is not allowed in plan mode");
@@ -69,6 +78,15 @@ try
         ("task", "create") => await TaskCommands.CreateAsync(client, restArgs, jsonOutput),
         ("task", "comment") => await TaskCommands.CommentAsync(client, restArgs, taskId, jsonOutput),
         ("task", "blocker") => await TaskCommands.BlockerAsync(client, restArgs, taskId, jsonOutput),
+        ("scheduler", "list") => await SchedulerCommands.ListAsync(client, restArgs, jsonOutput),
+        ("scheduler", "get") => await SchedulerCommands.GetAsync(client, restArgs, jsonOutput),
+        ("scheduler", "create") => await SchedulerCommands.CreateAsync(client, restArgs, jsonOutput),
+        ("scheduler", "update") => await SchedulerCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("scheduler", "delete") => await SchedulerCommands.DeleteAsync(client, restArgs, jsonOutput),
+        ("scheduler", "pause") => await SchedulerCommands.PauseAsync(client, restArgs, jsonOutput),
+        ("scheduler", "resume") => await SchedulerCommands.ResumeAsync(client, restArgs, jsonOutput),
+        ("scheduler", "trigger") => await SchedulerCommands.TriggerAsync(client, restArgs, jsonOutput),
+        ("scheduler", "executions") => await SchedulerCommands.ExecutionsAsync(client, restArgs, jsonOutput),
         _ => Error($"Unknown command: {domain} {action}")
     };
 }
