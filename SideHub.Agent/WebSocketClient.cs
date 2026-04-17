@@ -1266,6 +1266,8 @@ exec "${real}" "$@"
             startInfo.ArgumentList.Add("--include-partial-messages");
             startInfo.ArgumentList.Add("--effort");
             startInfo.ArgumentList.Add("max");
+            startInfo.ArgumentList.Add("--thinking-display");
+            startInfo.ArgumentList.Add("summarized");
             startInfo.ArgumentList.Add("--permission-mode");
             startInfo.ArgumentList.Add(permissionMode);
 
