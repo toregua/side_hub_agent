@@ -25,7 +25,8 @@ Environment variables are already configured in your session.
 
 ### Drive (workspace memory)
 - `sidehub-cli drive list` — List pages/folders in the Drive
-- `sidehub-cli drive read <pageId>` — Read the content of a page
+- `sidehub-cli drive read <pageId>` — Read the content of a page (text). For binary files, prints a hint to use `drive download` instead.
+- `sidehub-cli drive download <pageId> [--output <path>] [--stdout] [--url-only]` — Download a binary file (image/PDF/...) from the Drive. Defaults to the current directory using the original filename, then prints the absolute path. Use `--output <path>` to choose a destination, `--stdout` to stream raw bytes, or `--url-only` to print just the presigned URL.
 - `sidehub-cli drive search <query>` — Search pages by title
 - `sidehub-cli drive create --title "..." --content "..."` — Create a page
 - `sidehub-cli drive update <pageId> --title "..." --content "..."` — Update a page

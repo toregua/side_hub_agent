@@ -31,6 +31,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("Domains: drive, task, scheduler");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
+    Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
     Console.Error.WriteLine("  drive create --title \"...\" --content \"...\" [--parent <id>]");
     Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\"]");
     Console.Error.WriteLine("  drive search <query>");
@@ -71,6 +72,7 @@ try
     {
         ("drive", "list") => await DriveCommands.ListAsync(client, restArgs, jsonOutput),
         ("drive", "read") => await DriveCommands.ReadAsync(client, restArgs, jsonOutput),
+        ("drive", "download") => await DriveCommands.DownloadAsync(client, restArgs, jsonOutput),
         ("drive", "create") => await DriveCommands.CreateAsync(client, restArgs, jsonOutput),
         ("drive", "update") => await DriveCommands.UpdateAsync(client, restArgs, jsonOutput),
         ("drive", "search") => await DriveCommands.SearchAsync(client, restArgs, jsonOutput),
@@ -93,6 +95,11 @@ try
 catch (HttpRequestException ex)
 {
     Console.Error.WriteLine($"API error: {ex.Message}");
+    return 1;
+}
+catch (InvalidOperationException ex)
+{
+    Console.Error.WriteLine($"Error: {ex.Message}");
     return 1;
 }
 

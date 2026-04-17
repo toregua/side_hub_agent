@@ -58,6 +58,40 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    public record DriveDownloadInfo(string FileName, string? MimeType, long? FileSize, string DownloadUrl);
+
+    public async Task<DriveDownloadInfo> GetDriveDownloadInfoAsync(string itemId)
+    {
+        var item = await GetDriveItemAsync(itemId);
+
+        var type = item.TryGetProperty("type", out var t) ? t.GetString() : null;
+        var url = item.TryGetProperty("downloadUrl", out var u) ? u.GetString() : null;
+        if (string.IsNullOrEmpty(url))
+        {
+            var label = type is null ? "this item" : $"item of type '{type}'";
+            throw new InvalidOperationException($"No downloadable file for {label}. Use `drive read` for text pages.");
+        }
+
+        var fileName = item.TryGetProperty("fileName", out var f) ? f.GetString() : null;
+        if (string.IsNullOrEmpty(fileName))
+            fileName = item.TryGetProperty("title", out var ti) ? ti.GetString() ?? itemId : itemId;
+
+        string? mimeType = item.TryGetProperty("mimeType", out var m) ? m.GetString() : null;
+        long? fileSize = item.TryGetProperty("fileSize", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetInt64() : null;
+
+        return new DriveDownloadInfo(fileName!, mimeType, fileSize, url!);
+    }
+
+    private static readonly HttpClient _downloadClient = new();
+
+    public async Task DownloadToStreamAsync(string presignedUrl, Stream destination, CancellationToken ct = default)
+    {
+        using var resp = await _downloadClient.GetAsync(presignedUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new HttpRequestException($"Download failed: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+        await resp.Content.CopyToAsync(destination, ct);
+    }
+
     // --- Tasks ---
 
     public async Task<JsonElement> GetTasksAsync(string? status)

@@ -66,7 +66,120 @@ public static class DriveCommands
         Console.WriteLine($"# {title}");
         Console.WriteLine();
         if (!string.IsNullOrEmpty(content))
+        {
             Console.WriteLine(content);
+        }
+        else if (result.TryGetProperty("downloadUrl", out var du) && !string.IsNullOrEmpty(du.GetString()))
+        {
+            var mime = result.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null;
+            var size = result.TryGetProperty("fileSize", out var fs) && fs.ValueKind == JsonValueKind.Number
+                ? fs.GetInt64().ToString() + " bytes"
+                : "unknown size";
+            var label = string.IsNullOrEmpty(mime) ? size : $"{mime}, {size}";
+            Console.WriteLine($"Binary file ({label}). Use `sidehub-cli drive download {pageId}` to fetch it.");
+        }
+        return 0;
+    }
+
+    public static async Task<int> DownloadAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var pageId = args.FirstOrDefault(a => !a.StartsWith("--") && !a.StartsWith("-"));
+        if (string.IsNullOrEmpty(pageId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive download <pageId> [--output <path>] [--stdout] [--url-only]");
+            return 1;
+        }
+
+        var output = GetOption(args, "--output") ?? GetOption(args, "-o");
+        var toStdout = args.Contains("--stdout");
+        var urlOnly = args.Contains("--url-only");
+
+        if (toStdout && output is not null)
+        {
+            Console.Error.WriteLine("Error: --stdout and --output are mutually exclusive");
+            return 1;
+        }
+        if (urlOnly && (toStdout || output is not null))
+        {
+            Console.Error.WriteLine("Error: --url-only cannot be combined with --stdout or --output");
+            return 1;
+        }
+
+        var info = await client.GetDriveDownloadInfoAsync(pageId);
+
+        if (urlOnly)
+        {
+            if (json)
+            {
+                var payload = new
+                {
+                    id = pageId,
+                    fileName = info.FileName,
+                    mimeType = info.MimeType,
+                    fileSize = info.FileSize,
+                    downloadUrl = info.DownloadUrl
+                };
+                Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(payload,
+                    new JsonSerializerOptions { WriteIndented = true }));
+            }
+            else
+            {
+                Console.WriteLine(info.DownloadUrl);
+            }
+            return 0;
+        }
+
+        if (toStdout)
+        {
+            using var stdout = Console.OpenStandardOutput();
+            await client.DownloadToStreamAsync(info.DownloadUrl, stdout);
+            return 0;
+        }
+
+        string targetPath;
+        if (output is null)
+        {
+            targetPath = Path.Combine(Directory.GetCurrentDirectory(), info.FileName);
+        }
+        else if (Directory.Exists(output))
+        {
+            targetPath = Path.Combine(output, info.FileName);
+        }
+        else
+        {
+            targetPath = output;
+            var parent = Path.GetDirectoryName(Path.GetFullPath(targetPath));
+            if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+        }
+
+        long bytesWritten;
+        await using (var fs = File.Create(targetPath))
+        {
+            await client.DownloadToStreamAsync(info.DownloadUrl, fs);
+            bytesWritten = fs.Length;
+        }
+
+        var absolutePath = Path.GetFullPath(targetPath);
+
+        if (json)
+        {
+            var payload = new
+            {
+                id = pageId,
+                fileName = info.FileName,
+                mimeType = info.MimeType,
+                fileSize = info.FileSize,
+                downloadUrl = info.DownloadUrl,
+                savedTo = absolutePath,
+                bytesWritten
+            };
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(payload,
+                new JsonSerializerOptions { WriteIndented = true }));
+        }
+        else
+        {
+            Console.WriteLine($"Saved {bytesWritten} bytes to {absolutePath}");
+        }
         return 0;
     }
 
