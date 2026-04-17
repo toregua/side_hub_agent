@@ -75,6 +75,17 @@ public static class TableCommands
                 Console.Error.WriteLine($"Error: unknown column '{name}'. Existing columns: {string.Join(", ", columns.Select(c => c!["name"]!.GetValue<string>()))}");
                 return 1;
             }
+
+            if (col["type"]?.GetValue<string>() == "dropdown" && !string.IsNullOrEmpty(value))
+            {
+                var allowed = GetDropdownValues(col);
+                if (!allowed.Contains(value))
+                {
+                    Console.Error.WriteLine($"Error: value '{value}' is not in the dropdown options of '{name}'. Allowed: {string.Join(", ", allowed)}.");
+                    return 1;
+                }
+            }
+
             cells[col["id"]!.GetValue<string>()] = value;
         }
 

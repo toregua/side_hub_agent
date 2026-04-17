@@ -223,7 +223,9 @@ public class SideHubApiClient : IDisposable
         try
         {
             var json = JsonSerializer.Deserialize<JsonElement>(body);
-            if (json.TryGetProperty("error", out var err))
+            if (json.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String)
+                serverMessage = msg.GetString();
+            else if (json.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.String)
                 serverMessage = err.GetString();
         }
         catch { /* body is not JSON */ }
