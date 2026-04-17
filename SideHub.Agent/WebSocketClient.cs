@@ -1264,6 +1264,8 @@ exec "${real}" "$@"
             startInfo.ArgumentList.Add("stream-json");
             startInfo.ArgumentList.Add("--verbose");
             startInfo.ArgumentList.Add("--include-partial-messages");
+            startInfo.ArgumentList.Add("--effort");
+            startInfo.ArgumentList.Add("max");
             startInfo.ArgumentList.Add("--permission-mode");
             startInfo.ArgumentList.Add(permissionMode);
 
