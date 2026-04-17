@@ -188,10 +188,17 @@ public static class DriveCommands
         var title = GetOption(args, "--title");
         var content = GetOption(args, "--content");
         var parentId = GetOption(args, "--parent");
+        var type = GetOption(args, "--type");
 
         if (string.IsNullOrEmpty(title))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive create --title \"...\" [--content \"...\"] [--parent <id>]");
+            Console.Error.WriteLine("Usage: sidehub-cli drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet]");
+            return 1;
+        }
+
+        if (type is not null && type != "page" && type != "spreadsheet")
+        {
+            Console.Error.WriteLine("Error: --type must be 'page' or 'spreadsheet'");
             return 1;
         }
 
@@ -201,7 +208,7 @@ public static class DriveCommands
             return 1;
         }
 
-        var result = await client.CreateDriveItemAsync(title, content, parentId);
+        var result = await client.CreateDriveItemAsync(title, content, parentId, type);
 
         if (json)
         {
@@ -210,7 +217,8 @@ public static class DriveCommands
         }
 
         var id = result.TryGetProperty("id", out var i) ? i.GetString() : "";
-        Console.WriteLine($"Created page: {id}");
+        var label = type == "spreadsheet" ? "spreadsheet" : "page";
+        Console.WriteLine($"Created {label}: {id}");
         return 0;
     }
 

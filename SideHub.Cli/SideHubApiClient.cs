@@ -36,9 +36,9 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> CreateDriveItemAsync(string title, string? content, string? parentId)
+    public async Task<JsonElement> CreateDriveItemAsync(string title, string? content, string? parentId, string? type = null)
     {
-        var body = new Dictionary<string, object?> { ["title"] = title, ["type"] = "page" };
+        var body = new Dictionary<string, object?> { ["title"] = title, ["type"] = type ?? "page" };
         if (content is not null) body["content"] = content;
         if (parentId is not null) body["parentId"] = parentId;
 

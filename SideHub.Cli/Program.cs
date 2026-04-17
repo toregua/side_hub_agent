@@ -28,13 +28,18 @@ if (!agentToken.StartsWith("sh_agent_"))
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
-    Console.Error.WriteLine("Domains: drive, task, scheduler");
+    Console.Error.WriteLine("Domains: drive, table, task, scheduler");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
-    Console.Error.WriteLine("  drive create --title \"...\" --content \"...\" [--parent <id>]");
+    Console.Error.WriteLine("  drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet]");
     Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\"]");
     Console.Error.WriteLine("  drive search <query>");
+    Console.Error.WriteLine("  table show <pageId> [--json]");
+    Console.Error.WriteLine("  table append-row <pageId> --col \"Name=Value\" [--col ...]");
+    Console.Error.WriteLine("  table set-cell <pageId> --row <rowId> --col <colName> --value \"...\"");
+    Console.Error.WriteLine("  table delete-row <pageId> --row <rowId>");
+    Console.Error.WriteLine("  table add-column <pageId> --name \"...\" [--type text|image]");
     Console.Error.WriteLine("  task list [--status <status>]");
     Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>]");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
@@ -57,7 +62,7 @@ var restArgs = args[2..];
 var jsonOutput = restArgs.Contains("--json");
 
 // Defense-in-depth: block write commands in plan mode
-var writeActions = new HashSet<string> { "create", "update", "comment", "blocker", "delete", "pause", "resume", "trigger" };
+var writeActions = new HashSet<string> { "create", "update", "comment", "blocker", "delete", "pause", "resume", "trigger", "append-row", "set-cell", "delete-row", "add-column" };
 if (pipelineMode == "plan" && writeActions.Contains(action))
 {
     Console.Error.WriteLine($"Error: write command '{action}' is not allowed in plan mode");
@@ -76,6 +81,11 @@ try
         ("drive", "create") => await DriveCommands.CreateAsync(client, restArgs, jsonOutput),
         ("drive", "update") => await DriveCommands.UpdateAsync(client, restArgs, jsonOutput),
         ("drive", "search") => await DriveCommands.SearchAsync(client, restArgs, jsonOutput),
+        ("table", "show") => await TableCommands.ShowAsync(client, restArgs, jsonOutput),
+        ("table", "append-row") => await TableCommands.AppendRowAsync(client, restArgs, jsonOutput),
+        ("table", "set-cell") => await TableCommands.SetCellAsync(client, restArgs, jsonOutput),
+        ("table", "delete-row") => await TableCommands.DeleteRowAsync(client, restArgs, jsonOutput),
+        ("table", "add-column") => await TableCommands.AddColumnAsync(client, restArgs, jsonOutput),
         ("task", "list") => await TaskCommands.ListAsync(client, restArgs, jsonOutput),
         ("task", "create") => await TaskCommands.CreateAsync(client, restArgs, jsonOutput),
         ("task", "comment") => await TaskCommands.CommentAsync(client, restArgs, taskId, jsonOutput),
