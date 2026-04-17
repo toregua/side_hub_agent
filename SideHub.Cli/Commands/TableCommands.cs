@@ -115,6 +115,16 @@ public static class TableCommands
         var col = FindColumnByName(schema["columns"]!.AsArray(), colName);
         if (col is null) { Console.Error.WriteLine($"Error: unknown column '{colName}'."); return 1; }
 
+        if (col["type"]?.GetValue<string>() == "dropdown" && !string.IsNullOrEmpty(value))
+        {
+            var allowed = GetDropdownValues(col);
+            if (!allowed.Contains(value))
+            {
+                Console.Error.WriteLine($"Error: value '{value}' is not in the dropdown options of '{colName}'. Allowed: {string.Join(", ", allowed)}.");
+                return 1;
+            }
+        }
+
         var row = FindRowById(schema["rows"]!.AsArray(), rowId);
         if (row is null) { Console.Error.WriteLine($"Error: unknown row '{rowId}'."); return 1; }
 
@@ -168,16 +178,37 @@ public static class TableCommands
         var pageId = args.FirstOrDefault(a => !a.StartsWith("--"));
         var name = GetOption(args, "--name");
         var type = GetOption(args, "--type") ?? "text";
+        var optionsRaw = GetOption(args, "--options");
 
         if (string.IsNullOrEmpty(pageId) || string.IsNullOrEmpty(name))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli table add-column <pageId> --name \"...\" [--type text|image]");
+            Console.Error.WriteLine("Usage: sidehub-cli table add-column <pageId> --name \"...\" [--type text|image|dropdown] [--options \"val=Label,val2=Label 2\"]");
             return 1;
         }
 
-        if (type != "text" && type != "image")
+        if (type != "text" && type != "image" && type != "dropdown")
         {
-            Console.Error.WriteLine("Error: --type must be 'text' or 'image'");
+            Console.Error.WriteLine("Error: --type must be 'text', 'image', or 'dropdown'");
+            return 1;
+        }
+
+        JsonArray? dropdownOptions = null;
+        if (type == "dropdown")
+        {
+            if (string.IsNullOrWhiteSpace(optionsRaw))
+            {
+                Console.Error.WriteLine("Error: --options is required when --type dropdown. Format: \"value=Label,value2=Label 2\"");
+                return 1;
+            }
+            if (!TryParseDropdownOptions(optionsRaw!, out dropdownOptions, out var parseError))
+            {
+                Console.Error.WriteLine($"Error: {parseError}");
+                return 1;
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(optionsRaw))
+        {
+            Console.Error.WriteLine("Error: --options is only allowed with --type dropdown.");
             return 1;
         }
 
@@ -201,8 +232,9 @@ public static class TableCommands
             ["id"] = NewId("col"),
             ["name"] = name,
             ["type"] = type,
-            ["width"] = type == "image" ? 90 : 160,
+            ["width"] = type switch { "image" => 90, "dropdown" => 140, _ => 160 },
         };
+        if (dropdownOptions is not null) newCol["options"] = dropdownOptions;
         columns.Add(newCol);
 
         await SaveAsync(client, pageId, schema);
@@ -294,6 +326,60 @@ public static class TableCommands
         return null;
     }
 
+    private static bool TryParseDropdownOptions(string raw, out JsonArray options, out string error)
+    {
+        options = new JsonArray();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var tokens = raw.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var rawToken in tokens)
+        {
+            var token = rawToken.Trim();
+            if (token.Length == 0) continue;
+            var eq = token.IndexOf('=');
+            string value, label;
+            if (eq < 0)
+            {
+                value = token;
+                label = token;
+            }
+            else
+            {
+                value = token[..eq].Trim();
+                label = token[(eq + 1)..].Trim();
+            }
+            if (string.IsNullOrEmpty(value)) { error = $"option '{token}' has an empty value."; return false; }
+            if (string.IsNullOrEmpty(label)) label = value;
+            if (!seen.Add(value)) { error = $"duplicate option value '{value}'."; return false; }
+            options.Add(new JsonObject { ["value"] = value, ["label"] = label });
+        }
+        if (options.Count == 0) { error = "no valid options parsed."; return false; }
+        error = "";
+        return true;
+    }
+
+    private static HashSet<string> GetDropdownValues(JsonObject column)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (column["options"] is not JsonArray options) return set;
+        foreach (var opt in options.OfType<JsonObject>())
+        {
+            var v = opt["value"]?.GetValue<string>();
+            if (!string.IsNullOrEmpty(v)) set.Add(v);
+        }
+        return set;
+    }
+
+    private static string? FindDropdownLabel(JsonObject column, string value)
+    {
+        if (column["options"] is not JsonArray options) return null;
+        foreach (var opt in options.OfType<JsonObject>())
+        {
+            if (opt["value"]?.GetValue<string>() == value)
+                return opt["label"]?.GetValue<string>();
+        }
+        return null;
+    }
+
     private static string NewId(string prefix)
     {
         var bytes = Guid.NewGuid().ToByteArray();
@@ -336,10 +422,16 @@ public static class TableCommands
                 var col = columns[i];
                 var colId = col["id"]?.GetValue<string>() ?? "";
                 var raw = cells?[colId]?.GetValue<string>() ?? "";
-                if (col["type"]?.GetValue<string>() == "image" && !string.IsNullOrEmpty(raw))
+                var colType = col["type"]?.GetValue<string>();
+                if (colType == "image" && !string.IsNullOrEmpty(raw))
                 {
                     var name = imageNames?.TryGetValue(raw, out var n) == true ? n : "(missing)";
                     raw = $"[img: {name}]";
+                }
+                else if (colType == "dropdown" && !string.IsNullOrEmpty(raw))
+                {
+                    var label = FindDropdownLabel(col, raw);
+                    if (label is not null && label != raw) raw = $"{label} ({raw})";
                 }
                 values[i] = raw;
                 if (raw.Length > widths[i]) widths[i] = raw.Length;

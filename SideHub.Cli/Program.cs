@@ -39,7 +39,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  table append-row <pageId> --col \"Name=Value\" [--col ...]");
     Console.Error.WriteLine("  table set-cell <pageId> --row <rowId> --col <colName> --value \"...\"");
     Console.Error.WriteLine("  table delete-row <pageId> --row <rowId>");
-    Console.Error.WriteLine("  table add-column <pageId> --name \"...\" [--type text|image]");
+    Console.Error.WriteLine("  table add-column <pageId> --name \"...\" [--type text|image|dropdown] [--options \"val=Label,val2=Label 2\"]");
     Console.Error.WriteLine("  task list [--status <status>]");
     Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>]");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
