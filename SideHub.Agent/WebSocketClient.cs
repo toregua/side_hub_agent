@@ -774,9 +774,21 @@ public class WebSocketClient : IAsyncDisposable
         {
             if (_ptySessions.TryGetValue(ptySessionId, out var session) && session.Executor.IsRunning && !string.IsNullOrEmpty(message.Input))
             {
+                // Log scheduler/workflow input lines so we can diagnose "claude never started"
+                // issues. Single-key inputs from interactive use are skipped to avoid spam.
+                if (ptySessionId.StartsWith("scheduler-") || ptySessionId.StartsWith("workflow-"))
+                {
+                    var preview = message.Input!.Length > 200 ? message.Input.Substring(0, 200) + "..." : message.Input;
+                    var oneLine = preview.Replace('\n', '⏎');
+                    Log($"PTY {ptySessionId} input: {oneLine}");
+                }
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { await session.Executor.WriteAsync(message.Input, ct); }
                 catch (Exception ex) { Log($"Failed to write to PTY {ptySessionId}: {ex.Message}"); }
+            }
+            else if (_ptySessions.ContainsKey(ptySessionId) && !string.IsNullOrEmpty(message.Input))
+            {
+                Log($"WARN: pty.input received for {ptySessionId} but session is not running");
             }
             return;
         }
