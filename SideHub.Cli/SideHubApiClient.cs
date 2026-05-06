@@ -219,6 +219,26 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    // --- Workflow executions ---
+
+    public async Task<JsonElement> CompleteWorkflowStepAsync(string executionId, string stepId, string outputDriveItemId)
+    {
+        var body = new { outputDriveItemId };
+        var resp = await _http.PostAsJsonAsync($"api/workflow-executions/{executionId}/steps/{stepId}/complete", body);
+        await EnsureSuccessAsync(resp);
+        var content = await resp.Content.ReadAsStringAsync();
+        return string.IsNullOrWhiteSpace(content) ? default : JsonSerializer.Deserialize<JsonElement>(content);
+    }
+
+    public async Task<JsonElement> FailWorkflowStepAsync(string executionId, string stepId, string reason)
+    {
+        var body = new { reason };
+        var resp = await _http.PostAsJsonAsync($"api/workflow-executions/{executionId}/steps/{stepId}/fail", body);
+        await EnsureSuccessAsync(resp);
+        var content = await resp.Content.ReadAsStringAsync();
+        return string.IsNullOrWhiteSpace(content) ? default : JsonSerializer.Deserialize<JsonElement>(content);
+    }
+
     public void Dispose() => _http.Dispose();
 
     public static string Serialize(JsonElement element) =>

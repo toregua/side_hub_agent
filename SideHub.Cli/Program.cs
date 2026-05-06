@@ -29,7 +29,7 @@ if (!agentToken.StartsWith("sh_agent_"))
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
-    Console.Error.WriteLine("Domains: drive, table, task, scheduler");
+    Console.Error.WriteLine("Domains: drive, table, task, scheduler, workflow");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
@@ -54,6 +54,8 @@ if (args.Length < 2)
     Console.Error.WriteLine("  scheduler resume <id>");
     Console.Error.WriteLine("  scheduler trigger <id>");
     Console.Error.WriteLine("  scheduler executions <id>");
+    Console.Error.WriteLine("  workflow step-complete --output-id <guid>");
+    Console.Error.WriteLine("  workflow step-fail \"<reason>\"");
     return 1;
 }
 
@@ -100,6 +102,8 @@ try
         ("scheduler", "resume") => await SchedulerCommands.ResumeAsync(client, restArgs, jsonOutput),
         ("scheduler", "trigger") => await SchedulerCommands.TriggerAsync(client, restArgs, jsonOutput),
         ("scheduler", "executions") => await SchedulerCommands.ExecutionsAsync(client, restArgs, jsonOutput),
+        ("workflow", "step-complete") => await WorkflowCommands.StepCompleteAsync(client, restArgs, jsonOutput),
+        ("workflow", "step-fail") => await WorkflowCommands.StepFailAsync(client, restArgs, jsonOutput),
         _ => Error($"Unknown command: {domain} {action}")
     };
 }

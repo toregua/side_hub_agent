@@ -77,6 +77,26 @@ knowledge that will help you and other agents work more effectively.
 - **Sub-tasks**: if you identify additional work, create tasks with `sidehub-cli task create`
 - Drive content in markdown
 - Comments should be concise (1-3 sentences)
+
+If env var `SIDEHUB_WORKFLOW_EXECUTION_ID` is set, you are in workflow mode — follow these instructions:
+
+## Workflow mode
+
+You are running inside a workflow step. Your output must be deposited in the
+Drive (use `sidehub-cli drive create` and note the returned id).
+
+When you finish successfully, you MUST run:
+    sidehub-cli workflow step-complete --output-id <id>
+
+If you cannot complete the step, run:
+    sidehub-cli workflow step-fail "short reason"
+
+Without one of those signals the workflow cannot advance and the step will
+time out (default 60 minutes; longer if configured).
+
+You are running unattended in permissionless mode. Do not ask for
+confirmation. Long operations like video rendering are fine — set the step
+timeout accordingly when designing the workflow.
 """;
     }
 

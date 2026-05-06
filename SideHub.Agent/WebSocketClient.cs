@@ -88,7 +88,7 @@ public class WebSocketClient : IAsyncDisposable
     /// <summary>Build the environment dict injected into a PTY shell:
     /// SideHub CLI env vars + sidehub-agent dir prepended to PATH so `sidehub-cli`
     /// (and the SideHub skill files) are available inside the terminal.</summary>
-    private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(string ptySessionId)
+    private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null)
     {
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         var agentLibDir = "/usr/local/lib/sidehub-agent";
@@ -106,6 +106,16 @@ public class WebSocketClient : IAsyncDisposable
         };
         if (!string.IsNullOrEmpty(_config.AgentId))
             env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
+
+        // Merge caller-supplied env (e.g. workflow execution context). Caller wins on conflict.
+        if (additionalEnv is not null)
+        {
+            foreach (var kvp in additionalEnv)
+            {
+                if (string.IsNullOrEmpty(kvp.Key)) continue;
+                env[kvp.Key] = kvp.Value ?? string.Empty;
+            }
+        }
 
         return env;
     }
@@ -660,7 +670,7 @@ public class WebSocketClient : IAsyncDisposable
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
             var cwd = message.WorkingDirectory ?? _workingDirectory;
-            var ptyEnv = BuildTerminalEnvironment(ptySessionId);
+            var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv);
 
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
             // CLI launched from this terminal discovers sidehub-cli automatically.
