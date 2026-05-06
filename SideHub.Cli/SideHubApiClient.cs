@@ -13,9 +13,12 @@ public class SideHubApiClient : IDisposable
         WriteIndented = true
     };
 
-    public SideHubApiClient(string apiUrl, string agentToken, string workspaceId)
+    public string? DefaultAgentId { get; }
+
+    public SideHubApiClient(string apiUrl, string agentToken, string workspaceId, string? defaultAgentId = null)
     {
         _workspaceId = workspaceId;
+        DefaultAgentId = string.IsNullOrWhiteSpace(defaultAgentId) ? null : defaultAgentId;
         _http = new HttpClient { BaseAddress = new Uri(apiUrl.TrimEnd('/') + "/") };
         _http.DefaultRequestHeaders.Add("X-Agent-Token", agentToken);
     }
@@ -157,9 +160,15 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> CreateSchedulerAsync(string title, string prompt, string cron, string? description, string? provider)
+    public async Task<JsonElement> CreateSchedulerAsync(string title, string prompt, string cron, string? description, string? provider, string agentId)
     {
-        var body = new Dictionary<string, object?> { ["title"] = title, ["prompt"] = prompt, ["cronExpression"] = cron };
+        var body = new Dictionary<string, object?>
+        {
+            ["title"] = title,
+            ["prompt"] = prompt,
+            ["cronExpression"] = cron,
+            ["agentId"] = agentId
+        };
         if (description is not null) body["scheduleDescription"] = description;
         if (provider is not null) body["provider"] = provider;
 
@@ -168,7 +177,7 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> UpdateSchedulerAsync(string id, string? title, string? prompt, string? cron, string? description, string? provider)
+    public async Task<JsonElement> UpdateSchedulerAsync(string id, string? title, string? prompt, string? cron, string? description, string? provider, string? agentId)
     {
         var body = new Dictionary<string, object?>();
         if (title is not null) body["title"] = title;
@@ -176,6 +185,7 @@ public class SideHubApiClient : IDisposable
         if (cron is not null) body["cronExpression"] = cron;
         if (description is not null) body["scheduleDescription"] = description;
         if (provider is not null) body["provider"] = provider;
+        if (agentId is not null) body["agentId"] = agentId;
 
         var resp = await _http.PutAsJsonAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}", body);
         await EnsureSuccessAsync(resp);

@@ -91,14 +91,21 @@ public static class SchedulerCommands
         var cron = GetOption(args, "--cron");
         var description = GetOption(args, "--description");
         var provider = GetOption(args, "--provider");
+        var agentId = GetOption(args, "--agent") ?? client.DefaultAgentId;
 
         if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(prompt) || string.IsNullOrEmpty(cron))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--description \"...\"] [--provider <provider>]");
+            Console.Error.WriteLine("Usage: sidehub-cli scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
             return 1;
         }
 
-        var result = await client.CreateSchedulerAsync(title, prompt, cron, description, provider);
+        if (string.IsNullOrEmpty(agentId))
+        {
+            Console.Error.WriteLine("Error: --agent <id> is required (or set SIDEHUB_AGENT_ID env var). Schedulers must be assigned to an agent.");
+            return 1;
+        }
+
+        var result = await client.CreateSchedulerAsync(title, prompt, cron, description, provider, agentId);
 
         if (json)
         {
@@ -119,20 +126,21 @@ public static class SchedulerCommands
         var cron = GetOption(args, "--cron");
         var description = GetOption(args, "--description");
         var provider = GetOption(args, "--provider");
+        var agentId = GetOption(args, "--agent");
 
         if (string.IsNullOrEmpty(id))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--provider <provider>]");
+            Console.Error.WriteLine("Usage: sidehub-cli scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>]");
             return 1;
         }
 
-        if (title is null && prompt is null && cron is null && description is null && provider is null)
+        if (title is null && prompt is null && cron is null && description is null && provider is null && agentId is null)
         {
             Console.Error.WriteLine("Error: at least one field to update is required.");
             return 1;
         }
 
-        var result = await client.UpdateSchedulerAsync(id, title, prompt, cron, description, provider);
+        var result = await client.UpdateSchedulerAsync(id, title, prompt, cron, description, provider, agentId);
 
         if (json)
         {

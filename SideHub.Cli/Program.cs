@@ -5,6 +5,7 @@ var apiUrl = Environment.GetEnvironmentVariable("SIDEHUB_API_URL");
 var agentToken = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_TOKEN");
 var workspaceId = Environment.GetEnvironmentVariable("SIDEHUB_WORKSPACE_ID");
 var taskId = Environment.GetEnvironmentVariable("SIDEHUB_TASK_ID");
+var defaultAgentId = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_ID");
 var pipelineMode = Environment.GetEnvironmentVariable("SIDEHUB_PIPELINE_MODE");
 
 if (string.IsNullOrEmpty(apiUrl) || string.IsNullOrEmpty(agentToken) || string.IsNullOrEmpty(workspaceId))
@@ -46,8 +47,8 @@ if (args.Length < 2)
     Console.Error.WriteLine("  task blocker [<taskId>] --reason \"...\"");
     Console.Error.WriteLine("  scheduler list [--active | --paused]");
     Console.Error.WriteLine("  scheduler get <id>");
-    Console.Error.WriteLine("  scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--description \"...\"] [--provider <provider>]");
-    Console.Error.WriteLine("  scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--provider <provider>]");
+    Console.Error.WriteLine("  scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
+    Console.Error.WriteLine("  scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>]");
     Console.Error.WriteLine("  scheduler delete <id> [--yes]");
     Console.Error.WriteLine("  scheduler pause <id>");
     Console.Error.WriteLine("  scheduler resume <id>");
@@ -69,7 +70,7 @@ if (pipelineMode == "plan" && writeActions.Contains(action))
     return 1;
 }
 
-using var client = new SideHubApiClient(apiUrl, agentToken, workspaceId);
+using var client = new SideHubApiClient(apiUrl, agentToken, workspaceId, defaultAgentId);
 
 try
 {

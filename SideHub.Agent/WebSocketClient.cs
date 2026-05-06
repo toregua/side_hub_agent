@@ -96,6 +96,8 @@ public class WebSocketClient : IAsyncDisposable
         startInfo.Environment["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!);
         startInfo.Environment["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken;
         startInfo.Environment["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId;
+        if (!string.IsNullOrEmpty(_config.AgentId))
+            startInfo.Environment["SIDEHUB_AGENT_ID"] = _config.AgentId;
         if (!string.IsNullOrEmpty(taskId))
             startInfo.Environment["SIDEHUB_TASK_ID"] = taskId;
         if (!string.IsNullOrEmpty(taskTitle))
@@ -118,6 +120,8 @@ public class WebSocketClient : IAsyncDisposable
             ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!
         };
+        if (!string.IsNullOrEmpty(_config.AgentId))
+            vars["SIDEHUB_AGENT_ID"] = _config.AgentId!;
         if (!string.IsNullOrEmpty(taskId))
             vars["SIDEHUB_TASK_ID"] = taskId;
         if (!string.IsNullOrEmpty(taskTitle))
@@ -254,6 +258,8 @@ exec "${real}" "$@"
             ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
         };
+        if (!string.IsNullOrEmpty(_config.AgentId))
+            env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
 
         return env;
     }
