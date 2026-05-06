@@ -110,34 +110,6 @@ public class IncomingMessage
     [JsonPropertyName("ptyPaste")]
     public string? PtyPaste { get; init; }
 
-    // agent-sdk fields
-    [JsonPropertyName("sessionId")]
-    public string? SessionId { get; init; }
-
-    [JsonPropertyName("sdkUrl")]
-    public string? SdkUrl { get; init; }
-
-    [JsonPropertyName("model")]
-    public string? Model { get; init; }
-
-    [JsonPropertyName("permissionMode")]
-    public string? PermissionMode { get; init; }
-
-    [JsonPropertyName("resumeCliSessionId")]
-    public string? ResumeCliSessionId { get; init; }
-
-    [JsonPropertyName("provider")]
-    public string? Provider { get; init; }
-
-    [JsonPropertyName("sdkToken")]
-    public string? SdkToken { get; init; }
-
-    [JsonPropertyName("taskId")]
-    public string? TaskId { get; init; }
-
-    [JsonPropertyName("taskTitle")]
-    public string? TaskTitle { get; init; }
-
     [JsonPropertyName("ptySessionId")]
     public string? PtySessionId { get; init; }
 
@@ -211,47 +183,3 @@ public class PtyHistoryMessage
     public string? PtySessionId { get; init; }
 }
 
-public class AgentSdkSpawnedMessage
-{
-    [JsonPropertyName("type")]
-    public string Type => "agent-sdk.spawned";
-
-    [JsonPropertyName("sessionId")]
-    public required string SessionId { get; init; }
-
-    [JsonPropertyName("pid")]
-    public required int Pid { get; init; }
-}
-
-public class AgentSdkSpawnFailedMessage
-{
-    [JsonPropertyName("type")]
-    public string Type => "agent-sdk.spawn-failed";
-
-    [JsonPropertyName("sessionId")]
-    public required string SessionId { get; init; }
-
-    [JsonPropertyName("error")]
-    public required string Error { get; init; }
-}
-
-public class AgentSdkExitedMessage
-{
-    [JsonPropertyName("type")]
-    public string Type => "agent-sdk.exited";
-
-    [JsonPropertyName("sessionId")]
-    public required string SessionId { get; init; }
-
-    [JsonPropertyName("exitCode")]
-    public required int ExitCode { get; init; }
-}
-
-public class AgentSdkSessionsAliveMessage
-{
-    [JsonPropertyName("type")]
-    public string Type => "agent-sdk.sessions-alive";
-
-    [JsonPropertyName("sessions")]
-    public required List<Dictionary<string, string?>> Sessions { get; init; }
-}

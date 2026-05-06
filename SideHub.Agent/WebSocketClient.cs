@@ -22,14 +22,9 @@ public class WebSocketClient : IAsyncDisposable
     // Multi-PTY: keyed by ptySessionId
     private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
-    private readonly ConcurrentDictionary<string, string> _ptyClaudeProxySessions = new();
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     private const int PtyIdleTimeoutMinutes = 30;
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
-    private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _claudeSdkProcesses = new();
-    private readonly ConcurrentDictionary<string, CodexBridge> _codexBridges = new();
-    private readonly ConcurrentDictionary<string, GeminiBridge> _geminiBridges = new();
-    private AgentSdkProxy? _proxy;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -90,170 +85,21 @@ public class WebSocketClient : IAsyncDisposable
         return $"{scheme}://{uri.Host}{(uri.IsDefaultPort ? "" : $":{uri.Port}")}";
     }
 
-    /// <summary>Inject Side Hub CLI environment variables into a ProcessStartInfo.</summary>
-    private void InjectSideHubEnvVars(System.Diagnostics.ProcessStartInfo startInfo, string? taskId = null, string? taskTitle = null)
+    /// <summary>Build the environment dict injected into a PTY shell:
+    /// SideHub CLI env vars + sidehub-agent dir prepended to PATH so `sidehub-cli`
+    /// (and the SideHub skill files) are available inside the terminal.</summary>
+    private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(string ptySessionId)
     {
-        startInfo.Environment["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!);
-        startInfo.Environment["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken;
-        startInfo.Environment["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId;
-        if (!string.IsNullOrEmpty(_config.AgentId))
-            startInfo.Environment["SIDEHUB_AGENT_ID"] = _config.AgentId;
-        if (!string.IsNullOrEmpty(taskId))
-            startInfo.Environment["SIDEHUB_TASK_ID"] = taskId;
-        if (!string.IsNullOrEmpty(taskTitle))
-            startInfo.Environment["SIDEHUB_TASK_TITLE"] = taskTitle;
-
-        // Ensure sidehub-cli is in PATH
-        var currentPath = startInfo.Environment.ContainsKey("PATH")
-            ? startInfo.Environment["PATH"]
-            : Environment.GetEnvironmentVariable("PATH") ?? "";
-        if (!currentPath!.Contains("/usr/local/lib/sidehub-agent"))
-            startInfo.Environment["PATH"] = $"/usr/local/lib/sidehub-agent:{currentPath}";
-    }
-
-    /// <summary>Build a dictionary of Side Hub CLI env vars (for bridges that manage their own ProcessStartInfo).</summary>
-    private Dictionary<string, string> BuildSideHubEnvVars(string? taskId = null, string? taskTitle = null)
-    {
-        var vars = new Dictionary<string, string>
-        {
-            ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
-            ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
-            ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!
-        };
-        if (!string.IsNullOrEmpty(_config.AgentId))
-            vars["SIDEHUB_AGENT_ID"] = _config.AgentId!;
-        if (!string.IsNullOrEmpty(taskId))
-            vars["SIDEHUB_TASK_ID"] = taskId;
-        if (!string.IsNullOrEmpty(taskTitle))
-            vars["SIDEHUB_TASK_TITLE"] = taskTitle;
-
-        // Ensure sidehub-cli is in PATH
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
-        if (!currentPath.Contains("/usr/local/lib/sidehub-agent"))
-            vars["PATH"] = $"/usr/local/lib/sidehub-agent:{currentPath}";
-
-        return vars;
-    }
-
-    private static string? FindExecutableInPath(string executableName)
-    {
-        var path = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrWhiteSpace(path))
-            return null;
-
-        var pathExts = OperatingSystem.IsWindows()
-            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.BAT;.CMD").Split(';', StringSplitOptions.RemoveEmptyEntries)
-            : new[] { string.Empty };
-
-        foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            foreach (var ext in pathExts)
-            {
-                var candidate = Path.Combine(dir, executableName + ext);
-                if (File.Exists(candidate))
-                    return candidate;
-            }
-        }
-
-        return null;
-    }
-
-    private string EnsureClaudeShimDirectory()
-    {
-        var shimDir = Path.Combine(Path.GetTempPath(), "sidehub-agent", "shims");
-        Directory.CreateDirectory(shimDir);
-
-        if (OperatingSystem.IsWindows())
-        {
-            var batPath = Path.Combine(shimDir, "claude.cmd");
-            if (!File.Exists(batPath))
-            {
-                File.WriteAllText(batPath, """
-@echo off
-setlocal
-if not "%SIDEHUB_CLAUDE_SDK_URL%"=="" (
-  "%SIDEHUB_REAL_CLAUDE_PATH%" --sdk-url "%SIDEHUB_CLAUDE_SDK_URL%" %*
-) else (
-  "%SIDEHUB_REAL_CLAUDE_PATH%" %*
-)
-""");
-            }
-
-            return shimDir;
-        }
-
-        var shimPath = Path.Combine(shimDir, "claude");
-        if (!File.Exists(shimPath))
-        {
-            File.WriteAllText(shimPath, """
-#!/usr/bin/env bash
-set -euo pipefail
-
-real="${SIDEHUB_REAL_CLAUDE_PATH:-}"
-sdk_url="${SIDEHUB_CLAUDE_SDK_URL:-}"
-
-if [[ -z "${real}" ]]; then
-  echo "SideHub: real claude binary path is not configured" >&2
-  exit 127
-fi
-
-for arg in "$@"; do
-  if [[ "${arg}" == "--sdk-url" ]]; then
-    exec "${real}" "$@"
-  fi
-done
-
-if [[ -n "${sdk_url}" ]]; then
-  exec "${real}" --sdk-url "${sdk_url}" "$@"
-fi
-
-exec "${real}" "$@"
-""");
-            try
-            {
-                File.SetUnixFileMode(
-                    shimPath,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
-            }
-            catch { }
-        }
-
-        return shimDir;
-    }
-
-    private async Task<IReadOnlyDictionary<string, string>?> BuildTerminalClaudeEnvironmentAsync(string ptySessionId)
-    {
-        var realClaudePath = FindExecutableInPath("claude");
-        if (string.IsNullOrWhiteSpace(realClaudePath))
-        {
-            Log($"Claude binary not found in PATH for PTY {ptySessionId}, terminal shim disabled");
-            return null;
-        }
-
-        await EnsureProxyStartedAsync();
-
-        var proxySessionId = $"terminal-{ptySessionId}";
-        _proxy!.RegisterLocalTerminalSession(proxySessionId);
-        _ptyClaudeProxySessions[ptySessionId] = proxySessionId;
-
-        var shimDir = EnsureClaudeShimDirectory();
-        var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
-
-        // Ensure sidehub-cli is in PATH
         var agentLibDir = "/usr/local/lib/sidehub-agent";
-        var fullPath = string.IsNullOrEmpty(currentPath) ? shimDir : $"{shimDir}{Path.PathSeparator}{currentPath}";
-        if (!fullPath.Contains(agentLibDir))
-            fullPath = $"{agentLibDir}{Path.PathSeparator}{fullPath}";
+        var fullPath = currentPath.Contains(agentLibDir)
+            ? currentPath
+            : $"{agentLibDir}{Path.PathSeparator}{currentPath}";
 
         var env = new Dictionary<string, string>
         {
             ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
-            ["SIDEHUB_CLAUDE_SDK_URL"] = _proxy.GetLocalUrl(proxySessionId),
-            ["SIDEHUB_REAL_CLAUDE_PATH"] = realClaudePath,
             ["PATH"] = fullPath,
-            // Side Hub CLI env vars (drive, tasks)
             ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
             ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
@@ -290,7 +136,6 @@ exec "${real}" "$@"
                 _connectedAt = DateTime.UtcNow;
 
                 await SendConnectedMessageAsync(ct);
-                await ReportAliveSessionsAsync(ct);
                 await ReportAlivePtySessionsAsync(ct);
                 StartHeartbeat(ct);
                 StartPtyReaper();
@@ -423,8 +268,6 @@ exec "${real}" "$@"
                         if (_ptySessions.TryRemove(sid, out var session))
                         {
                             _ptyLastActivity.TryRemove(sid, out DateTime _);
-                            if (_ptyClaudeProxySessions.TryRemove(sid, out var proxySessionId))
-                                _proxy?.RemoveSession(proxySessionId);
                             Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
                             try { await session.Executor.DisposeAsync(); } catch { }
                         }
@@ -520,12 +363,6 @@ exec "${real}" "$@"
                 case "terminal.attachment.enqueue":
                     await HandleTerminalAttachmentAsync(message, ct);
                     break;
-                case "agent-sdk.spawn":
-                    await HandleAgentSdkSpawnAsync(message, ct);
-                    break;
-                case "agent-sdk.stop":
-                    await HandleAgentSdkStopAsync(message);
-                    break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
                     break;
@@ -548,13 +385,6 @@ exec "${real}" "$@"
 
     private async Task HandleTerminalAttachmentAsync(IncomingMessage message, CancellationToken ct)
     {
-        var provider = message.Provider?.Trim().ToLowerInvariant();
-        if (!string.Equals(provider, "claude", StringComparison.Ordinal))
-        {
-            Log($"Ignoring unsupported terminal attachment provider '{message.Provider}'");
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(message.PtySessionId) || message.Attachment is null)
         {
             Log("Invalid terminal.attachment.enqueue message");
@@ -569,54 +399,8 @@ exec "${real}" "$@"
             return;
         }
 
-        // Try SDK proxy path first (Claude spawned via agent-sdk)
-        if (_proxy is not null
-            && _ptyClaudeProxySessions.TryGetValue(message.PtySessionId, out var proxySessionId)
-            && _proxy.IsCliConnected(proxySessionId))
-        {
-            var cliSessionId = _proxy.GetCliSessionId(proxySessionId) ?? string.Empty;
-            Log($"Preparing terminal image attachment for PTY {message.PtySessionId} via proxy {proxySessionId} (mime={mimeType}, chars={base64Data.Length}, cliSessionId={(string.IsNullOrEmpty(cliSessionId) ? "<none>" : cliSessionId)})");
-            var payload = new
-            {
-                type = "user",
-                message = new
-                {
-                    role = "user",
-                    content = new object[]
-                    {
-                        new
-                        {
-                            type = "image",
-                            source = new
-                            {
-                                type = "base64",
-                                media_type = mimeType,
-                                data = base64Data
-                            }
-                        },
-                        new
-                        {
-                            type = "text",
-                            text = ""
-                        }
-                    }
-                },
-                parent_tool_use_id = (string?)null,
-                session_id = cliSessionId
-            };
-
-            var rawMessage = JsonSerializer.Serialize(payload, _jsonOptions) + "\n";
-            var sent = await _proxy.SendToCliSessionAsync(proxySessionId, rawMessage, ct);
-            if (sent)
-                Log($"Sent terminal image attachment to Claude proxy session {proxySessionId} for PTY {message.PtySessionId}");
-            else
-                Log($"Failed to send terminal image attachment to Claude proxy session {proxySessionId}");
-            return;
-        }
-
-        // Fallback: save image to file and paste [Image #N: path] into PTY
-        // Works when Claude is running manually in a shell (no SDK proxy session)
-        Log($"No proxy for PTY {message.PtySessionId}; falling back to file-based attachment");
+        // Save image to file and paste [Image #N: path] into PTY.
+        // The CLI running in the PTY (claude/codex/gemini) can then read the file.
         try
         {
             var bytes = Convert.FromBase64String(base64Data);
@@ -876,10 +660,14 @@ exec "${real}" "$@"
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
             var cwd = message.WorkingDirectory ?? _workingDirectory;
-            var ptyEnv = await BuildTerminalClaudeEnvironmentAsync(ptySessionId);
+            var ptyEnv = BuildTerminalEnvironment(ptySessionId);
 
-            // Install skill file so Claude launched from this terminal discovers sidehub-cli + drive index
-            await SkillInstaller.EnsureSkillFilesAsync(cwd, "claude", DeriveApiUrl(_config.SidehubUrl!), _config.AgentToken!, _config.WorkspaceId!);
+            // Install the SideHub skill file (CLI commands + drive index) so any LLM
+            // CLI launched from this terminal discovers sidehub-cli automatically.
+            var apiUrl = DeriveApiUrl(_config.SidehubUrl!);
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "claude", apiUrl, _config.AgentToken!, _config.WorkspaceId!);
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "codex", apiUrl, _config.AgentToken!, _config.WorkspaceId!);
+            await SkillInstaller.EnsureSkillFilesAsync(cwd, "gemini", apiUrl, _config.AgentToken!, _config.WorkspaceId!);
 
             Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
 
@@ -894,8 +682,6 @@ exec "${real}" "$@"
                         Log($"PTY {ptySessionId} exited with code {exitCode}");
                         _ptySessions.TryRemove(ptySessionId, out _);
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
-                        if (_ptyClaudeProxySessions.TryRemove(ptySessionId, out var proxySessionId))
-                            _proxy?.RemoveSession(proxySessionId);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
                     },
                     columns,
@@ -911,8 +697,6 @@ exec "${real}" "$@"
             }
             catch (Exception ex)
             {
-                if (_ptyClaudeProxySessions.TryRemove(ptySessionId, out var proxySessionId))
-                    _proxy?.RemoveSession(proxySessionId);
                 Log($"Failed to start PTY {ptySessionId}: {ex.Message}");
             }
             return;
@@ -1032,8 +816,6 @@ exec "${real}" "$@"
             if (_ptySessions.TryRemove(ptySessionId, out var session))
             {
                 _ptyLastActivity.TryRemove(ptySessionId, out _);
-                if (_ptyClaudeProxySessions.TryRemove(ptySessionId, out var proxySessionId))
-                    _proxy?.RemoveSession(proxySessionId);
                 Log($"Stopping PTY session {ptySessionId}");
                 try { await session.Executor.DisposeAsync(); }
                 catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
@@ -1096,56 +878,6 @@ exec "${real}" "$@"
         await SendAsync(new PtyHistoryMessage { Data = history, BufferSize = bufferSize, RequestId = requestId }, ct);
     }
 
-    private async Task EnsureProxyStartedAsync()
-    {
-        if (_proxy is not null && _proxy.IsRunning) return;
-        _proxy = new AgentSdkProxy(Log);
-        _proxy.OnSessionTimeout(sessionId =>
-        {
-            if (_claudeSdkProcesses.TryGetValue(sessionId, out var process))
-            {
-                try
-                {
-                    if (!process.HasExited)
-                    {
-                        process.Kill(true);
-                        Log($"Killed inactive Claude CLI process for session {sessionId}");
-                    }
-                }
-                catch { }
-                _claudeSdkProcesses.TryRemove(sessionId, out _);
-            }
-        });
-        await _proxy.StartAsync();
-    }
-
-    /// <summary>
-    /// After reconnecting to backend, report any Claude sessions still alive
-    /// so the backend can recreate them and the proxy can reconnect.
-    /// </summary>
-    private async Task ReportAliveSessionsAsync(CancellationToken ct)
-    {
-        if (_proxy is null) return;
-
-        var activeSessions = _proxy.GetActiveSessions();
-        if (activeSessions.Count == 0) return;
-
-        Log($"Reporting {activeSessions.Count} active Claude session(s) to backend...");
-
-        var sessionsPayload = activeSessions.Select(s => new Dictionary<string, string?>
-        {
-            ["sessionId"] = s.SessionId,
-            ["token"] = s.Token,
-            ["cliSessionId"] = s.CliSessionId
-        }).ToList();
-
-        await SendAsync(new AgentSdkSessionsAliveMessage { Sessions = sessionsPayload }, ct);
-
-        // Give backend a moment to recreate sessions before proxy reconnects
-        await Task.Delay(1000, ct);
-        await _proxy.ReconnectAllToBackendAsync(ct);
-    }
-
     /// <summary>
     /// After reconnecting to backend, report any PTY sessions still alive
     /// so the backend can restore PtyOutputNotifier state and notify frontends.
@@ -1171,532 +903,6 @@ exec "${real}" "$@"
         }
     }
 
-    private async Task HandleAgentSdkSpawnAsync(IncomingMessage message, CancellationToken ct)
-    {
-        var sessionId = message.SessionId;
-        var sdkUrl = message.SdkUrl;
-        var provider = message.Provider ?? "claude";
-
-        if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(sdkUrl))
-        {
-            Log("Invalid agent-sdk.spawn message: missing sessionId or sdkUrl");
-            return;
-        }
-
-        if (provider == "codex")
-        {
-            await HandleCodexSpawnAsync(message, sessionId, sdkUrl, ct);
-            return;
-        }
-
-        if (provider == "gemini")
-        {
-            await HandleGeminiSpawnAsync(message, sessionId, sdkUrl, ct);
-            return;
-        }
-
-        var resumeCliSessionId = message.ResumeCliSessionId;
-        Log($"Spawning Claude CLI for session {sessionId} with SDK URL: {MaskUrl(sdkUrl)}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
-
-        // Kill any existing process for this session before spawning a new one
-        // to prevent zombie accumulation when backend retries or reconnects
-        if (_claudeSdkProcesses.TryRemove(sessionId, out var existingProcess))
-        {
-            try
-            {
-                if (!existingProcess.HasExited)
-                {
-                    existingProcess.Kill(true);
-                    Log($"Killed previous Claude CLI process for session {sessionId} before re-spawn");
-                }
-            }
-            catch { }
-        }
-
-        try
-        {
-            var model = message.Model ?? "claude-sonnet-4-20250514";
-            var cwd = message.WorkingDirectory ?? _workingDirectory;
-
-            // Map Side Hub permission modes to valid CLI permission modes.
-            // CLI accepts: acceptEdits, bypassPermissions, default, dontAsk, plan
-            // Side Hub uses 'pipeline', 'auto', 'safe' as custom modes handled server-side.
-            var rawPermissionMode = message.PermissionMode ?? "default";
-            var permissionMode = rawPermissionMode switch
-            {
-                "pipeline" => "bypassPermissions",
-                "auto" => "bypassPermissions",
-                "safe" => "default",
-                _ => rawPermissionMode
-            };
-
-            // Start local WebSocket proxy so CLI connects to agent (stable)
-            // instead of directly to backend (drops on deploy).
-            await EnsureProxyStartedAsync();
-
-            // Read token from dedicated field, fallback to URL parsing for backward compat
-            var token = message.SdkToken ?? "";
-            if (string.IsNullOrEmpty(token))
-            {
-                var uriObj = new Uri(sdkUrl);
-                token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
-            }
-
-            _proxy!.RegisterSession(sessionId, sdkUrl, token, rawPermissionMode);
-            var localUrl = _proxy.GetLocalUrl(sessionId);
-
-            Log($"CLI will connect to local proxy: {MaskUrl(localUrl)}");
-
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "claude",
-                WorkingDirectory = cwd,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                RedirectStandardInput = true,
-                CreateNoWindow = true
-            };
-
-            // CLI connects to local proxy instead of backend directly
-            startInfo.ArgumentList.Add("--sdk-url");
-            startInfo.ArgumentList.Add(localUrl);
-            startInfo.ArgumentList.Add("--model");
-            startInfo.ArgumentList.Add(model);
-            startInfo.ArgumentList.Add("--print");
-            startInfo.ArgumentList.Add("--output-format");
-            startInfo.ArgumentList.Add("stream-json");
-            startInfo.ArgumentList.Add("--input-format");
-            startInfo.ArgumentList.Add("stream-json");
-            startInfo.ArgumentList.Add("--verbose");
-            startInfo.ArgumentList.Add("--include-partial-messages");
-            startInfo.ArgumentList.Add("--effort");
-            startInfo.ArgumentList.Add("max");
-            startInfo.ArgumentList.Add("--thinking-display");
-            startInfo.ArgumentList.Add("summarized");
-            startInfo.ArgumentList.Add("--permission-mode");
-            startInfo.ArgumentList.Add(permissionMode);
-
-            if (!string.IsNullOrEmpty(resumeCliSessionId))
-            {
-                startInfo.ArgumentList.Add("--resume");
-                startInfo.ArgumentList.Add(resumeCliSessionId);
-            }
-
-            startInfo.ArgumentList.Add("-p");
-            startInfo.ArgumentList.Add("");
-
-            // Remove CLAUDECODE from inherited environment to prevent
-            // "cannot be launched inside another Claude Code session" error.
-            startInfo.Environment.Remove("CLAUDECODE");
-
-            // Install skill files (with dynamic drive index) and inject Side Hub CLI env vars
-            var apiUrl = DeriveApiUrl(_config.SidehubUrl!);
-            await SkillInstaller.EnsureSkillFilesAsync(cwd, "claude", apiUrl, _config.AgentToken!, _config.WorkspaceId!);
-            InjectSideHubEnvVars(startInfo, message.TaskId, message.TaskTitle);
-
-            var spawnedAt = DateTime.UtcNow;
-            var process = System.Diagnostics.Process.Start(startInfo);
-
-            if (process is null)
-            {
-                Log($"Failed to start Claude CLI process for session {sessionId}");
-                _proxy.RemoveSession(sessionId);
-                await SendAsync(new AgentSdkSpawnFailedMessage
-                {
-                    SessionId = sessionId,
-                    Error = "Failed to start process"
-                }, ct);
-                return;
-            }
-
-            _claudeSdkProcesses[sessionId] = process;
-
-            // Keep stdin pipe open (don't close it!) - the CLI uses WebSocket for input
-            // but closing stdin sends EOF which causes the CLI to exit after the first turn.
-
-            Log($"Claude CLI started for session {sessionId} (PID {process.Id})");
-            await SendAsync(new AgentSdkSpawnedMessage
-            {
-                SessionId = sessionId,
-                Pid = process.Id
-            }, ct);
-
-            // Monitor stdout, stderr and process exit in background
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var stdoutTask = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            while (!process.HasExited)
-                            {
-                                var line = await process.StandardOutput.ReadLineAsync(ct);
-                                if (line is null) break;
-                                if (!string.IsNullOrWhiteSpace(line))
-                                    Log($"[Claude CLI stdout] {line}");
-                            }
-                        }
-                        catch (OperationCanceledException) { }
-                        catch { }
-                    }, ct);
-
-                    var stderrTask = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            while (!process.HasExited)
-                            {
-                                var line = await process.StandardError.ReadLineAsync(ct);
-                                if (line is null) break;
-                                if (!string.IsNullOrWhiteSpace(line))
-                                    Log($"[Claude CLI stderr] {line}");
-                            }
-                        }
-                        catch (OperationCanceledException) { }
-                        catch { }
-                    }, ct);
-
-                    await process.WaitForExitAsync(ct);
-                    var exitCode = process.ExitCode;
-                    var elapsed = DateTime.UtcNow - spawnedAt;
-                    Log($"Claude CLI for session {sessionId} exited with code {exitCode} after {elapsed.TotalSeconds:F1}s");
-                    _claudeSdkProcesses.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-
-                    await Task.WhenAll(stdoutTask, stderrTask);
-
-                    if (elapsed.TotalSeconds < 5 && !string.IsNullOrEmpty(resumeCliSessionId))
-                    {
-                        Log($"Resume failed for session {sessionId} (CLI exited too quickly)");
-                        await SendAsync(new AgentSdkSpawnFailedMessage
-                        {
-                            SessionId = sessionId,
-                            Error = "Resume failed - CLI session may no longer exist"
-                        }, ct);
-                    }
-                    else
-                    {
-                        await SendAsync(new AgentSdkExitedMessage
-                        {
-                            SessionId = sessionId,
-                            ExitCode = exitCode
-                        }, ct);
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    try { process.Kill(true); } catch { }
-                    _claudeSdkProcesses.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-                }
-                catch (Exception ex)
-                {
-                    Log($"Error monitoring Claude CLI process: {ex.Message}");
-                    _claudeSdkProcesses.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-                }
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            Log($"Failed to spawn Claude CLI for session {sessionId}: {ex.Message}");
-            // Kill the process if it was started but something failed after
-            if (_claudeSdkProcesses.TryRemove(sessionId, out var leakedProcess))
-            {
-                try { if (!leakedProcess.HasExited) leakedProcess.Kill(true); } catch { }
-            }
-            _proxy?.RemoveSession(sessionId);
-            await SendAsync(new AgentSdkSpawnFailedMessage
-            {
-                SessionId = sessionId,
-                Error = ex.Message
-            }, ct);
-        }
-    }
-
-    private async Task HandleCodexSpawnAsync(IncomingMessage message, string sessionId, string sdkUrl, CancellationToken ct)
-    {
-        Log($"Spawning Codex CLI for session {sessionId}");
-
-        // Kill any existing Codex bridge for this session before spawning a new one
-        if (_codexBridges.TryRemove(sessionId, out var existingBridge))
-        {
-            try
-            {
-                await existingBridge.DisposeAsync();
-                Log($"Disposed previous Codex bridge for session {sessionId} before re-spawn");
-            }
-            catch { }
-        }
-
-        try
-        {
-            var model = message.Model ?? "gpt-5.3-codex";
-            var cwd = message.WorkingDirectory ?? _workingDirectory;
-            var rawPermissionMode = message.PermissionMode ?? "default";
-
-            await EnsureProxyStartedAsync();
-
-            // Read token from dedicated field, fallback to URL parsing for backward compat
-            var token = message.SdkToken ?? "";
-            if (string.IsNullOrEmpty(token))
-            {
-                var uriObj = new Uri(sdkUrl);
-                token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
-            }
-
-            // Install skill files (with dynamic drive index) and prepare Side Hub CLI env vars
-            await SkillInstaller.EnsureSkillFilesAsync(cwd, "codex", DeriveApiUrl(_config.SidehubUrl!), _config.AgentToken!, _config.WorkspaceId!);
-            var bridge = new CodexBridge(sessionId, model, cwd, rawPermissionMode, Log)
-            {
-                ExtraEnvironment = BuildSideHubEnvVars(message.TaskId, message.TaskTitle)
-            };
-
-            // Register virtual session so bridge can send messages to backend via proxy
-            _proxy!.RegisterVirtualSession(
-                sessionId, sdkUrl, token, rawPermissionMode,
-                (msg, cancelToken) => bridge.HandleBackendMessageAsync(msg, cancelToken));
-
-            // Start bridge with callback to send NDJSON to backend
-            await bridge.StartAsync(
-                (msg, cancelToken) => _proxy.SendVirtualMessageToBackendAsync(sessionId, msg, cancelToken),
-                ct);
-
-            if (bridge.Pid is null)
-            {
-                _proxy.RemoveSession(sessionId);
-                await SendAsync(new AgentSdkSpawnFailedMessage
-                {
-                    SessionId = sessionId,
-                    Error = "Failed to start codex process"
-                }, ct);
-                return;
-            }
-
-            _codexBridges[sessionId] = bridge;
-
-            Log($"Codex CLI started for session {sessionId} (PID {bridge.Pid})");
-            await SendAsync(new AgentSdkSpawnedMessage
-            {
-                SessionId = sessionId,
-                Pid = bridge.Pid.Value
-            }, ct);
-
-            // Monitor process exit in background
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await bridge.WaitForExitAsync(ct);
-                    var exitCode = bridge.ExitCode;
-                    Log($"Codex CLI for session {sessionId} exited with code {exitCode}");
-
-                    _codexBridges.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-
-                    await SendAsync(new AgentSdkExitedMessage
-                    {
-                        SessionId = sessionId,
-                        ExitCode = exitCode
-                    }, ct);
-                }
-                catch (OperationCanceledException)
-                {
-                    await bridge.DisposeAsync();
-                    _codexBridges.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-                }
-                catch (Exception ex)
-                {
-                    Log($"Error monitoring Codex process: {ex.Message}");
-                    _codexBridges.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-                }
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            Log($"Failed to spawn Codex CLI for session {sessionId}: {ex.Message}");
-            if (_codexBridges.TryRemove(sessionId, out var leakedBridge))
-            {
-                try { await leakedBridge.DisposeAsync(); } catch { }
-            }
-            _proxy?.RemoveSession(sessionId);
-            await SendAsync(new AgentSdkSpawnFailedMessage
-            {
-                SessionId = sessionId,
-                Error = ex.Message
-            }, ct);
-        }
-    }
-
-    private async Task HandleGeminiSpawnAsync(IncomingMessage message, string sessionId, string sdkUrl, CancellationToken ct)
-    {
-        var resumeCliSessionId = message.ResumeCliSessionId;
-        Log($"Spawning Gemini CLI for session {sessionId}{(resumeCliSessionId != null ? $" (resume: {resumeCliSessionId})" : "")}");
-
-        // Kill any existing Gemini bridge for this session before spawning a new one
-        if (_geminiBridges.TryRemove(sessionId, out var existingGeminiBridge))
-        {
-            try
-            {
-                await existingGeminiBridge.DisposeAsync();
-                Log($"Disposed previous Gemini bridge for session {sessionId} before re-spawn");
-            }
-            catch { }
-        }
-
-        try
-        {
-            var model = message.Model ?? "gemini-2.5-pro";
-            var cwd = message.WorkingDirectory ?? _workingDirectory;
-            var rawPermissionMode = message.PermissionMode ?? "default";
-
-            await EnsureProxyStartedAsync();
-
-            // Read token from dedicated field, fallback to URL parsing for backward compat
-            var token = message.SdkToken ?? "";
-            if (string.IsNullOrEmpty(token))
-            {
-                var uriObj = new Uri(sdkUrl);
-                token = System.Web.HttpUtility.ParseQueryString(uriObj.Query)["token"] ?? "";
-            }
-
-            // Install skill files (with dynamic drive index) and prepare Side Hub CLI env vars
-            await SkillInstaller.EnsureSkillFilesAsync(cwd, "gemini", DeriveApiUrl(_config.SidehubUrl!), _config.AgentToken!, _config.WorkspaceId!);
-            var bridge = new GeminiBridge(sessionId, model, cwd, rawPermissionMode, Log, resumeCliSessionId)
-            {
-                ExtraEnvironment = BuildSideHubEnvVars(message.TaskId, message.TaskTitle)
-            };
-
-            // Register virtual session so bridge can send messages to backend via proxy
-            _proxy!.RegisterVirtualSession(
-                sessionId, sdkUrl, token, rawPermissionMode,
-                (msg, cancelToken) => bridge.HandleBackendMessageAsync(msg, cancelToken));
-
-            // Start bridge with callback to send NDJSON to backend
-            await bridge.StartAsync(
-                (msg, cancelToken) => _proxy.SendVirtualMessageToBackendAsync(sessionId, msg, cancelToken),
-                ct);
-
-            _geminiBridges[sessionId] = bridge;
-
-            Log($"Gemini CLI ready for session {sessionId}");
-            await SendAsync(new AgentSdkSpawnedMessage
-            {
-                SessionId = sessionId,
-                Pid = bridge.Pid ?? 0
-            }, ct);
-
-            // Monitor bridge lifecycle in background
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await bridge.WaitForExitAsync(ct);
-                    Log($"Gemini bridge for session {sessionId} stopped");
-
-                    _geminiBridges.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-
-                    await SendAsync(new AgentSdkExitedMessage
-                    {
-                        SessionId = sessionId,
-                        ExitCode = bridge.ExitCode
-                    }, ct);
-                }
-                catch (OperationCanceledException)
-                {
-                    await bridge.DisposeAsync();
-                    _geminiBridges.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-                }
-                catch (Exception ex)
-                {
-                    Log($"Error monitoring Gemini bridge: {ex.Message}");
-                    _geminiBridges.TryRemove(sessionId, out _);
-                    _proxy?.RemoveSession(sessionId);
-                }
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            Log($"Failed to spawn Gemini CLI for session {sessionId}: {ex.Message}");
-            if (_geminiBridges.TryRemove(sessionId, out var leakedGeminiBridge))
-            {
-                try { await leakedGeminiBridge.DisposeAsync(); } catch { }
-            }
-            _proxy?.RemoveSession(sessionId);
-            await SendAsync(new AgentSdkSpawnFailedMessage
-            {
-                SessionId = sessionId,
-                Error = ex.Message
-            }, ct);
-        }
-    }
-
-    private async Task HandleAgentSdkStopAsync(IncomingMessage message)
-    {
-        var sessionId = message.SessionId;
-        if (string.IsNullOrEmpty(sessionId))
-        {
-            Log("Invalid agent-sdk.stop message: missing sessionId");
-            return;
-        }
-
-        Log($"Received stop request for session {sessionId}");
-
-        if (_claudeSdkProcesses.TryGetValue(sessionId, out var process))
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(true);
-                    Log($"Killed Claude CLI process for session {sessionId} (stop requested)");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"Error killing Claude CLI for session {sessionId}: {ex.Message}");
-            }
-            _claudeSdkProcesses.TryRemove(sessionId, out _);
-        }
-
-        if (_codexBridges.TryGetValue(sessionId, out var bridge))
-        {
-            try
-            {
-                await bridge.DisposeAsync();
-                Log($"Stopped Codex bridge for session {sessionId}");
-            }
-            catch (Exception ex)
-            {
-                Log($"Error stopping Codex bridge for session {sessionId}: {ex.Message}");
-            }
-            _codexBridges.TryRemove(sessionId, out _);
-        }
-
-        if (_geminiBridges.TryGetValue(sessionId, out var geminiBridge))
-        {
-            try
-            {
-                await geminiBridge.DisposeAsync();
-                Log($"Stopped Gemini bridge for session {sessionId}");
-            }
-            catch (Exception ex)
-            {
-                Log($"Error stopping Gemini bridge for session {sessionId}: {ex.Message}");
-            }
-            _geminiBridges.TryRemove(sessionId, out _);
-        }
-
-        _proxy?.RemoveSession(sessionId);
-    }
-
     private static int CalculateReconnectDelay(int attempts)
     {
         var delay = (int)(MinReconnectDelayMs * Math.Pow(BackoffMultiplier, attempts));
@@ -1707,55 +913,6 @@ exec "${real}" "$@"
     {
         StopHeartbeat();
 
-        // Dispose proxy first (closes local WebSocket server and backend connections)
-        if (_proxy != null)
-        {
-            await _proxy.DisposeAsync();
-            _proxy = null;
-        }
-
-        // Kill any running Claude SDK processes
-        foreach (var (sessionId, process) in _claudeSdkProcesses)
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(true);
-                    Log($"Killed Claude CLI process for session {sessionId}");
-                }
-            }
-            catch
-            {
-                // Ignore kill errors
-            }
-        }
-        _claudeSdkProcesses.Clear();
-
-        // Dispose any running Codex bridges
-        foreach (var (sessionId, bridge) in _codexBridges)
-        {
-            try
-            {
-                await bridge.DisposeAsync();
-                Log($"Disposed Codex bridge for session {sessionId}");
-            }
-            catch { }
-        }
-        _codexBridges.Clear();
-
-        // Dispose any running Gemini bridges
-        foreach (var (sessionId2, geminiBridge) in _geminiBridges)
-        {
-            try
-            {
-                await geminiBridge.DisposeAsync();
-                Log($"Disposed Gemini bridge for session {sessionId2}");
-            }
-            catch { }
-        }
-        _geminiBridges.Clear();
-
         // Dispose multi-PTY sessions
         foreach (var (sid, session) in _ptySessions)
         {
@@ -1763,7 +920,6 @@ exec "${real}" "$@"
         }
         _ptySessions.Clear();
         _ptyLastActivity.Clear();
-        _ptyClaudeProxySessions.Clear();
 
         if (_ptyExecutor != null)
         {
