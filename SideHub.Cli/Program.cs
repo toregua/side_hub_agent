@@ -33,8 +33,14 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
-    Console.Error.WriteLine("  drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet]");
+    Console.Error.WriteLine("  drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet|folder]");
     Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\"]");
+    Console.Error.WriteLine("  drive delete <id> [--yes]");
+    Console.Error.WriteLine("  drive move <id> --parent <newParentId|root> [--after <siblingId>]");
+    Console.Error.WriteLine("  drive mkdir --title \"...\" [--parent <id>]");
+    Console.Error.WriteLine("  drive upload <localPath> [--parent <id>] [--name \"...\"]");
+    Console.Error.WriteLine("  drive recent [--limit N]");
+    Console.Error.WriteLine("  drive usage");
     Console.Error.WriteLine("  drive search <query>");
     Console.Error.WriteLine("  table show <pageId> [--json]");
     Console.Error.WriteLine("  table append-row <pageId> --col \"Name=Value\" [--col ...]");
@@ -42,18 +48,37 @@ if (args.Length < 2)
     Console.Error.WriteLine("  table delete-row <pageId> --row <rowId>");
     Console.Error.WriteLine("  table add-column <pageId> --name \"...\" [--type text|image|dropdown] [--options \"val=Label,val2=Label 2\"]");
     Console.Error.WriteLine("  task list [--status <status>]");
+    Console.Error.WriteLine("  task get <taskId>");
     Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>]");
+    Console.Error.WriteLine("  task update <taskId> [--title \"...\"] [--description \"...\"] [--type <type>]");
+    Console.Error.WriteLine("  task delete <taskId> [--yes]");
+    Console.Error.WriteLine("  task status <taskId> --status <status>");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
     Console.Error.WriteLine("  task blocker [<taskId>] --reason \"...\"");
+    Console.Error.WriteLine("  task resolve-blocker <taskId>");
+    Console.Error.WriteLine("  task drive-link-add <taskId> --item <driveItemId>");
+    Console.Error.WriteLine("  task drive-link-remove <taskId> --item <driveItemId>");
+    Console.Error.WriteLine("  task search --query \"...\" [--status <s>] [--type <t>]");
     Console.Error.WriteLine("  scheduler list [--active | --paused]");
     Console.Error.WriteLine("  scheduler get <id>");
-    Console.Error.WriteLine("  scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
-    Console.Error.WriteLine("  scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>]");
+    Console.Error.WriteLine("  scheduler create --title \"...\" (--prompt \"...\" | --workflow <id>) --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
+    Console.Error.WriteLine("  scheduler update <id> [--title] [--prompt | --workflow <id>] [--cron] [--description] [--agent] [--provider]");
     Console.Error.WriteLine("  scheduler delete <id> [--yes]");
     Console.Error.WriteLine("  scheduler pause <id>");
     Console.Error.WriteLine("  scheduler resume <id>");
     Console.Error.WriteLine("  scheduler trigger <id>");
     Console.Error.WriteLine("  scheduler executions <id>");
+    Console.Error.WriteLine("  workflow list");
+    Console.Error.WriteLine("  workflow get <id>");
+    Console.Error.WriteLine("  workflow create --name \"...\" [--description \"...\"] [--timeout <min>]");
+    Console.Error.WriteLine("  workflow update <id> [--name] [--description] [--timeout <min> | --clear-timeout]");
+    Console.Error.WriteLine("  workflow delete <id> [--yes]");
+    Console.Error.WriteLine("  workflow add-step <wfId> --name \"...\" --prompt \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-path \"...\"] [--output-drive <itemId>] [--timeout <min>]");
+    Console.Error.WriteLine("  workflow update-step <wfId> <stepId> [--name] [--prompt] [--input-drive]* [--input-step]* [--clear-inputs] [--output-path] [--output-drive | --clear-output-drive] [--timeout]");
+    Console.Error.WriteLine("  workflow delete-step <wfId> <stepId> [--yes]");
+    Console.Error.WriteLine("  workflow reorder-steps <wfId> <stepId1> <stepId2> [...]");
+    Console.Error.WriteLine("  workflow run <wfId> [--agent <id>] [--provider <p>]");
+    Console.Error.WriteLine("  workflow execution-get <executionId>");
     Console.Error.WriteLine("  workflow step-complete --output-id <guid>");
     Console.Error.WriteLine("  workflow step-fail \"<reason>\"");
     return 1;
@@ -65,7 +90,14 @@ var restArgs = args[2..];
 var jsonOutput = restArgs.Contains("--json");
 
 // Defense-in-depth: block write commands in plan mode
-var writeActions = new HashSet<string> { "create", "update", "comment", "blocker", "delete", "pause", "resume", "trigger", "append-row", "set-cell", "delete-row", "add-column" };
+var writeActions = new HashSet<string>
+{
+    "create", "update", "comment", "blocker", "delete", "pause", "resume", "trigger",
+    "append-row", "set-cell", "delete-row", "add-column",
+    "move", "mkdir", "upload",
+    "add-step", "update-step", "delete-step", "reorder-steps", "run",
+    "status", "drive-link-add", "drive-link-remove", "resolve-blocker"
+};
 if (pipelineMode == "plan" && writeActions.Contains(action))
 {
     Console.Error.WriteLine($"Error: write command '{action}' is not allowed in plan mode");
@@ -83,6 +115,12 @@ try
         ("drive", "download") => await DriveCommands.DownloadAsync(client, restArgs, jsonOutput),
         ("drive", "create") => await DriveCommands.CreateAsync(client, restArgs, jsonOutput),
         ("drive", "update") => await DriveCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("drive", "delete") => await DriveCommands.DeleteAsync(client, restArgs, jsonOutput),
+        ("drive", "move") => await DriveCommands.MoveAsync(client, restArgs, jsonOutput),
+        ("drive", "mkdir") => await DriveCommands.MkdirAsync(client, restArgs, jsonOutput),
+        ("drive", "upload") => await DriveCommands.UploadAsync(client, restArgs, jsonOutput),
+        ("drive", "recent") => await DriveCommands.RecentAsync(client, restArgs, jsonOutput),
+        ("drive", "usage") => await DriveCommands.UsageAsync(client, restArgs, jsonOutput),
         ("drive", "search") => await DriveCommands.SearchAsync(client, restArgs, jsonOutput),
         ("table", "show") => await TableCommands.ShowAsync(client, restArgs, jsonOutput),
         ("table", "append-row") => await TableCommands.AppendRowAsync(client, restArgs, jsonOutput),
@@ -90,9 +128,17 @@ try
         ("table", "delete-row") => await TableCommands.DeleteRowAsync(client, restArgs, jsonOutput),
         ("table", "add-column") => await TableCommands.AddColumnAsync(client, restArgs, jsonOutput),
         ("task", "list") => await TaskCommands.ListAsync(client, restArgs, jsonOutput),
+        ("task", "get") => await TaskCommands.GetAsync(client, restArgs, jsonOutput),
         ("task", "create") => await TaskCommands.CreateAsync(client, restArgs, jsonOutput),
+        ("task", "update") => await TaskCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("task", "delete") => await TaskCommands.DeleteAsync(client, restArgs, jsonOutput),
+        ("task", "status") => await TaskCommands.StatusAsync(client, restArgs, jsonOutput),
         ("task", "comment") => await TaskCommands.CommentAsync(client, restArgs, taskId, jsonOutput),
         ("task", "blocker") => await TaskCommands.BlockerAsync(client, restArgs, taskId, jsonOutput),
+        ("task", "resolve-blocker") => await TaskCommands.ResolveBlockerAsync(client, restArgs, jsonOutput),
+        ("task", "drive-link-add") => await TaskCommands.DriveLinkAddAsync(client, restArgs, jsonOutput),
+        ("task", "drive-link-remove") => await TaskCommands.DriveLinkRemoveAsync(client, restArgs, jsonOutput),
+        ("task", "search") => await TaskCommands.SearchAsync(client, restArgs, jsonOutput),
         ("scheduler", "list") => await SchedulerCommands.ListAsync(client, restArgs, jsonOutput),
         ("scheduler", "get") => await SchedulerCommands.GetAsync(client, restArgs, jsonOutput),
         ("scheduler", "create") => await SchedulerCommands.CreateAsync(client, restArgs, jsonOutput),
@@ -102,6 +148,17 @@ try
         ("scheduler", "resume") => await SchedulerCommands.ResumeAsync(client, restArgs, jsonOutput),
         ("scheduler", "trigger") => await SchedulerCommands.TriggerAsync(client, restArgs, jsonOutput),
         ("scheduler", "executions") => await SchedulerCommands.ExecutionsAsync(client, restArgs, jsonOutput),
+        ("workflow", "list") => await WorkflowCommands.ListAsync(client, restArgs, jsonOutput),
+        ("workflow", "get") => await WorkflowCommands.GetAsync(client, restArgs, jsonOutput),
+        ("workflow", "create") => await WorkflowCommands.CreateAsync(client, restArgs, jsonOutput),
+        ("workflow", "update") => await WorkflowCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("workflow", "delete") => await WorkflowCommands.DeleteAsync(client, restArgs, jsonOutput),
+        ("workflow", "add-step") => await WorkflowCommands.AddStepAsync(client, restArgs, jsonOutput),
+        ("workflow", "update-step") => await WorkflowCommands.UpdateStepAsync(client, restArgs, jsonOutput),
+        ("workflow", "delete-step") => await WorkflowCommands.DeleteStepAsync(client, restArgs, jsonOutput),
+        ("workflow", "reorder-steps") => await WorkflowCommands.ReorderStepsAsync(client, restArgs, jsonOutput),
+        ("workflow", "run") => await WorkflowCommands.RunAsync(client, restArgs, jsonOutput),
+        ("workflow", "execution-get") => await WorkflowCommands.ExecutionGetAsync(client, restArgs, jsonOutput),
         ("workflow", "step-complete") => await WorkflowCommands.StepCompleteAsync(client, restArgs, jsonOutput),
         ("workflow", "step-fail") => await WorkflowCommands.StepFailAsync(client, restArgs, jsonOutput),
         _ => Error($"Unknown command: {domain} {action}")

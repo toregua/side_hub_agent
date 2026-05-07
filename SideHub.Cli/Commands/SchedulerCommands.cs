@@ -67,19 +67,27 @@ public static class SchedulerCommands
         var count = result.TryGetProperty("executionCount", out var ec) ? ec.GetInt32().ToString() : "0";
         var error = Prop(result, "lastError") ?? "-";
         var prompt = Prop(result, "prompt") ?? "";
+        var workflowId = Prop(result, "workflowId");
+        var mode = !string.IsNullOrEmpty(workflowId) ? "workflow" : "prompt";
 
         Console.WriteLine($"Title:       {title}");
         Console.WriteLine($"Cron:        {cron}");
         Console.WriteLine($"Description: {(string.IsNullOrEmpty(desc) ? "-" : desc)}");
         Console.WriteLine($"Status:      {(isActive ? "active" : "paused")}");
+        Console.WriteLine($"Mode:        {mode}");
+        if (!string.IsNullOrEmpty(workflowId))
+            Console.WriteLine($"Workflow:    {workflowId}");
         Console.WriteLine($"Provider:    {provider}");
         Console.WriteLine($"Next:        {next}");
         Console.WriteLine($"Last:        {last}");
         Console.WriteLine($"Executions:  {count}");
         Console.WriteLine($"Last error:  {error}");
-        Console.WriteLine($"Prompt:");
-        foreach (var line in prompt.Split('\n'))
-            Console.WriteLine($"  {line}");
+        if (string.IsNullOrEmpty(workflowId))
+        {
+            Console.WriteLine($"Prompt:");
+            foreach (var line in prompt.Split('\n'))
+                Console.WriteLine($"  {line}");
+        }
 
         return 0;
     }
@@ -88,14 +96,23 @@ public static class SchedulerCommands
     {
         var title = GetOption(args, "--title");
         var prompt = GetOption(args, "--prompt");
+        var workflowId = GetOption(args, "--workflow");
         var cron = GetOption(args, "--cron");
         var description = GetOption(args, "--description");
         var provider = GetOption(args, "--provider");
         var agentId = GetOption(args, "--agent") ?? client.DefaultAgentId;
 
-        if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(prompt) || string.IsNullOrEmpty(cron))
+        if (string.IsNullOrEmpty(title) || string.IsNullOrEmpty(cron))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli scheduler create --title \"...\" --prompt \"...\" --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
+            Console.Error.WriteLine("Usage: sidehub-cli scheduler create --title \"...\" (--prompt \"...\" | --workflow <id>) --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
+            return 1;
+        }
+
+        var hasPrompt = !string.IsNullOrEmpty(prompt);
+        var hasWorkflow = !string.IsNullOrEmpty(workflowId);
+        if (hasPrompt == hasWorkflow)
+        {
+            Console.Error.WriteLine("Error: provide exactly one of --prompt or --workflow.");
             return 1;
         }
 
@@ -105,7 +122,7 @@ public static class SchedulerCommands
             return 1;
         }
 
-        var result = await client.CreateSchedulerAsync(title, prompt, cron, description, provider, agentId);
+        var result = await client.CreateSchedulerAsync(title, prompt, cron, description, provider, agentId, workflowId);
 
         if (json)
         {
@@ -114,7 +131,8 @@ public static class SchedulerCommands
         }
 
         var id = result.TryGetProperty("id", out var i) ? i.GetString() : "";
-        Console.WriteLine($"Created scheduler: {id}");
+        var mode = hasWorkflow ? "workflow" : "prompt";
+        Console.WriteLine($"Created scheduler ({mode} mode): {id}");
         return 0;
     }
 
@@ -123,6 +141,7 @@ public static class SchedulerCommands
         var id = args.FirstOrDefault(a => !a.StartsWith("--"));
         var title = GetOption(args, "--title");
         var prompt = GetOption(args, "--prompt");
+        var workflowId = GetOption(args, "--workflow");
         var cron = GetOption(args, "--cron");
         var description = GetOption(args, "--description");
         var provider = GetOption(args, "--provider");
@@ -130,17 +149,23 @@ public static class SchedulerCommands
 
         if (string.IsNullOrEmpty(id))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>]");
+            Console.Error.WriteLine("Usage: sidehub-cli scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--workflow <id>] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>]");
             return 1;
         }
 
-        if (title is null && prompt is null && cron is null && description is null && provider is null && agentId is null)
+        if (title is null && prompt is null && workflowId is null && cron is null && description is null && provider is null && agentId is null)
         {
             Console.Error.WriteLine("Error: at least one field to update is required.");
             return 1;
         }
 
-        var result = await client.UpdateSchedulerAsync(id, title, prompt, cron, description, provider, agentId);
+        if (prompt is not null && workflowId is not null)
+        {
+            Console.Error.WriteLine("Error: --prompt and --workflow are mutually exclusive.");
+            return 1;
+        }
+
+        var result = await client.UpdateSchedulerAsync(id, title, prompt, cron, description, provider, agentId, workflowId);
 
         if (json)
         {

@@ -192,13 +192,13 @@ public static class DriveCommands
 
         if (string.IsNullOrEmpty(title))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet]");
+            Console.Error.WriteLine("Usage: sidehub-cli drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet|folder]");
             return 1;
         }
 
-        if (type is not null && type != "page" && type != "spreadsheet")
+        if (type is not null && type != "page" && type != "spreadsheet" && type != "folder")
         {
-            Console.Error.WriteLine("Error: --type must be 'page' or 'spreadsheet'");
+            Console.Error.WriteLine("Error: --type must be 'page', 'spreadsheet', or 'folder'");
             return 1;
         }
 
@@ -309,6 +309,164 @@ public static class DriveCommands
             if (item.TryGetProperty("children", out var children) && children.GetArrayLength() > 0)
                 CollectMatches(children, query, matches);
         }
+    }
+
+    public static async Task<int> DeleteAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var pageId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        if (string.IsNullOrEmpty(pageId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive delete <id> [--yes]");
+            return 1;
+        }
+
+        if (!args.Contains("--yes") && !ConfirmDelete($"drive item {pageId}"))
+            return 1;
+
+        await client.DeleteDriveItemAsync(pageId);
+
+        if (json) Console.WriteLine($"{{\"deleted\":\"{pageId}\"}}");
+        else Console.WriteLine($"Deleted drive item: {pageId}");
+        return 0;
+    }
+
+    public static async Task<int> MoveAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var pageId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        var newParent = GetOption(args, "--parent");
+        var afterSibling = GetOption(args, "--after");
+
+        if (string.IsNullOrEmpty(pageId) || string.IsNullOrEmpty(newParent))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive move <id> --parent <newParentId|root> [--after <siblingId>]");
+            Console.Error.WriteLine("       Use --parent root to move to the workspace root.");
+            return 1;
+        }
+
+        // "root" sentinel → null parent (workspace root)
+        var resolvedParent = string.Equals(newParent, "root", StringComparison.OrdinalIgnoreCase) ? null : newParent;
+
+        var result = await client.MoveDriveItemAsync(pageId, resolvedParent, afterSibling);
+
+        if (json && result.ValueKind != JsonValueKind.Undefined)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+        Console.WriteLine($"Moved {pageId} to parent {resolvedParent ?? "<root>"}");
+        return 0;
+    }
+
+    public static async Task<int> MkdirAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var title = GetOption(args, "--title");
+        var parentId = GetOption(args, "--parent");
+
+        if (string.IsNullOrEmpty(title))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive mkdir --title \"...\" [--parent <id>]");
+            return 1;
+        }
+
+        var result = await client.CreateDriveItemAsync(title, content: null, parentId, type: "folder");
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+        var id = result.TryGetProperty("id", out var i) ? i.GetString() : "";
+        Console.WriteLine($"Created folder: {id}");
+        return 0;
+    }
+
+    public static async Task<int> UploadAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var localPath = args.FirstOrDefault(a => !a.StartsWith("--") && !a.StartsWith("-"));
+        var parentId = GetOption(args, "--parent");
+        var title = GetOption(args, "--name") ?? GetOption(args, "--title");
+
+        if (string.IsNullOrEmpty(localPath))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive upload <localPath> [--parent <id>] [--name \"...\"]");
+            return 1;
+        }
+        if (!File.Exists(localPath))
+        {
+            Console.Error.WriteLine($"Error: file not found: {localPath}");
+            return 1;
+        }
+
+        var result = await client.UploadFileAsync(localPath, parentId, title);
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+        var id = result.TryGetProperty("id", out var i) ? i.GetString() : "";
+        var fileName = result.TryGetProperty("fileName", out var f) ? f.GetString() : Path.GetFileName(localPath);
+        Console.WriteLine($"Uploaded {fileName}: {id}");
+        return 0;
+    }
+
+    public static async Task<int> RecentAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        int? limit = null;
+        var limitArg = GetOption(args, "--limit");
+        if (!string.IsNullOrEmpty(limitArg) && int.TryParse(limitArg, out var n)) limit = n;
+
+        var result = await client.GetRecentDriveItemsAsync(limit);
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        if (!result.TryGetProperty("items", out var items) || items.GetArrayLength() == 0)
+        {
+            Console.WriteLine("No recent items.");
+            return 0;
+        }
+
+        Console.WriteLine($"{"ID",-38} {"TYPE",-8} {"TITLE",-40} {"UPDATED"}");
+        Console.WriteLine(new string('-', 110));
+        foreach (var item in items.EnumerateArray())
+        {
+            var id = item.GetProperty("id").GetString() ?? "";
+            var type = item.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
+            var title = item.TryGetProperty("title", out var ti) ? ti.GetString() ?? "" : "";
+            var updated = item.TryGetProperty("updatedAt", out var u) ? u.GetString()?[..10] ?? "" : "";
+            Console.WriteLine($"{id,-38} {type,-8} {Truncate(title, 40),-40} {updated}");
+        }
+        return 0;
+    }
+
+    public static async Task<int> UsageAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var result = await client.GetStorageUsageAsync();
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        Console.WriteLine(SideHubApiClient.Serialize(result));
+        return 0;
+    }
+
+    private static bool ConfirmDelete(string label)
+    {
+        Console.Write($"Delete {label}? Type 'yes' to confirm: ");
+        var input = Console.ReadLine();
+        if (!string.Equals(input?.Trim(), "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine("Aborted.");
+            return false;
+        }
+        return true;
     }
 
     private static string? GetOption(string[] args, string flag)
