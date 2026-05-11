@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SideHub.Cli.Commands;
 
@@ -73,13 +74,247 @@ public static class DriveCommands
         else if (result.TryGetProperty("downloadUrl", out var du) && !string.IsNullOrEmpty(du.GetString()))
         {
             var mime = result.TryGetProperty("mimeType", out var mt) ? mt.GetString() : null;
+            var fileName = result.TryGetProperty("fileName", out var fn) ? fn.GetString() : null;
             var size = result.TryGetProperty("fileSize", out var fs) && fs.ValueKind == JsonValueKind.Number
                 ? fs.GetInt64().ToString() + " bytes"
                 : "unknown size";
+
+            if (IsJsonFile(mime, fileName))
+            {
+                var raw = await client.GetDriveJsonAsync(pageId);
+                Console.WriteLine(PrettyPrintJson(raw));
+                return 0;
+            }
+
             var label = string.IsNullOrEmpty(mime) ? size : $"{mime}, {size}";
             Console.WriteLine($"Binary file ({label}). Use `sidehub-cli drive download {pageId}` to fetch it.");
         }
         return 0;
+    }
+
+    public static async Task<int> CreateJsonAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var unknown = ValidateKnownFlags(args, CreateJsonFlags);
+        if (unknown is not null) return unknown.Value;
+
+        var title = GetOption(args, "--title");
+        var content = GetOption(args, "--content");
+        var filePath = GetOption(args, "--file");
+        var parentId = GetOption(args, "--parent");
+
+        if (string.IsNullOrEmpty(title))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive create-json --title \"file.json\" [--content '<json>' | --file <path>] [--parent <id>]");
+            return 1;
+        }
+
+        if (content is null && filePath is null)
+        {
+            content = "{}";
+        }
+        else if (content is not null && filePath is not null)
+        {
+            Console.Error.WriteLine("Error: use either --content or --file, not both");
+            return 1;
+        }
+        else if (filePath is not null)
+        {
+            var read = TryReadFile(filePath);
+            if (read is null) return 1;
+            content = read;
+        }
+
+        try
+        {
+            using var _ = JsonDocument.Parse(content!);
+        }
+        catch (JsonException ex)
+        {
+            Console.Error.WriteLine($"Error: invalid JSON: {ex.Message}");
+            return 1;
+        }
+
+        var fileName = title.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? title : title + ".json";
+        var displayTitle = Path.GetFileNameWithoutExtension(fileName);
+
+        var bytes = Encoding.UTF8.GetBytes(content!);
+        var result = await client.UploadJsonBytesAsync(fileName, bytes, parentId, displayTitle);
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+        var id = result.TryGetProperty("id", out var i) ? i.GetString() : "";
+        Console.WriteLine($"Created JSON file {fileName}: {id}");
+        return 0;
+    }
+
+    public static async Task<int> QueryAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var unknown = ValidateKnownFlags(args, QueryFlags);
+        if (unknown is not null) return unknown.Value;
+
+        var itemId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        var path = GetOption(args, "--path");
+        var raw = args.Contains("--raw");
+
+        if (string.IsNullOrEmpty(itemId) || string.IsNullOrEmpty(path))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive query <id> --path \"$.foo.bar\" [--raw]");
+            Console.Error.WriteLine("       JSONPath: $.field, $['field'], $.array[0], $.array[*], $.array[*].name");
+            return 1;
+        }
+
+        var content = await client.GetDriveJsonAsync(itemId);
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(content);
+        }
+        catch (JsonException ex)
+        {
+            Console.Error.WriteLine($"Error: stored content is not valid JSON: {ex.Message}");
+            return 1;
+        }
+
+        var results = JsonPathEvaluator.Evaluate(root, path);
+
+        if (json || results.Count != 1)
+        {
+            var arr = new JsonArray();
+            foreach (var r in results) arr.Add(r?.DeepClone());
+            Console.WriteLine(arr.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+
+        var single = results[0];
+        if (raw && single is JsonValue v && v.TryGetValue<string>(out var s))
+        {
+            Console.WriteLine(s);
+        }
+        else
+        {
+            Console.WriteLine(single?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null");
+        }
+        return 0;
+    }
+
+    public static async Task<int> PatchAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var unknown = ValidateKnownFlags(args, PatchFlags);
+        if (unknown is not null) return unknown.Value;
+
+        var itemId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        if (string.IsNullOrEmpty(itemId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive patch <id> [--set <pointer>=<value>]* [--delete <pointer>]* [--ops-file <path>]");
+            Console.Error.WriteLine("       Pointer is RFC 6901: '/foo/bar', '/items/0', '/items/-' to append");
+            Console.Error.WriteLine("       Value is parsed as JSON if possible, otherwise treated as string");
+            return 1;
+        }
+
+        var opsFile = GetOption(args, "--ops-file");
+        string opsJson;
+
+        if (opsFile is not null)
+        {
+            var content = TryReadFile(opsFile);
+            if (content is null) return 1;
+            opsJson = content;
+        }
+        else
+        {
+            var ops = new JsonArray();
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "--set")
+                {
+                    var spec = args[i + 1];
+                    var eq = spec.IndexOf('=');
+                    if (eq < 0)
+                    {
+                        Console.Error.WriteLine($"Error: --set expects <pointer>=<value>, got '{spec}'");
+                        return 1;
+                    }
+                    var pointer = spec[..eq];
+                    var rawValue = spec[(eq + 1)..];
+                    JsonNode? value = ParseValueOrString(rawValue);
+                    ops.Add(new JsonObject
+                    {
+                        ["op"] = "replace",
+                        ["path"] = pointer,
+                        ["value"] = value
+                    });
+                }
+                else if (args[i] == "--delete")
+                {
+                    ops.Add(new JsonObject
+                    {
+                        ["op"] = "remove",
+                        ["path"] = args[i + 1]
+                    });
+                }
+            }
+
+            if (ops.Count == 0)
+            {
+                Console.Error.WriteLine("Error: no operations provided. Use --set, --delete, or --ops-file");
+                return 1;
+            }
+
+            opsJson = ops.ToJsonString();
+        }
+
+        var result = await client.PatchDriveJsonAsync(itemId, opsJson);
+
+        if (json)
+        {
+            Console.WriteLine(PrettyPrintJson(result));
+            return 0;
+        }
+        Console.WriteLine($"Patched {itemId}");
+        Console.WriteLine(PrettyPrintJson(result));
+        return 0;
+    }
+
+    private static JsonNode? ParseValueOrString(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return JsonValue.Create(string.Empty);
+        try
+        {
+            return JsonNode.Parse(raw);
+        }
+        catch (JsonException)
+        {
+            return JsonValue.Create(raw);
+        }
+    }
+
+    private static string PrettyPrintJson(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+
+    private static bool IsJsonFile(string? mime, string? fileName)
+    {
+        if (!string.IsNullOrEmpty(mime))
+        {
+            var m = mime.Trim().ToLowerInvariant();
+            if (m == "application/json" || m.EndsWith("+json", StringComparison.Ordinal)) return true;
+        }
+        if (!string.IsNullOrEmpty(fileName) &&
+            string.Equals(Path.GetExtension(fileName), ".json", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
     }
 
     public static async Task<int> DownloadAsync(SideHubApiClient client, string[] args, bool json)
@@ -418,16 +653,33 @@ public static class DriveCommands
         var localPath = args.FirstOrDefault(a => !a.StartsWith("--") && !a.StartsWith("-"));
         var parentId = GetOption(args, "--parent");
         var title = GetOption(args, "--name") ?? GetOption(args, "--title");
+        var skipValidation = args.Contains("--no-validate");
 
         if (string.IsNullOrEmpty(localPath))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive upload <localPath> [--parent <id>] [--name \"...\"]");
+            Console.Error.WriteLine("Usage: sidehub-cli drive upload <localPath> [--parent <id>] [--name \"...\"] [--no-validate]");
             return 1;
         }
         if (!File.Exists(localPath))
         {
             Console.Error.WriteLine($"Error: file not found: {localPath}");
             return 1;
+        }
+
+        if (!skipValidation &&
+            string.Equals(Path.GetExtension(localPath), ".json", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var fs = File.OpenRead(localPath);
+                using var _ = await JsonDocument.ParseAsync(fs);
+            }
+            catch (JsonException ex)
+            {
+                Console.Error.WriteLine($"Error: invalid JSON in {localPath}: {ex.Message}");
+                Console.Error.WriteLine("       Use --no-validate to upload anyway.");
+                return 1;
+            }
         }
 
         var result = await client.UploadFileAsync(localPath, parentId, title);
@@ -519,6 +771,21 @@ public static class DriveCommands
     private static readonly HashSet<string> UpdateFlags = new()
     {
         "--title", "--content", "--file", "--json"
+    };
+
+    private static readonly HashSet<string> CreateJsonFlags = new()
+    {
+        "--title", "--content", "--file", "--parent", "--json"
+    };
+
+    private static readonly HashSet<string> QueryFlags = new()
+    {
+        "--path", "--raw", "--json"
+    };
+
+    private static readonly HashSet<string> PatchFlags = new()
+    {
+        "--set", "--delete", "--ops-file", "--json"
     };
 
     private static int? ValidateKnownFlags(string[] args, HashSet<string> known)

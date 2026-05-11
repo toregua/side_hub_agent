@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace SideHub.Cli;
@@ -136,6 +137,48 @@ public class SideHubApiClient : IDisposable
         var resp = await _http.PostAsync(url, content);
         await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<string> GetDriveJsonAsync(string itemId, CancellationToken ct = default)
+    {
+        var resp = await _http.GetAsync($"api/drive/{itemId}/json", ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadAsStringAsync(ct);
+    }
+
+    public async Task<string> ReplaceDriveJsonAsync(string itemId, string jsonContent, CancellationToken ct = default)
+    {
+        using var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+        var resp = await _http.PutAsync($"api/drive/{itemId}/json", content, ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadAsStringAsync(ct);
+    }
+
+    public async Task<string> PatchDriveJsonAsync(string itemId, string patchJsonArray, CancellationToken ct = default)
+    {
+        using var content = new StringContent(patchJsonArray, Encoding.UTF8, "application/json-patch+json");
+        var req = new HttpRequestMessage(HttpMethod.Patch, $"api/drive/{itemId}/json") { Content = content };
+        var resp = await _http.SendAsync(req, ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadAsStringAsync(ct);
+    }
+
+    public async Task<JsonElement> UploadJsonBytesAsync(string fileName, byte[] bytes, string? parentId, string? title, CancellationToken ct = default)
+    {
+        using var content = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(bytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        content.Add(fileContent, "file", fileName);
+
+        var url = $"api/workspaces/{_workspaceId}/drive/upload";
+        var query = new List<string>();
+        if (!string.IsNullOrEmpty(parentId)) query.Add($"parentId={Uri.EscapeDataString(parentId)}");
+        if (!string.IsNullOrEmpty(title)) query.Add($"title={Uri.EscapeDataString(title)}");
+        if (query.Count > 0) url += "?" + string.Join("&", query);
+
+        var resp = await _http.PostAsync(url, content, ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
     }
 
     public async Task<JsonElement> GetRecentDriveItemsAsync(int? limit)

@@ -42,6 +42,9 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive recent [--limit N]");
     Console.Error.WriteLine("  drive usage");
     Console.Error.WriteLine("  drive search <query>");
+    Console.Error.WriteLine("  drive create-json --title \"file.json\" [--content '<json>' | --file <path>] [--parent <id>]");
+    Console.Error.WriteLine("  drive query <id> --path \"$.foo.bar\" [--raw]");
+    Console.Error.WriteLine("  drive patch <id> [--set <pointer>=<value>]* [--delete <pointer>]* [--ops-file <path>]");
     Console.Error.WriteLine("  table show <pageId> [--json]");
     Console.Error.WriteLine("  table append-row <pageId> --col \"Name=Value\" [--col ...]");
     Console.Error.WriteLine("  table set-cell <pageId> --row <rowId> --col <colName> --value \"...\"");
@@ -122,6 +125,9 @@ try
         ("drive", "recent") => await DriveCommands.RecentAsync(client, restArgs, jsonOutput),
         ("drive", "usage") => await DriveCommands.UsageAsync(client, restArgs, jsonOutput),
         ("drive", "search") => await DriveCommands.SearchAsync(client, restArgs, jsonOutput),
+        ("drive", "create-json") => await DriveCommands.CreateJsonAsync(client, restArgs, jsonOutput),
+        ("drive", "query") => await DriveCommands.QueryAsync(client, restArgs, jsonOutput),
+        ("drive", "patch") => await DriveCommands.PatchAsync(client, restArgs, jsonOutput),
         ("table", "show") => await TableCommands.ShowAsync(client, restArgs, jsonOutput),
         ("table", "append-row") => await TableCommands.AppendRowAsync(client, restArgs, jsonOutput),
         ("table", "set-cell") => await TableCommands.SetCellAsync(client, restArgs, jsonOutput),
