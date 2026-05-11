@@ -29,7 +29,7 @@ if (!agentToken.StartsWith("sh_agent_"))
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
-    Console.Error.WriteLine("Domains: drive, table, task, scheduler, workflow");
+    Console.Error.WriteLine("Domains: drive, sqlite, table, task, scheduler, workflow");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
@@ -45,6 +45,10 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive create-json --title \"file.json\" [--content '<json>' | --file <path>] [--parent <id>]");
     Console.Error.WriteLine("  drive query <id> --path \"$.foo.bar\" [--raw]");
     Console.Error.WriteLine("  drive patch <id> [--set <pointer>=<value>]* [--delete <pointer>]* [--ops-file <path>]");
+    Console.Error.WriteLine("  sqlite query <itemId> --sql \"SELECT ...\" [--param V]* [--row-limit N] [--timeout SEC] [--json]");
+    Console.Error.WriteLine("  sqlite exec <itemId> --sql \"INSERT/UPDATE/DELETE\" [--param V]* [--allow-ddl] [--timeout SEC] [--json]");
+    Console.Error.WriteLine("  sqlite schema <itemId> [--json]");
+    Console.Error.WriteLine("  sqlite create --title \"name\" [--schema \"CREATE TABLE ...\" | --schema-file <path>] [--parent <id>] [--json]");
     Console.Error.WriteLine("  table show <pageId> [--json]");
     Console.Error.WriteLine("  table append-row <pageId> --col \"Name=Value\" [--col ...]");
     Console.Error.WriteLine("  table set-cell <pageId> --row <rowId> --col <colName> --value \"...\"");
@@ -99,7 +103,8 @@ var writeActions = new HashSet<string>
     "append-row", "set-cell", "delete-row", "add-column",
     "move", "mkdir", "upload",
     "add-step", "update-step", "delete-step", "reorder-steps", "run",
-    "status", "drive-link-add", "drive-link-remove", "resolve-blocker"
+    "status", "drive-link-add", "drive-link-remove", "resolve-blocker",
+    "exec"
 };
 if (pipelineMode == "plan" && writeActions.Contains(action))
 {
@@ -128,6 +133,10 @@ try
         ("drive", "create-json") => await DriveCommands.CreateJsonAsync(client, restArgs, jsonOutput),
         ("drive", "query") => await DriveCommands.QueryAsync(client, restArgs, jsonOutput),
         ("drive", "patch") => await DriveCommands.PatchAsync(client, restArgs, jsonOutput),
+        ("sqlite", "query") => await SqliteCommands.QueryAsync(client, restArgs, jsonOutput),
+        ("sqlite", "exec") => await SqliteCommands.ExecAsync(client, restArgs, jsonOutput),
+        ("sqlite", "schema") => await SqliteCommands.SchemaAsync(client, restArgs, jsonOutput),
+        ("sqlite", "create") => await SqliteCommands.CreateAsync(client, restArgs, jsonOutput),
         ("table", "show") => await TableCommands.ShowAsync(client, restArgs, jsonOutput),
         ("table", "append-row") => await TableCommands.AppendRowAsync(client, restArgs, jsonOutput),
         ("table", "set-cell") => await TableCommands.SetCellAsync(client, restArgs, jsonOutput),

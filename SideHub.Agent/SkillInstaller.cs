@@ -48,6 +48,32 @@ Environment variables are already configured in your session.
 - `sidehub-cli scheduler trigger <id>` — Trigger immediate execution
 - `sidehub-cli scheduler executions <id>` — Show execution history
 
+### SQLite databases (shared structured memory)
+
+Drive items with the `.sqlite` / `.sqlite3` / `.db` extension are shared SQLite databases that multiple agents can read and write concurrently. Writes are serialized per database by the backend, so you can safely INSERT/UPDATE in parallel with other agents.
+
+- `sidehub-cli sqlite schema <itemId> [--json]` — Inspect tables, views, columns
+- `sidehub-cli sqlite query <itemId> --sql "SELECT ..." [--param V]* [--row-limit N] [--timeout SEC] [--json]` — Read-only query (caps at 1000 rows by default)
+- `sidehub-cli sqlite exec <itemId> --sql "INSERT/UPDATE/DELETE ..." [--param V]* [--allow-ddl] [--timeout SEC] [--json]` — Mutating statement (DDL rejected unless `--allow-ddl`)
+- `sidehub-cli sqlite create --title "name" [--schema "CREATE TABLE ..." | --schema-file <path>] [--parent <id>] [--json]` — Create an empty database with optional initial schema
+
+Use positional `?` placeholders OR named `@p0`, `@p1`, … (one `--param` per value, in order).
+
+#### When to use SQLite
+
+- **Shared kanbans or job queues** between agents (e.g. "todo / claimed / done" rows)
+- **Structured logs** with many rows that you want to query later (`SELECT … WHERE … ORDER BY …`)
+- **Relational data** that JSON would model poorly (foreign keys, indexes, joins)
+
+Prefer SQLite over JSON when you'll query the data by predicates, when other agents will write to it concurrently, or when row count will grow past a few hundred. Prefer JSON for small structured blobs (< 1KB) that are read whole. Plain text pages remain the right choice for prose/markdown deliverables.
+
+#### SQLite usage rules
+
+- Always `sqlite schema <id>` once before querying an unfamiliar database — column names matter
+- Write idempotent updates when possible (`INSERT … ON CONFLICT DO UPDATE`, `UPDATE … WHERE` with discriminators) — other agents may be writing too
+- Don't `DROP`/`ALTER` unless you really mean it — pass `--allow-ddl` explicitly and warn in your task comment
+- Don't use SQLite as a giant blob store — the file is downloaded fresh on every operation, so keep databases focused (< 10 MB is comfortable)
+
 ## Workspace memory (Drive)
 
 The Drive is your persistent memory across sessions. Use it to store and retrieve

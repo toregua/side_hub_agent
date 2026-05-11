@@ -202,6 +202,61 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    // --- SQLite ---
+
+    public async Task<JsonElement> SqliteQueryAsync(
+        string itemId, string sql, IReadOnlyList<object?> parameters, int? rowLimit, int? timeoutSeconds,
+        CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["sql"] = sql,
+            ["parameters"] = parameters,
+        };
+        if (rowLimit is not null) body["rowLimit"] = rowLimit.Value;
+        if (timeoutSeconds is not null) body["timeoutSeconds"] = timeoutSeconds.Value;
+
+        var resp = await _http.PostAsJsonAsync($"api/drive/{itemId}/sqlite/query", body, ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+    }
+
+    public async Task<JsonElement> SqliteExecAsync(
+        string itemId, string sql, IReadOnlyList<object?> parameters, bool allowDdl, int? timeoutSeconds,
+        CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?>
+        {
+            ["sql"] = sql,
+            ["parameters"] = parameters,
+            ["allowDdl"] = allowDdl,
+        };
+        if (timeoutSeconds is not null) body["timeoutSeconds"] = timeoutSeconds.Value;
+
+        var resp = await _http.PostAsJsonAsync($"api/drive/{itemId}/sqlite/exec", body, ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+    }
+
+    public async Task<JsonElement> SqliteSchemaAsync(string itemId, CancellationToken ct = default)
+    {
+        var resp = await _http.GetAsync($"api/drive/{itemId}/sqlite/schema", ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+    }
+
+    public async Task<JsonElement> CreateSqliteDatabaseAsync(
+        string title, string? initialSchemaSql, string? parentId, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?> { ["title"] = title };
+        if (!string.IsNullOrEmpty(initialSchemaSql)) body["initialSchemaSql"] = initialSchemaSql;
+        if (!string.IsNullOrEmpty(parentId)) body["parentId"] = parentId;
+
+        var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/drive/sqlite", body, ct);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+    }
+
     private static string GuessMimeType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".png" => "image/png",
@@ -214,6 +269,7 @@ public class SideHubApiClient : IDisposable
         ".json" => "application/json",
         ".csv" => "text/csv",
         ".zip" => "application/zip",
+        ".sqlite" or ".sqlite3" or ".db" => "application/vnd.sqlite3",
         _ => "application/octet-stream"
     };
 
