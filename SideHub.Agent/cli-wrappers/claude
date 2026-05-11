@@ -38,10 +38,38 @@ if [ -z "$real" ]; then
   exit 127
 fi
 
+# Helper: write a one-line JSON notification to the FIFO (best-effort, async).
+notify_started() {
+  local _sid="$1"
+  if [ -n "$_sid" ] && [ -n "$SIDEHUB_PTY_NOTIFY_FIFO" ] && [ -p "$SIDEHUB_PTY_NOTIFY_FIFO" ]; then
+    ( printf '{"event":"cli-session-started","provider":"claude","cliSessionId":"%s"}\n' "$_sid" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
+  fi
+}
+
 # If the user already drove the session id (resume or explicit), pass-through.
+# Extract the UUID when it's known explicitly so the agent can still wire up
+# the ai-title watcher; for the bare --resume picker form we cannot know which
+# session will be chosen, so we just bypass silently.
+explicit_sid=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --resume|--session-id)
+      explicit_sid="$arg"
+      ;;
+  esac
+  case "$arg" in
+    --resume=*|--session-id=*)
+      explicit_sid="${arg#*=}"
+      ;;
+  esac
+  prev="$arg"
+done
+
 for arg in "$@"; do
   case "$arg" in
     --resume|--resume=*|--session-id|--session-id=*)
+      notify_started "$explicit_sid"
       exec "$real" "$@"
       ;;
   esac
@@ -61,8 +89,6 @@ fi
 
 # Best-effort notify the agent (non-blocking — the FIFO has a reader on the
 # agent side, but if for some reason it's gone we don't want to hang here).
-if [ -n "$SIDEHUB_PTY_NOTIFY_FIFO" ] && [ -p "$SIDEHUB_PTY_NOTIFY_FIFO" ]; then
-  ( printf '{"event":"cli-session-started","provider":"claude","cliSessionId":"%s"}\n' "$sid" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
-fi
+notify_started "$sid"
 
 exec "$real" --session-id "$sid" "$@"
