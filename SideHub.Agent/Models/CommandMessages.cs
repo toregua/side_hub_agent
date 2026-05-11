@@ -209,3 +209,24 @@ public class PtyCliSessionStartedMessage
     public required string CliSessionId { get; init; }
 }
 
+/// <summary>
+/// Emitted when the agent observes that Claude has generated a conversation
+/// title for a running CLI session (the "ai-title" line Claude writes to its
+/// project JSONL). The backend forwards this over SSE so the UI can suggest it
+/// as a tab label.
+/// </summary>
+public class PtyCliSessionTitledMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.cli-session-titled";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("cliSessionId")]
+    public required string CliSessionId { get; init; }
+
+    [JsonPropertyName("title")]
+    public required string Title { get; init; }
+}
+

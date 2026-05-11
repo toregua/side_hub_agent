@@ -25,6 +25,13 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     // Background tasks reading the CLI-session notification FIFO for each PTY.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
+    // Real-path cwd of each PTY session — needed to locate Claude's project JSONL
+    // for the ai-title watcher.
+    private readonly ConcurrentDictionary<string, string> _ptyCwd = new();
+    // Background file watchers waiting for Claude's "ai-title" line. Keyed by
+    // "<ptySessionId>:<cliSessionId>" so multiple Claude runs in the same PTY
+    // don't collide.
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _claudeTitleWatchers = new();
     private const int PtyIdleTimeoutMinutes = 30;
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
 
@@ -214,7 +221,8 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    /// <summary>Tear down the FIFO and stop its reader task.</summary>
+    /// <summary>Tear down the FIFO and stop its reader task, plus any Claude
+    /// title watchers that were bound to this PTY.</summary>
     private void CleanupNotifyFifo(string ptySessionId)
     {
         if (_ptyFifoReaders.TryRemove(ptySessionId, out var cts))
@@ -222,6 +230,8 @@ public class WebSocketClient : IAsyncDisposable
             try { cts.Cancel(); } catch { /* ignore */ }
             cts.Dispose();
         }
+        _ptyCwd.TryRemove(ptySessionId, out _);
+        StopClaudeTitleWatchers(ptySessionId);
         try
         {
             var fifoPath = GetFifoPath(ptySessionId);
@@ -229,6 +239,22 @@ public class WebSocketClient : IAsyncDisposable
                 File.Delete(fifoPath);
         }
         catch { /* ignore */ }
+    }
+
+    /// <summary>Cancel any pending Claude ai-title watchers bound to this PTY.
+    /// Keys in _claudeTitleWatchers are "<ptySessionId>:<cliSessionId>".</summary>
+    private void StopClaudeTitleWatchers(string ptySessionId)
+    {
+        var prefix = ptySessionId + ":";
+        foreach (var key in _claudeTitleWatchers.Keys.ToList())
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            if (_claudeTitleWatchers.TryRemove(key, out var w))
+            {
+                try { w.Cancel(); } catch { /* ignore */ }
+                w.Dispose();
+            }
+        }
     }
 
     /// <summary>Spawn a background reader that pulls JSON lines from the
@@ -304,6 +330,13 @@ public class WebSocketClient : IAsyncDisposable
                 Provider = provider!,
                 CliSessionId = cliSessionId!,
             }, ct);
+
+            // For Claude, watch the project JSONL for an ai-title line and
+            // forward it as a tab-label suggestion.
+            if (string.Equals(provider, "claude", StringComparison.OrdinalIgnoreCase))
+            {
+                StartClaudeTitleWatcher(ptySessionId, cliSessionId!, ct);
+            }
         }
         catch (JsonException)
         {
@@ -313,6 +346,152 @@ public class WebSocketClient : IAsyncDisposable
         {
             Log($"FIFO line handling failed on PTY {ptySessionId}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Watch the Claude project JSONL for an "ai-title" line. Claude writes
+    /// something like {"type":"ai-title","aiTitle":"...","sessionId":"..."}
+    /// shortly after the first user message. The file lives at
+    /// <c>$HOME/.claude/projects/&lt;cwd-with-slashes-as-dashes&gt;/&lt;cliSessionId&gt;.jsonl</c>.
+    /// First match wins — we emit a single PtyCliSessionTitledMessage then
+    /// dispose the watcher.
+    /// </summary>
+    private void StartClaudeTitleWatcher(string ptySessionId, string cliSessionId, CancellationToken ct)
+    {
+        if (!_ptyCwd.TryGetValue(ptySessionId, out var cwd) || string.IsNullOrEmpty(cwd))
+        {
+            Log($"No cwd recorded for PTY {ptySessionId}; skipping ai-title watcher for {cliSessionId}");
+            return;
+        }
+
+        var home = Environment.GetEnvironmentVariable("HOME");
+        if (string.IsNullOrEmpty(home))
+            home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrEmpty(home))
+        {
+            Log($"No HOME available; skipping ai-title watcher for {cliSessionId}");
+            return;
+        }
+
+        var encoded = cwd.Replace('/', '-');
+        var projectDir = Path.Combine(home, ".claude", "projects", encoded);
+        var jsonlPath = Path.Combine(projectDir, cliSessionId + ".jsonl");
+        var watcherKey = ptySessionId + ":" + cliSessionId;
+
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (!_claudeTitleWatchers.TryAdd(watcherKey, cts))
+        {
+            cts.Dispose();
+            return; // Already watching.
+        }
+        var token = cts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // Best effort: ensure the directory exists. If it doesn't show up
+                // within the lifetime of the PTY, we just give up at PTY exit.
+                while (!token.IsCancellationRequested && !Directory.Exists(projectDir))
+                {
+                    try { await Task.Delay(TimeSpan.FromSeconds(2), token); }
+                    catch (OperationCanceledException) { return; }
+                }
+                if (token.IsCancellationRequested) return;
+
+                using var watcher = new FileSystemWatcher(projectDir, cliSessionId + ".jsonl")
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.CreationTime,
+                    EnableRaisingEvents = true,
+                };
+
+                var emitted = false;
+                async Task TryEmitAsync()
+                {
+                    if (emitted || token.IsCancellationRequested) return;
+                    var title = TryReadClaudeTitle(jsonlPath);
+                    if (string.IsNullOrEmpty(title)) return;
+                    emitted = true;
+                    Log($"Claude ai-title for {cliSessionId}: {title}");
+                    try
+                    {
+                        await SendAsync(new PtyCliSessionTitledMessage
+                        {
+                            PtySessionId = ptySessionId,
+                            CliSessionId = cliSessionId,
+                            Title = title!,
+                        }, token);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Failed to send pty.cli-session-titled for {cliSessionId}: {ex.Message}");
+                    }
+                    // Dispose ourselves — title is single-shot.
+                    if (_claudeTitleWatchers.TryRemove(watcherKey, out var ownCts))
+                    {
+                        try { ownCts.Cancel(); } catch { }
+                        ownCts.Dispose();
+                    }
+                }
+
+                FileSystemEventHandler handler = (_, _) => _ = TryEmitAsync();
+                watcher.Changed += handler;
+                watcher.Created += handler;
+
+                // Initial scan in case the line was already written before the
+                // watcher attached.
+                await TryEmitAsync();
+
+                // Poll fallback: FileSystemWatcher on Linux can miss events on
+                // certain filesystems (tmpfs, network mounts). A slow poll every
+                // 3s catches anything the kernel notifications miss without
+                // burning CPU.
+                while (!token.IsCancellationRequested && !emitted)
+                {
+                    try { await Task.Delay(TimeSpan.FromSeconds(3), token); }
+                    catch (OperationCanceledException) { break; }
+                    await TryEmitAsync();
+                }
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested)
+            {
+                Log($"Claude title watcher for {cliSessionId} crashed: {ex.Message}");
+            }
+        }, token);
+    }
+
+    /// <summary>Scan a Claude project JSONL file for the first ai-title line and
+    /// return the title string, or null if absent / unreadable.</summary>
+    private static string? TryReadClaudeTitle(string jsonlPath)
+    {
+        if (!File.Exists(jsonlPath)) return null;
+        try
+        {
+            using var fs = new FileStream(jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(fs, Encoding.UTF8);
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (line.Length < 20) continue;
+                if (line.IndexOf("\"ai-title\"", StringComparison.Ordinal) < 0) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+                    if (!root.TryGetProperty("type", out var typeP)) continue;
+                    if (typeP.GetString() != "ai-title") continue;
+                    if (!root.TryGetProperty("aiTitle", out var titleP)) continue;
+                    var title = titleP.GetString();
+                    if (!string.IsNullOrWhiteSpace(title))
+                        return title.Trim();
+                }
+                catch (JsonException) { /* skip malformed line */ }
+            }
+        }
+        catch (IOException) { /* file may be mid-write, retry on next event */ }
+        catch (UnauthorizedAccessException) { }
+        return null;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -896,6 +1075,8 @@ public class WebSocketClient : IAsyncDisposable
 
                 _ptySessions[ptySessionId] = (executor, shell);
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
+                try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
+                catch { _ptyCwd[ptySessionId] = cwd; }
                 StartFifoReader(ptySessionId, ct);
                 await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
                 Log($"PTY session {ptySessionId} started");
@@ -1140,11 +1321,17 @@ public class WebSocketClient : IAsyncDisposable
         }
         _ptySessions.Clear();
         _ptyLastActivity.Clear();
+        _ptyCwd.Clear();
         foreach (var cts in _ptyFifoReaders.Values)
         {
             try { cts.Cancel(); cts.Dispose(); } catch { }
         }
         _ptyFifoReaders.Clear();
+        foreach (var cts in _claudeTitleWatchers.Values)
+        {
+            try { cts.Cancel(); cts.Dispose(); } catch { }
+        }
+        _claudeTitleWatchers.Clear();
 
         if (_ptyExecutor != null)
         {
