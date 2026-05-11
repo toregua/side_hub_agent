@@ -60,6 +60,7 @@ jobs:
           mv sidehub-agent-binary package/sidehub-agent
           cp ../publish-cli/sidehub-cli package/sidehub-cli
           cp -r pty-helper package/
+          cp -r cli-wrappers package/
           cd package
           tar -czvf ../${{ matrix.artifact }}.tar.gz *
 
@@ -71,6 +72,7 @@ jobs:
           move sidehub-agent.exe package\sidehub-agent.exe
           copy ..\publish-cli\sidehub-cli.exe package\sidehub-cli.exe
           xcopy pty-helper package\pty-helper\ /E /I
+          xcopy cli-wrappers package\cli-wrappers\ /E /I
           cd package
           Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip
 
