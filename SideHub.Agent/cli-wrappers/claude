@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SideHub wrapper around `claude`.
+#
+# Why this exists: when a user types `claude` in a SideHub shell, we want SideHub
+# to know the CLI session UUID so we can link it to a task, show it in the UI,
+# and let the scheduler resume it later. The `claude` binary generates its own
+# UUID by default and we have no clean way to discover it after the fact. So
+# this wrapper:
+#   1. Generates a UUID ourselves.
+#   2. Writes a one-line JSON notification into the FIFO that the agent watches
+#      (path comes from $SIDEHUB_PTY_NOTIFY_FIFO).
+#   3. Calls the real claude with `--session-id <uuid>` so it adopts our UUID.
+#
+# If the user already passes --resume or --session-id, we don't touch it.
+#
+# Failure modes: every step that talks to SideHub is best-effort. If the FIFO
+# write fails or claude can't be found, we still try to launch the user's
+# command — silent fallback to whatever default `claude` does.
+
+set -e
+
+# Locate the real `claude` binary, skipping our own wrapper dir.
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+real=""
+IFS=':' read -ra _paths <<< "$PATH"
+for _p in "${_paths[@]}"; do
+  [ -z "$_p" ] && continue
+  candidate="$_p/claude"
+  if [ "$_p" = "$self_dir" ]; then continue; fi
+  if [ -x "$candidate" ]; then
+    real="$candidate"
+    break
+  fi
+done
+
+if [ -z "$real" ]; then
+  echo "sidehub: real 'claude' not found in PATH" >&2
+  exit 127
+fi
+
+# If the user already drove the session id (resume or explicit), pass-through.
+for arg in "$@"; do
+  case "$arg" in
+    --resume|--resume=*|--session-id|--session-id=*)
+      exec "$real" "$@"
+      ;;
+  esac
+done
+
+sid=""
+if command -v uuidgen >/dev/null 2>&1; then
+  sid="$(uuidgen)"
+elif [ -r /proc/sys/kernel/random/uuid ]; then
+  sid="$(cat /proc/sys/kernel/random/uuid)"
+fi
+
+if [ -z "$sid" ]; then
+  # No way to mint a UUID — fall back to the user's command.
+  exec "$real" "$@"
+fi
+
+# Best-effort notify the agent (non-blocking — the FIFO has a reader on the
+# agent side, but if for some reason it's gone we don't want to hang here).
+if [ -n "$SIDEHUB_PTY_NOTIFY_FIFO" ] && [ -p "$SIDEHUB_PTY_NOTIFY_FIFO" ]; then
+  ( printf '{"event":"cli-session-started","provider":"claude","cliSessionId":"%s"}\n' "$sid" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
+fi
+
+exec "$real" --session-id "$sid" "$@"

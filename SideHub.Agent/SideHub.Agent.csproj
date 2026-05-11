@@ -14,4 +14,11 @@
     <None Include="pty-helper\package.json" CopyToOutputDirectory="PreserveNewest" Link="pty-helper\package.json" />
   </ItemGroup>
 
+  <!-- CLI wrappers prepended to PATH inside each PTY shell so that `claude` etc.
+       resolve to our script first. The script injects a SideHub-minted session id
+       and notifies the agent via FIFO. See WebSocketClient.BuildTerminalEnvironment. -->
+  <ItemGroup>
+    <None Include="cli-wrappers\claude" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\claude" />
+  </ItemGroup>
+
 </Project>

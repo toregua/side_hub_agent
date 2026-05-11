@@ -23,6 +23,8 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
+    // Background tasks reading the CLI-session notification FIFO for each PTY.
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
     private const int PtyIdleTimeoutMinutes = 30;
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
 
@@ -48,6 +50,7 @@ public class WebSocketClient : IAsyncDisposable
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        EnsureCliWrappersExecutable();
     }
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
@@ -87,18 +90,29 @@ public class WebSocketClient : IAsyncDisposable
 
     /// <summary>Build the environment dict injected into a PTY shell:
     /// SideHub CLI env vars + sidehub-agent dir prepended to PATH so `sidehub-cli`
-    /// (and the SideHub skill files) are available inside the terminal.</summary>
+    /// (and the SideHub skill files) are available inside the terminal.
+    /// Also prepends the cli-wrappers dir so `claude` resolves to our wrapper that
+    /// pre-mints a session UUID, and exposes SIDEHUB_PTY_NOTIFY_FIFO so the
+    /// wrapper can post back the session id.</summary>
     private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null)
     {
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         var agentLibDir = "/usr/local/lib/sidehub-agent";
-        var fullPath = currentPath.Contains(agentLibDir)
-            ? currentPath
-            : $"{agentLibDir}{Path.PathSeparator}{currentPath}";
+        var wrappersDir = Path.Combine(AppContext.BaseDirectory.TrimEnd('/'), "cli-wrappers");
+
+        var pathParts = new List<string>();
+        if (Directory.Exists(wrappersDir) && !currentPath.Contains(wrappersDir))
+            pathParts.Add(wrappersDir);
+        if (!currentPath.Contains(agentLibDir))
+            pathParts.Add(agentLibDir);
+        var fullPath = pathParts.Count > 0
+            ? string.Join(Path.PathSeparator, pathParts) + Path.PathSeparator + currentPath
+            : currentPath;
 
         var env = new Dictionary<string, string>
         {
             ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
+            ["SIDEHUB_PTY_NOTIFY_FIFO"] = GetFifoPath(ptySessionId),
             ["PATH"] = fullPath,
             ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
             ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
@@ -125,6 +139,180 @@ public class WebSocketClient : IAsyncDisposable
     {
         if (command.Length <= 80) return command;
         return command[..80] + "...";
+    }
+
+    private static string GetFifoPath(string ptySessionId)
+        => $"/tmp/sidehub-pty-{ptySessionId}.fifo";
+
+    private static bool _cliWrappersChecked;
+    private static readonly object _cliWrappersLock = new();
+
+    /// <summary>MSBuild copies cli-wrappers/* to the output directory but drops
+    /// the executable bit on Linux. Mark them executable once at startup so
+    /// `exec` from inside the PTY shell works.</summary>
+    private static void EnsureCliWrappersExecutable()
+    {
+        lock (_cliWrappersLock)
+        {
+            if (_cliWrappersChecked) return;
+            _cliWrappersChecked = true;
+
+            var dir = Path.Combine(AppContext.BaseDirectory.TrimEnd('/'), "cli-wrappers");
+            if (!Directory.Exists(dir)) return;
+
+            foreach (var file in Directory.EnumerateFiles(dir))
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "chmod",
+                        Arguments = $"+x {file}",
+                        UseShellExecute = false,
+                        RedirectStandardError = true,
+                    };
+                    using var p = Process.Start(psi);
+                    p?.WaitForExit(2000);
+                }
+                catch { /* best effort */ }
+            }
+        }
+    }
+
+    /// <summary>Create the notification FIFO before the PTY starts. Best-effort:
+    /// if mkfifo isn't available, we log and skip — the CLI wrapper will simply
+    /// no-op its notification and the existing session behavior is preserved.</summary>
+    private void EnsureNotifyFifo(string ptySessionId)
+    {
+        var fifoPath = GetFifoPath(ptySessionId);
+        try
+        {
+            if (File.Exists(fifoPath))
+                File.Delete(fifoPath);
+        }
+        catch { /* ignore */ }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "mkfifo",
+                Arguments = $"-m 0600 {fifoPath}",
+                UseShellExecute = false,
+                RedirectStandardError = true,
+            };
+            using var p = Process.Start(psi);
+            p?.WaitForExit(2000);
+            if (p is null || p.ExitCode != 0)
+            {
+                Log($"mkfifo failed for {fifoPath} (exit {p?.ExitCode}); CLI session notifications disabled for this PTY");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"mkfifo unavailable ({ex.Message}); CLI session notifications disabled for this PTY");
+        }
+    }
+
+    /// <summary>Tear down the FIFO and stop its reader task.</summary>
+    private void CleanupNotifyFifo(string ptySessionId)
+    {
+        if (_ptyFifoReaders.TryRemove(ptySessionId, out var cts))
+        {
+            try { cts.Cancel(); } catch { /* ignore */ }
+            cts.Dispose();
+        }
+        try
+        {
+            var fifoPath = GetFifoPath(ptySessionId);
+            if (File.Exists(fifoPath))
+                File.Delete(fifoPath);
+        }
+        catch { /* ignore */ }
+    }
+
+    /// <summary>Spawn a background reader that pulls JSON lines from the
+    /// notification FIFO and forwards CLI-session events to the backend. We open
+    /// the FIFO in read+write mode (O_RDWR) so the reader doesn't block when no
+    /// writer is connected and doesn't see EOF when a writer disconnects between
+    /// CLI invocations.</summary>
+    private void StartFifoReader(string ptySessionId, CancellationToken ct)
+    {
+        var fifoPath = GetFifoPath(ptySessionId);
+        if (!File.Exists(fifoPath)) return; // mkfifo failed; nothing to read
+
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _ptyFifoReaders[ptySessionId] = cts;
+        var token = cts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // O_RDWR keeps the FIFO open even when wrappers come and go.
+                using var stream = new FileStream(fifoPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+
+                while (!token.IsCancellationRequested)
+                {
+                    string? line;
+                    try
+                    {
+                        line = await reader.ReadLineAsync(token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+
+                    if (line is null)
+                    {
+                        // FIFO closed; small backoff before retry to avoid spinning.
+                        await Task.Delay(200, token);
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
+                    await HandleFifoLineAsync(ptySessionId, line, token);
+                }
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested)
+            {
+                Log($"FIFO reader for {ptySessionId} crashed: {ex.Message}");
+            }
+        }, token);
+    }
+
+    private async Task HandleFifoLineAsync(string ptySessionId, string line, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var ev = root.TryGetProperty("event", out var eP) ? eP.GetString() : null;
+            if (ev != "cli-session-started") return;
+
+            var provider = root.TryGetProperty("provider", out var pP) ? pP.GetString() : null;
+            var cliSessionId = root.TryGetProperty("cliSessionId", out var sP) ? sP.GetString() : null;
+            if (string.IsNullOrEmpty(provider) || string.IsNullOrEmpty(cliSessionId)) return;
+
+            Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
+            await SendAsync(new PtyCliSessionStartedMessage
+            {
+                PtySessionId = ptySessionId,
+                Provider = provider!,
+                CliSessionId = cliSessionId!,
+            }, ct);
+        }
+        catch (JsonException)
+        {
+            Log($"Malformed FIFO line on PTY {ptySessionId}: {line}");
+        }
+        catch (Exception ex)
+        {
+            Log($"FIFO line handling failed on PTY {ptySessionId}: {ex.Message}");
+        }
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -280,6 +468,7 @@ public class WebSocketClient : IAsyncDisposable
                             _ptyLastActivity.TryRemove(sid, out DateTime _);
                             Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
                             try { await session.Executor.DisposeAsync(); } catch { }
+                            CleanupNotifyFifo(sid);
                         }
                     }
                 }
@@ -670,6 +859,10 @@ public class WebSocketClient : IAsyncDisposable
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
             var cwd = message.WorkingDirectory ?? _workingDirectory;
+
+            // Set up the CLI-session notification FIFO BEFORE building the env,
+            // because the env points the wrappers at it.
+            EnsureNotifyFifo(ptySessionId);
             var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv);
 
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
@@ -692,6 +885,7 @@ public class WebSocketClient : IAsyncDisposable
                         Log($"PTY {ptySessionId} exited with code {exitCode}");
                         _ptySessions.TryRemove(ptySessionId, out _);
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
+                        CleanupNotifyFifo(ptySessionId);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
                     },
                     columns,
@@ -702,12 +896,14 @@ public class WebSocketClient : IAsyncDisposable
 
                 _ptySessions[ptySessionId] = (executor, shell);
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
+                StartFifoReader(ptySessionId, ct);
                 await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
                 Log($"PTY session {ptySessionId} started");
             }
             catch (Exception ex)
             {
                 Log($"Failed to start PTY {ptySessionId}: {ex.Message}");
+                CleanupNotifyFifo(ptySessionId);
             }
             return;
         }
@@ -841,6 +1037,7 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"Stopping PTY session {ptySessionId}");
                 try { await session.Executor.DisposeAsync(); }
                 catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
+                CleanupNotifyFifo(ptySessionId);
                 Log($"PTY session {ptySessionId} stopped");
             }
             return;
@@ -939,9 +1136,15 @@ public class WebSocketClient : IAsyncDisposable
         foreach (var (sid, session) in _ptySessions)
         {
             try { await session.Executor.DisposeAsync(); } catch { }
+            CleanupNotifyFifo(sid);
         }
         _ptySessions.Clear();
         _ptyLastActivity.Clear();
+        foreach (var cts in _ptyFifoReaders.Values)
+        {
+            try { cts.Cancel(); cts.Dispose(); } catch { }
+        }
+        _ptyFifoReaders.Clear();
 
         if (_ptyExecutor != null)
         {

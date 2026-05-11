@@ -188,3 +188,24 @@ public class PtyHistoryMessage
     public string? PtySessionId { get; init; }
 }
 
+/// <summary>
+/// Emitted when a CLI session is started inside a PTY (e.g. the user typed
+/// <c>claude</c> and our wrapper minted a UUID via <c>--session-id</c>). The
+/// agent's FIFO reader posts this back to the backend so SideHub can link the
+/// session to a task or display it in the UI.
+/// </summary>
+public class PtyCliSessionStartedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.cli-session-started";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+
+    [JsonPropertyName("cliSessionId")]
+    public required string CliSessionId { get; init; }
+}
+
