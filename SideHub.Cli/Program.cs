@@ -33,8 +33,8 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
-    Console.Error.WriteLine("  drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet|folder]");
-    Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\"]");
+    Console.Error.WriteLine("  drive create --title \"...\" [--content \"...\" | --file <path>] [--parent <id>] [--type page|spreadsheet|folder]");
+    Console.Error.WriteLine("  drive update <pageId> [--title \"...\"] [--content \"...\" | --file <path>]");
     Console.Error.WriteLine("  drive delete <id> [--yes]");
     Console.Error.WriteLine("  drive move <id> --parent <newParentId|root> [--after <siblingId>]");
     Console.Error.WriteLine("  drive mkdir --title \"...\" [--parent <id>]");

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace SideHub.Cli.Commands;
@@ -185,14 +186,18 @@ public static class DriveCommands
 
     public static async Task<int> CreateAsync(SideHubApiClient client, string[] args, bool json)
     {
+        var unknown = ValidateKnownFlags(args, CreateFlags);
+        if (unknown is not null) return unknown.Value;
+
         var title = GetOption(args, "--title");
         var content = GetOption(args, "--content");
+        var filePath = GetOption(args, "--file");
         var parentId = GetOption(args, "--parent");
         var type = GetOption(args, "--type");
 
         if (string.IsNullOrEmpty(title))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive create --title \"...\" [--content \"...\"] [--parent <id>] [--type page|spreadsheet|folder]");
+            Console.Error.WriteLine("Usage: sidehub-cli drive create --title \"...\" [--content \"...\" | --file <path>] [--parent <id>] [--type page|spreadsheet|folder]");
             return 1;
         }
 
@@ -200,6 +205,18 @@ public static class DriveCommands
         {
             Console.Error.WriteLine("Error: --type must be 'page', 'spreadsheet', or 'folder'");
             return 1;
+        }
+
+        if (filePath is not null)
+        {
+            if (content is not null)
+            {
+                Console.Error.WriteLine("Error: use either --content or --file, not both");
+                return 1;
+            }
+            var fileContent = TryReadFile(filePath);
+            if (fileContent is null) return 1;
+            content = fileContent;
         }
 
         if (content is not null && content.Length > 100 * 1024)
@@ -224,14 +241,30 @@ public static class DriveCommands
 
     public static async Task<int> UpdateAsync(SideHubApiClient client, string[] args, bool json)
     {
+        var unknown = ValidateKnownFlags(args, UpdateFlags);
+        if (unknown is not null) return unknown.Value;
+
         var pageId = args.FirstOrDefault(a => !a.StartsWith("--"));
         var title = GetOption(args, "--title");
         var content = GetOption(args, "--content");
+        var filePath = GetOption(args, "--file");
 
         if (string.IsNullOrEmpty(pageId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive update <pageId> [--title \"...\"] [--content \"...\"]");
+            Console.Error.WriteLine("Usage: sidehub-cli drive update <pageId> [--title \"...\"] [--content \"...\" | --file <path>]");
             return 1;
+        }
+
+        if (filePath is not null)
+        {
+            if (content is not null)
+            {
+                Console.Error.WriteLine("Error: use either --content or --file, not both");
+                return 1;
+            }
+            var fileContent = TryReadFile(filePath);
+            if (fileContent is null) return 1;
+            content = fileContent;
         }
 
         if (content is not null && content.Length > 100 * 1024)
@@ -476,6 +509,49 @@ public static class DriveCommands
             if (args[i] == flag) return args[i + 1];
         }
         return null;
+    }
+
+    private static readonly HashSet<string> CreateFlags = new()
+    {
+        "--title", "--content", "--file", "--parent", "--type", "--json"
+    };
+
+    private static readonly HashSet<string> UpdateFlags = new()
+    {
+        "--title", "--content", "--file", "--json"
+    };
+
+    private static int? ValidateKnownFlags(string[] args, HashSet<string> known)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (!a.StartsWith("--")) continue;
+            if (!known.Contains(a))
+            {
+                Console.Error.WriteLine($"Error: unknown flag '{a}'");
+                return 1;
+            }
+        }
+        return null;
+    }
+
+    private static string? TryReadFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            Console.Error.WriteLine($"Error: file not found: {path}");
+            return null;
+        }
+        try
+        {
+            return File.ReadAllText(path, Encoding.UTF8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"Error: cannot read file '{path}': {ex.Message}");
+            return null;
+        }
     }
 
     private static string Truncate(string s, int max) =>

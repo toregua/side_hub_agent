@@ -71,10 +71,12 @@ sidehub-cli drive read <pageId>
 
 # Creer une page
 sidehub-cli drive create --title "Rapport audit" --content "# Contenu markdown..."  [--parent <folderId>]
+# Alternative: charger le contenu depuis un fichier sur disque
+sidehub-cli drive create --title "Rapport audit" --file /tmp/rapport.md [--parent <folderId>]
 # Output: id de la page creee
 
 # Mettre a jour une page
-sidehub-cli drive update <pageId> [--title "Nouveau titre"] [--content "Nouveau contenu..."]
+sidehub-cli drive update <pageId> [--title "Nouveau titre"] [--content "Nouveau contenu..." | --file <path>]
 # Output: confirmation
 ```
 
@@ -143,8 +145,8 @@ Les variables d'environnement sont deja configurees dans ta session.
 ### Drive (documentation, livrables)
 - `sidehub-cli drive list` — Lister les pages/dossiers du Drive
 - `sidehub-cli drive read <pageId>` — Lire le contenu d'une page
-- `sidehub-cli drive create --title "..." --content "..."` — Creer une page
-- `sidehub-cli drive update <pageId> --title "..." --content "..."` — Modifier une page
+- `sidehub-cli drive create --title "..." (--content "..." | --file <path>)` — Creer une page
+- `sidehub-cli drive update <pageId> [--title "..."] (--content "..." | --file <path>)` — Modifier une page
 
 ### Taches
 - `sidehub-cli task list` — Lister les taches du workspace
