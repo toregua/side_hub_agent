@@ -156,6 +156,14 @@ public class PtyStartedMessage
 
     [JsonPropertyName("ptySessionId")]
     public string? PtySessionId { get; init; }
+
+    /// <summary>
+    /// True when we reused an already-running PTY for this ptySessionId.
+    /// False (default) when a fresh PTY was just spawned. The frontend uses
+    /// this to decide whether to auto-resume a previously-captured CLI session.
+    /// </summary>
+    [JsonPropertyName("reattached")]
+    public bool Reattached { get; init; }
 }
 
 public class PtyExitedMessage

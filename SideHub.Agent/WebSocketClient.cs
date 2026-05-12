@@ -1026,7 +1026,7 @@ public class WebSocketClient : IAsyncDisposable
                 if (isHealthy)
                 {
                     Log($"PTY session {ptySessionId} already running, sending started event for reconnection");
-                    await SendAsync(new PtyStartedMessage { Shell = existing.Shell, PtySessionId = ptySessionId }, ct);
+                    await SendAsync(new PtyStartedMessage { Shell = existing.Shell, PtySessionId = ptySessionId, Reattached = true }, ct);
                     return;
                 }
                 Log($"PTY session {ptySessionId} unhealthy, recreating");
