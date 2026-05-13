@@ -91,20 +91,34 @@ function startPty(config) {
   const rows = config.rows || 24;
   const extraEnv = config.env || {};
 
+  const env = {
+    ...filterSensitiveEnv(process.env),
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    COLUMNS: String(cols),
+    LINES: String(rows),
+    ...extraEnv
+  };
+
+  // Default to a login shell so .profile / .bashrc run. When the agent
+  // provided a SideHub rcfile (only meaningful for bash), invoke bash as an
+  // interactive non-login shell with --rcfile pointing at that file — our
+  // rcfile manually re-sources the standard init files and then re-prepends
+  // the cli-wrappers dir to PATH so user PATH overrides can't shadow it.
+  let shellArgs = ['-l'];
+  const sidehubBashrc = env.SIDEHUB_BASHRC;
+  const isBash = /(^|\/)bash$/.test(shell);
+  if (isBash && sidehubBashrc) {
+    shellArgs = ['--rcfile', sidehubBashrc, '-i'];
+  }
+
   try {
-    ptyProcess = pty.spawn(shell, ['-l'], {
+    ptyProcess = pty.spawn(shell, shellArgs, {
       name: 'xterm-256color',
       cols: cols,
       rows: rows,
       cwd: cwd,
-      env: {
-        ...filterSensitiveEnv(process.env),
-        TERM: 'xterm-256color',
-        COLORTERM: 'truecolor',
-        COLUMNS: String(cols),
-        LINES: String(rows),
-        ...extraEnv
-      }
+      env: env
     });
 
     ptyProcess.onData((data) => {

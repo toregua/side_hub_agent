@@ -120,11 +120,17 @@ public class WebSocketClient : IAsyncDisposable
         {
             ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
             ["SIDEHUB_PTY_NOTIFY_FIFO"] = GetFifoPath(ptySessionId),
+            ["SIDEHUB_CLI_WRAPPERS"] = wrappersDir,
             ["PATH"] = fullPath,
             ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
             ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
         };
+        // Point the pty-helper at our custom rcfile so it can pass `--rcfile`
+        // to bash, ensuring our PATH wins after the user's .bashrc runs.
+        var sidehubBashrc = Path.Combine(wrappersDir, "sidehub.bashrc");
+        if (File.Exists(sidehubBashrc))
+            env["SIDEHUB_BASHRC"] = sidehubBashrc;
         if (!string.IsNullOrEmpty(_config.AgentId))
             env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
 

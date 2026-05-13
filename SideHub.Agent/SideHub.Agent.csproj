@@ -19,6 +19,7 @@
        and notifies the agent via FIFO. See WebSocketClient.BuildTerminalEnvironment. -->
   <ItemGroup>
     <None Include="cli-wrappers\claude" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\claude" />
+    <None Include="cli-wrappers\sidehub.bashrc" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\sidehub.bashrc" />
   </ItemGroup>
 
 </Project>
