@@ -62,8 +62,11 @@ The Drive is your persistent memory across sessions. Use it to store and retriev
 knowledge that will help you and other agents work more effectively.
 
 Pages available in your workspace drive:
+- `acf124c0-8355-41bf-9f7c-c61ae45b453f` — Analyse — Évolution SideHub vers l'enterprise (2026-09-28)
+- `3caaca8b-43d4-4baa-bdc2-ea7ea0c8ea3a` — Analyse évolution SideHub enterprise (2026-09-28)
 - 📁 **Documentations**/
   - `95fce769-9357-4eb2-8f42-2797804c14f3` — Fonctionnement agents
+- `549d256f-2edc-47f9-9cf7-0d59b444d4f7` — Plan tickets — Fondations enterprise (2026-09-28)
 - 📁 **Test**/
 
 Use `sidehub-cli drive read <id>` to load any page you need.
