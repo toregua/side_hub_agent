@@ -1231,9 +1231,9 @@ public class WebSocketClient : IAsyncDisposable
         {
             if (_ptySessions.TryGetValue(ptySessionId, out var session) && session.Executor.IsRunning && !string.IsNullOrEmpty(message.Input))
             {
-                // Log scheduler/workflow input lines so we can diagnose "claude never started"
-                // issues. Single-key inputs from interactive use are skipped to avoid spam.
-                if (ptySessionId.StartsWith("scheduler-") || ptySessionId.StartsWith("workflow-"))
+                // Log backend-launched input lines (runs, legacy scheduler/workflow sessions) so we can
+                // diagnose "claude never started" issues. Interactive keystrokes are skipped to avoid spam.
+                if (IsBackendManagedPtySession(ptySessionId))
                 {
                     var preview = message.Input!.Length > 200 ? message.Input.Substring(0, 200) + "..." : message.Input;
                     var oneLine = preview.Replace('\n', '⏎');
