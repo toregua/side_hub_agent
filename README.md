@@ -8,32 +8,22 @@ Remote command execution agent for the [SideHub](https://www.sidehub.io) platfor
 
 ### 1. Install the agent
 
-**macOS**
-```bash
-curl -fsSL https://www.sidehub.io/api/agent/download/macos -o sidehub-agent
-chmod +x sidehub-agent
-sudo mv sidehub-agent /usr/local/bin/
-```
+Requires [Node.js](https://nodejs.org) (used for PTY terminal support).
 
-**Linux**
-```bash
-curl -fsSL https://www.sidehub.io/api/agent/download/linux -o sidehub-agent
-chmod +x sidehub-agent
-sudo mv sidehub-agent /usr/local/bin/
-```
-
-**Windows (PowerShell)**
-```powershell
-Invoke-WebRequest -Uri "https://www.sidehub.io/api/agent/download/windows" -OutFile "sidehub-agent.exe"
-```
-
-Or use the install scripts:
 ```bash
 # macOS / Linux
-curl -fsSL https://www.sidehub.io/api/agent/install.sh | bash
+curl -fsSL https://api.sidehub.io/agent/install.sh | bash
 
 # Windows (PowerShell)
-irm https://www.sidehub.io/api/agent/install.ps1 | iex
+irm https://api.sidehub.io/agent/install.ps1 | iex
+```
+
+The script downloads the latest release for your platform, installs it in
+`/usr/local/lib/sidehub-agent/` and links `sidehub-agent` / `sidehub-cli` into
+`/usr/local/bin/`. To install a specific version:
+
+```bash
+curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.34
 ```
 
 ### 2. Configure
@@ -50,7 +40,7 @@ mkdir -p .sidehub
 cat > .sidehub/agent.json << 'EOF'
 {
   "name": "my-agent",
-  "sidehubUrl": "wss://www.sidehub.io/ws/agent",
+  "sidehubUrl": "wss://api.sidehub.io/ws/agent",
   "agentId": "<your-agent-uuid>",
   "workspaceId": "<your-workspace-uuid>",
   "agentToken": "sh_agent_<your-token>",
@@ -70,6 +60,18 @@ sidehub-agent
 
 That's it — the agent connects to SideHub and is ready to receive commands.
 
+### Update
+
+Re-run the install script, then restart the running agents so they pick up the new binaries:
+
+```bash
+curl -fsSL https://api.sidehub.io/agent/install.sh | bash
+sidehub-agent restart --all -d
+sidehub-agent status
+```
+
+> Restarting stops every PTY session opened through SideHub on this machine.
+
 ## Configuration
 
 Agent configuration files live in `.sidehub/` at the root of your project. Each `.json` file defines one agent instance — all are launched in parallel.
@@ -87,7 +89,7 @@ my-project/
 | Field | Required | Description |
 |---|---|---|
 | `name` | No | Display name (defaults to filename) |
-| `sidehubUrl` | Yes | WebSocket endpoint — `wss://www.sidehub.io/ws/agent` |
+| `sidehubUrl` | Yes | WebSocket endpoint — `wss://api.sidehub.io/ws/agent` |
 | `agentId` | Yes | Agent UUID (from SideHub dashboard) |
 | `workspaceId` | Yes | Workspace UUID (from SideHub dashboard) |
 | `agentToken` | Yes | Authentication token (prefix `sh_agent_`) |
@@ -105,7 +107,7 @@ my-project/
 // .sidehub/backend.json
 {
   "name": "backend-server",
-  "sidehubUrl": "wss://www.sidehub.io/ws/agent",
+  "sidehubUrl": "wss://api.sidehub.io/ws/agent",
   "agentId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
   "workspaceId": "11111111-2222-3333-4444-555555555555",
   "agentToken": "sh_agent_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
