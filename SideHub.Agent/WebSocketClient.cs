@@ -654,6 +654,10 @@ public class WebSocketClient : IAsyncDisposable
                             Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
                             try { await session.Executor.DisposeAsync(); } catch { }
                             CleanupNotifyFifo(sid);
+                            // DisposeAsync doesn't fire the executor's exit callback, so tell the
+                            // backend explicitly — otherwise it keeps reporting the session as
+                            // running and frontends reattach to a dead PTY (blank terminal).
+                            try { await SendAsync(new PtyExitedMessage { ExitCode = 0, PtySessionId = sid }, CancellationToken.None); } catch { }
                         }
                     }
                 }
