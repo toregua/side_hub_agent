@@ -33,6 +33,17 @@ public class WebSocketClient : IAsyncDisposable
     // don't collide.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _claudeTitleWatchers = new();
     private const int PtyIdleTimeoutMinutes = 30;
+    // PTY sessions driven by the backend (workflow steps, scheduled prompts, runs) run
+    // unattended and often produce no input for long stretches. The backend owns their
+    // timeout, so the idle reaper must leave them alone.
+    private static readonly string[] BackendManagedPtyPrefixes = ["workflow-", "scheduler-", "run-"];
+    // Tail of the in-flight work per PTY session (key "" = legacy single PTY). Only the
+    // receive loop reads/writes the tail, so messages for one session stay ordered even
+    // when pty.start runs off the loop.
+    private readonly ConcurrentDictionary<string, Task> _ptyPendingWork = new();
+    // ClientWebSocket forbids concurrent SendAsync calls; handlers, PTY output callbacks
+    // and the heartbeat timer all send, so serialize them.
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
 
     private const int MinReconnectDelayMs = 1000;
@@ -646,6 +657,8 @@ public class WebSocketClient : IAsyncDisposable
                 var now = DateTime.UtcNow;
                 foreach (var (sid, lastActivity) in _ptyLastActivity)
                 {
+                    if (IsBackendManagedPtySession(sid))
+                        continue;
                     if ((now - lastActivity).TotalMinutes > PtyIdleTimeoutMinutes)
                     {
                         if (_ptySessions.TryRemove(sid, out var session))
@@ -673,6 +686,9 @@ public class WebSocketClient : IAsyncDisposable
         _ptyReaperTimer?.Dispose();
         _ptyReaperTimer = null;
     }
+
+    private static bool IsBackendManagedPtySession(string ptySessionId) =>
+        BackendManagedPtyPrefixes.Any(prefix => ptySessionId.StartsWith(prefix, StringComparison.Ordinal));
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
@@ -719,22 +735,25 @@ public class WebSocketClient : IAsyncDisposable
             var message = JsonSerializer.Deserialize<IncomingMessage>(json, _jsonOptions);
             if (message == null) return;
 
+            // Slow handlers (command.execute, pty.start, file.write.end) run off the receive
+            // loop: awaiting them here would stop heartbeat ACKs from being read and trigger
+            // a false reconnection. Light PTY messages stay inline to keep keystroke order.
             switch (message.Type)
             {
                 case "command.execute":
-                    await HandleCommandExecuteAsync(message, ct);
+                    RunInBackground("command.execute", () => HandleCommandExecuteAsync(message, ct));
                     break;
                 case "pty.start":
-                    await HandlePtyStartAsync(message, ct);
+                    await DispatchPtyAsync(message, () => HandlePtyStartAsync(message, ct), runInBackground: true);
                     break;
                 case "pty.input":
-                    await HandlePtyInputAsync(message, ct);
+                    await DispatchPtyAsync(message, () => HandlePtyInputAsync(message, ct));
                     break;
                 case "pty.resize":
-                    HandlePtyResize(message);
+                    await DispatchPtyAsync(message, () => { HandlePtyResize(message); return Task.CompletedTask; });
                     break;
                 case "pty.stop":
-                    await HandlePtyStopAsync(message);
+                    await DispatchPtyAsync(message, () => HandlePtyStopAsync(message));
                     break;
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
@@ -746,7 +765,9 @@ public class WebSocketClient : IAsyncDisposable
                     HandleFileWriteChunk(message);
                     break;
                 case "file.write.end":
-                    await HandleFileWriteEndAsync(message, ct);
+                    // start/chunk only touch _pendingFileWrites and stay inline so every
+                    // chunk lands before its end; the decode + disk write + paste is offloaded.
+                    RunInBackground("file.write.end", () => HandleFileWriteEndAsync(message, ct));
                     break;
                 case "terminal.attachment.enqueue":
                     await HandleTerminalAttachmentAsync(message, ct);
@@ -769,6 +790,46 @@ public class WebSocketClient : IAsyncDisposable
         {
             Log($"Invalid JSON received: {ex.Message}");
         }
+    }
+
+    private void RunInBackground(string label, Func<Task> work)
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await work(); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Log($"{label} handler failed: {ex.Message}"); }
+        });
+    }
+
+    /// <summary>
+    /// Runs a PTY message handler while preserving per-session ordering. If earlier work for
+    /// the same session is still in flight (typically a slow pty.start), the handler is chained
+    /// after it instead of racing it; otherwise light handlers run inline on the receive loop.
+    /// </summary>
+    private async Task DispatchPtyAsync(IncomingMessage message, Func<Task> work, bool runInBackground = false)
+    {
+        var key = message.PtySessionId ?? "";
+        _ptyPendingWork.TryGetValue(key, out var pending);
+
+        if (!runInBackground && (pending == null || pending.IsCompleted))
+        {
+            await work();
+            return;
+        }
+
+        var previous = pending ?? Task.CompletedTask;
+        var next = Task.Run(async () =>
+        {
+            try { await previous; } catch { /* already logged by the previous link */ }
+            try { await work(); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Log($"{message.Type} handler failed for PTY {key}: {ex.Message}"); }
+        });
+        _ptyPendingWork[key] = next;
+        _ = next.ContinueWith(
+            t => _ptyPendingWork.TryRemove(new KeyValuePair<string, Task>(key, t)),
+            TaskScheduler.Default);
     }
 
     private async Task HandleTerminalAttachmentAsync(IncomingMessage message, CancellationToken ct)
@@ -1016,11 +1077,20 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task SendAsync<T>(T message, CancellationToken ct)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        var ws = _ws;
+        if (ws?.State != WebSocketState.Open) return;
 
         var json = JsonSerializer.Serialize(message, _jsonOptions);
         var bytes = Encoding.UTF8.GetBytes(json);
-        await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+        await _sendLock.WaitAsync(ct);
+        try
+        {
+            await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
