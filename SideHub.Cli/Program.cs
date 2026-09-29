@@ -57,7 +57,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  task list [--status <status>]");
     Console.Error.WriteLine("  task get <taskId>");
     Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>] [--repository <id|name>]");
-    Console.Error.WriteLine("  task update <taskId> [--title \"...\"] [--description \"...\"] [--type <type>]");
+    Console.Error.WriteLine("  task update <taskId> [--title \"...\"] [--description \"...\"] [--type <type>] [--repository <id|name>]");
     Console.Error.WriteLine("  task delete <taskId> [--yes]");
     Console.Error.WriteLine("  task status <taskId> --status <status>");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");

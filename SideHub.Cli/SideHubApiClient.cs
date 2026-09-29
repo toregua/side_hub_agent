@@ -348,12 +348,26 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> UpdateTaskAsync(string taskId, string? title, string? description, string? type)
+    /// <summary>
+    /// The backend PUT replaces every field, so the current task is read first and only the given
+    /// fields are overridden — otherwise omitted fields (repository, due date, description…) are wiped.
+    /// </summary>
+    public async Task<JsonElement> UpdateTaskAsync(string taskId, string? title, string? description, string? type, string? repositoryId = null)
     {
-        var body = new Dictionary<string, object?>();
-        if (title is not null) body["title"] = title;
-        if (description is not null) body["description"] = description;
-        if (type is not null) body["type"] = type;
+        var current = await GetTaskAsync(taskId);
+        object? Current(string name) =>
+            current.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v : null;
+
+        var body = new Dictionary<string, object?>
+        {
+            ["title"] = title ?? Current("title"),
+            ["description"] = description ?? Current("description"),
+            ["type"] = type ?? Current("type"),
+            ["ticketReference"] = Current("ticketReference"),
+            ["platform"] = Current("platform"),
+            ["dueDate"] = Current("dueDate"),
+            ["repositoryId"] = repositoryId ?? Current("repositoryId"),
+        };
 
         var resp = await _http.PutAsJsonAsync($"api/workspaces/{_workspaceId}/tasks/{taskId}", body);
         await EnsureSuccessAsync(resp);

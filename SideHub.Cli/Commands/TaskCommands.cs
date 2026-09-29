@@ -146,19 +146,21 @@ public static class TaskCommands
         var title = GetOption(args, "--title");
         var description = GetOption(args, "--description");
         var type = GetOption(args, "--type");
+        var repository = GetOption(args, "--repository");
 
         if (string.IsNullOrEmpty(taskId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli task update <taskId> [--title \"...\"] [--description \"...\"] [--type <type>]");
+            Console.Error.WriteLine("Usage: sidehub-cli task update <taskId> [--title \"...\"] [--description \"...\"] [--type <type>] [--repository <id|name>]");
             return 1;
         }
-        if (title is null && description is null && type is null)
+        if (title is null && description is null && type is null && repository is null)
         {
             Console.Error.WriteLine("Error: at least one field to update is required.");
             return 1;
         }
 
-        var result = await client.UpdateTaskAsync(taskId, title, description, type);
+        var repositoryId = repository is null ? null : await client.ResolveRepositoryIdAsync(repository);
+        var result = await client.UpdateTaskAsync(taskId, title, description, type, repositoryId);
 
         if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
         else Console.WriteLine($"Updated task: {taskId}");
