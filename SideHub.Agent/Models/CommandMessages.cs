@@ -117,7 +117,7 @@ public class IncomingMessage
     public TerminalAttachmentPayload? Attachment { get; init; }
 
     // pty.start: optional dict of extra env vars to merge into the PTY environment
-    // (workflow execution context, etc.). Wins on conflict with the agent's defaults.
+    // (workflow execution context, run token…). Filtered by PtyEnvironmentPolicy: only SIDEHUB_* and an allow-list.
     [JsonPropertyName("additionalEnv")]
     public Dictionary<string, string>? AdditionalEnv { get; init; }
 }

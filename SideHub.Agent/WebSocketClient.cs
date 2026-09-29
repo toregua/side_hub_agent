@@ -162,15 +162,16 @@ public class WebSocketClient : IAsyncDisposable
         if (!string.IsNullOrEmpty(_config.AgentId))
             env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
 
-        // Merge caller-supplied env (e.g. workflow execution context). Caller wins on conflict.
-        if (additionalEnv is not null)
-        {
-            foreach (var kvp in additionalEnv)
-            {
-                if (string.IsNullOrEmpty(kvp.Key)) continue;
-                env[kvp.Key] = kvp.Value ?? string.Empty;
-            }
-        }
+        // Merge caller-supplied env (e.g. workflow execution context), restricted to SIDEHUB_* and an
+        // allow-list. A run-* PTY may carry a run token in SIDEHUB_AGENT_TOKEN that replaces the
+        // workspace token; without one (older backend) the workspace token stays.
+        var allowedEnv = PtyEnvironmentPolicy.FilterAdditionalEnv(ptySessionId, additionalEnv, out var rejectedKeys);
+        if (rejectedKeys.Count > 0)
+            Log($"SECURITY: PTY {ptySessionId} ignored additionalEnv keys: {string.Join(", ", rejectedKeys)}");
+        if (allowedEnv.ContainsKey(PtyEnvironmentPolicy.AgentTokenKey))
+            Log($"PTY {ptySessionId} uses the run token instead of the workspace token");
+        foreach (var (key, value) in allowedEnv)
+            env[key] = value;
 
         return env;
     }
@@ -1175,6 +1176,15 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
+    /// <summary>The cwd a pty.start asked for, confined to the agent's working directory and its
+    /// subfolders; anything else falls back to the working directory.</summary>
+    private string ResolvePtyWorkingDirectory(string? requested, string ptySessionId)
+    {
+        if (!PtyEnvironmentPolicy.TryResolveWorkingDirectory(_workingDirectory, requested, out var cwd))
+            Log($"SECURITY: PTY {ptySessionId} working directory '{requested}' is outside '{_workingDirectory}', using the working directory");
+        return cwd;
+    }
+
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
         var ptySessionId = message.PtySessionId;
@@ -1199,7 +1209,7 @@ public class WebSocketClient : IAsyncDisposable
             var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
-            var cwd = message.WorkingDirectory ?? _workingDirectory;
+            var cwd = ResolvePtyWorkingDirectory(message.WorkingDirectory, ptySessionId);
 
             // Set up the CLI-session notification FIFO BEFORE building the env,
             // because the env points the wrappers at it.
@@ -1275,7 +1285,7 @@ public class WebSocketClient : IAsyncDisposable
             var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
-            var effectiveWorkingDirectory = message.WorkingDirectory ?? _workingDirectory;
+            var effectiveWorkingDirectory = ResolvePtyWorkingDirectory(message.WorkingDirectory, "legacy");
 
             Log($"Starting PTY session with {shell} ({columns}x{rows}) in {effectiveWorkingDirectory}");
 

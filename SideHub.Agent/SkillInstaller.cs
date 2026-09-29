@@ -105,6 +105,7 @@ knowledge that will help you and other agents work more effectively.
 - **Sub-tasks**: if you identify additional work, create tasks with `sidehub-cli task create`
 - Drive content in markdown
 - Comments should be concise (1-3 sentences)
+- **Expired token**: if `sidehub-cli` reports `Authentication failed (HTTP 401)`, the session token is expired or revoked — do not retry any `sidehub-cli` command, finish without it and mention the failure in your final answer
 
 If env var `SIDEHUB_WORKFLOW_EXECUTION_ID` is set, you are in workflow mode — follow these instructions:
 

@@ -685,7 +685,11 @@ public class SideHubApiClient : IDisposable
 
         var message = (int)response.StatusCode switch
         {
-            401 => serverMessage ?? "Authentication failed. Check your SIDEHUB_AGENT_TOKEN.",
+            // Run tokens expire with the run's timeout and are revoked when it ends: tell the LLM
+            // not to retry, every later call will fail the same way.
+            401 => "Authentication failed (HTTP 401): the SideHub token of this session is expired or revoked"
+                + (serverMessage is null ? "" : $" ({serverMessage})")
+                + ". Do not retry sidehub-cli commands: they will all fail. Report the problem and stop using sidehub-cli.",
             403 => serverMessage ?? "Access denied.",
             404 => serverMessage ?? "Resource not found.",
             _ => serverMessage ?? $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}"

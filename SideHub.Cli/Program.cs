@@ -20,9 +20,10 @@ if (!apiUrl.StartsWith("https://") && !apiUrl.StartsWith("http://"))
     return 1;
 }
 
-if (!agentToken.StartsWith("sh_agent_"))
+// sh_agent_: workspace agent token; sh_run_: ephemeral token of a backend-launched run.
+if (!agentToken.StartsWith("sh_agent_") && !agentToken.StartsWith("sh_run_"))
 {
-    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format — must start with 'sh_agent_'.");
+    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format — must start with 'sh_agent_' or 'sh_run_'.");
     return 1;
 }
 
