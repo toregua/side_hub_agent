@@ -29,7 +29,8 @@ public class AgentRunner
         }
 
         var executor = new CommandExecutor(workingDir);
-        await using var client = new WebSocketClient(_config, executor, workingDir, _displayName);
+        var runDirectory = Path.Combine(_baseDirectory, ".sidehub", "run");
+        await using var client = new WebSocketClient(_config, executor, workingDir, _displayName, runDirectory);
 
         await client.RunAsync(ct);
 

@@ -460,6 +460,7 @@ public static class WorkflowCommands
         }
 
         var result = await client.CompleteWorkflowStepAsync(executionId, stepId, outputId);
+        NotifyAgentStepEnded();
 
         if (json)
         {
@@ -492,6 +493,7 @@ public static class WorkflowCommands
         }
 
         var result = await client.FailWorkflowStepAsync(executionId, stepId, reason);
+        NotifyAgentStepEnded();
 
         if (json)
         {
@@ -501,6 +503,28 @@ public static class WorkflowCommands
 
         Console.WriteLine($"Workflow step {stepId} marked as failed: {reason}");
         return 0;
+    }
+
+    /// <summary>
+    /// Tells the agent hosting this PTY that the step is over, so it reports the run's token usage
+    /// while the CLI may still be open. Best-effort: writes one line to the agent's notification FIFO
+    /// and gives up after a second (opening a FIFO without a reader blocks).
+    /// </summary>
+    private static void NotifyAgentStepEnded()
+    {
+        var fifo = Environment.GetEnvironmentVariable("SIDEHUB_PTY_NOTIFY_FIFO");
+        if (string.IsNullOrEmpty(fifo) || !File.Exists(fifo)) return;
+
+        var write = Task.Run(() =>
+        {
+            try
+            {
+                using var stream = new FileStream(fifo, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+                stream.Write("{\"event\":\"run-step-ended\"}\n"u8);
+            }
+            catch { /* agent gone: nothing to notify */ }
+        });
+        write.Wait(TimeSpan.FromSeconds(1));
     }
 
     private static string? GetOption(string[] args, string flag)

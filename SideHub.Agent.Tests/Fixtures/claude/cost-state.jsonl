@@ -1,0 +1,2 @@
+{"type":"last-prompt","lastPrompt":"do the thing","sessionId":"s"}
+{"type":"cost-state","sessionId":"s","totalCostUSD":1.23,"modelUsage":{"claude-opus-test[1m]":{"inputTokens":700,"outputTokens":200,"thinkingTokens":60,"cacheReadInputTokens":3000,"cacheCreationInputTokens":650,"webSearchRequests":0,"costUSD":1.2},"claude-side-test":{"inputTokens":3000,"outputTokens":15,"thinkingTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.03}}}

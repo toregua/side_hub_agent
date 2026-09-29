@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using SideHub.Agent.Models;
+using SideHub.Agent.Usage;
 
 namespace SideHub.Agent;
 
@@ -45,6 +46,8 @@ public class WebSocketClient : IAsyncDisposable
     // and the heartbeat timer all send, so serialize them.
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
+    // Token usage of backend-launched runs (run-* PTYs), reported as run.usage.
+    private readonly RunUsageCollector _usageCollector;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -57,7 +60,8 @@ public class WebSocketClient : IAsyncDisposable
     private int _missedHeartbeatAcks;
     private DateTime _connectedAt;
 
-    public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null)
+    /// <param name="runDirectory">The agent's .sidehub/run directory; defaults to the working directory's.</param>
+    public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null, string? runDirectory = null)
     {
         _config = config;
         _executor = executor;
@@ -69,6 +73,17 @@ public class WebSocketClient : IAsyncDisposable
             WriteIndented = false
         };
         EnsureCliWrappersExecutable();
+
+        var harvesters = new Dictionary<string, IUsageHarvester>();
+        if (ClaudeProjectPaths.ProjectsRoot() is { } claudeProjects)
+            harvesters["claude"] = new ClaudeTranscriptHarvester(claudeProjects);
+        // Several agents can share a run directory: keep each agent's pending reports apart,
+        // the backend only accepts a run's usage from the agent it was launched on.
+        var pendingDirectory = Path.Combine(
+            runDirectory ?? Path.Combine(workingDirectory, ".sidehub", "run"),
+            "pending-usage",
+            config.AgentId ?? "default");
+        _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync, Log);
     }
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
@@ -334,6 +349,16 @@ public class WebSocketClient : IAsyncDisposable
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
             var ev = root.TryGetProperty("event", out var eP) ? eP.GetString() : null;
+
+            // Written by `sidehub-cli workflow step-complete|step-fail`: the step is over but the
+            // CLI may stay open, so report the run's usage now (exit will report it again).
+            if (ev == "run-step-ended")
+            {
+                if (_usageCollector.IsTracked(ptySessionId))
+                    RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
+                return;
+            }
+
             if (ev != "cli-session-started") return;
 
             var provider = root.TryGetProperty("provider", out var pP) ? pP.GetString() : null;
@@ -341,6 +366,7 @@ public class WebSocketClient : IAsyncDisposable
             if (string.IsNullOrEmpty(provider) || string.IsNullOrEmpty(cliSessionId)) return;
 
             Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
+            _usageCollector.RecordCliSession(ptySessionId, provider!, cliSessionId!);
             await SendAsync(new PtyCliSessionStartedMessage
             {
                 PtySessionId = ptySessionId,
@@ -381,17 +407,14 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        var home = Environment.GetEnvironmentVariable("HOME");
-        if (string.IsNullOrEmpty(home))
-            home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(home))
+        var projectsRoot = ClaudeProjectPaths.ProjectsRoot();
+        if (projectsRoot is null)
         {
             Log($"No HOME available; skipping ai-title watcher for {cliSessionId}");
             return;
         }
 
-        var encoded = cwd.Replace('/', '-');
-        var projectDir = Path.Combine(home, ".claude", "projects", encoded);
+        var projectDir = ClaudeProjectPaths.ProjectDirectory(projectsRoot, cwd);
         var jsonlPath = Path.Combine(projectDir, cliSessionId + ".jsonl");
         var watcherKey = ptySessionId + ":" + cliSessionId;
 
@@ -531,6 +554,7 @@ public class WebSocketClient : IAsyncDisposable
 
                 await SendConnectedMessageAsync(ct);
                 await ReportAlivePtySessionsAsync(ct);
+                RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
                 StartHeartbeat(ct);
                 StartPtyReaper();
 
@@ -1093,6 +1117,22 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Like <see cref="SendAsync{T}"/>, but reports failure instead of dropping or throwing.</summary>
+    private async Task<bool> TrySendAsync<T>(T message, CancellationToken ct)
+    {
+        if (_ws?.State != WebSocketState.Open) return false;
+        try
+        {
+            await SendAsync(message, ct);
+            return _ws?.State == WebSocketState.Open;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log($"Send failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
         var ptySessionId = message.PtySessionId;
@@ -1146,6 +1186,7 @@ public class WebSocketClient : IAsyncDisposable
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
                         CleanupNotifyFifo(ptySessionId);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
+                        HarvestFinalRunUsage(ptySessionId, "exit");
                     },
                     columns,
                     rows,
@@ -1157,6 +1198,8 @@ public class WebSocketClient : IAsyncDisposable
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }
+                if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is { } runId)
+                    _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId]);
                 StartFifoReader(ptySessionId, ct);
                 await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
                 Log($"PTY session {ptySessionId} started");
@@ -1300,6 +1343,9 @@ public class WebSocketClient : IAsyncDisposable
                 catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
                 CleanupNotifyFifo(ptySessionId);
                 Log($"PTY session {ptySessionId} stopped");
+                // DisposeAsync doesn't fire the exit callback, so the run's last report is sent here,
+                // once the killed CLI has had a moment to write its final cost-state.
+                HarvestFinalRunUsage(ptySessionId, "stop", TimeSpan.FromSeconds(2));
             }
             return;
         }
@@ -1322,6 +1368,16 @@ public class WebSocketClient : IAsyncDisposable
         _ptyExecutor = null;
         _currentPtyShell = null;
         Log("PTY session stopped");
+    }
+
+    private void HarvestFinalRunUsage(string ptySessionId, string trigger, TimeSpan delay = default)
+    {
+        if (!_usageCollector.IsTracked(ptySessionId)) return;
+        RunInBackground("run.usage", async () =>
+        {
+            if (delay > TimeSpan.Zero) await Task.Delay(delay);
+            await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
+        });
     }
 
     private async Task HandlePtyHistoryRequestAsync(IncomingMessage message, CancellationToken ct)

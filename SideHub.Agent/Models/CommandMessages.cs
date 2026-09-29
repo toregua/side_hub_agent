@@ -238,3 +238,51 @@ public class PtyCliSessionTitledMessage
     public required string Title { get; init; }
 }
 
+
+/// <summary>
+/// Raw token usage harvested for a SideHub-launched run (<c>run-*</c> PTY), per model.
+/// No pricing: the backend stores it as-is. Re-sending for the same run and source replaces
+/// the previous report, so the agent can report early (step end) and again at exit.
+/// </summary>
+public class RunUsageMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "run.usage";
+
+    [JsonPropertyName("runId")]
+    public required Guid RunId { get; init; }
+
+    /// <summary>Harvesting source (e.g. "claude-transcript"), or "unavailable" when usage cannot be measured.</summary>
+    [JsonPropertyName("source")]
+    public required string Source { get; init; }
+
+    [JsonPropertyName("collectedAt")]
+    public required DateTimeOffset CollectedAt { get; init; }
+
+    [JsonPropertyName("models")]
+    public required IReadOnlyList<ModelUsageReport> Models { get; init; }
+}
+
+public class ModelUsageReport
+{
+    [JsonPropertyName("model")]
+    public required string Model { get; init; }
+
+    [JsonPropertyName("inputTokens")]
+    public long InputTokens { get; init; }
+
+    [JsonPropertyName("outputTokens")]
+    public long OutputTokens { get; init; }
+
+    [JsonPropertyName("cacheReadTokens")]
+    public long CacheReadTokens { get; init; }
+
+    [JsonPropertyName("cacheWriteTokens")]
+    public long CacheWriteTokens { get; init; }
+
+    [JsonPropertyName("reasoningTokens")]
+    public long? ReasoningTokens { get; init; }
+
+    [JsonPropertyName("requests")]
+    public int Requests { get; init; }
+}
