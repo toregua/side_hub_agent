@@ -77,6 +77,8 @@ public class WebSocketClient : IAsyncDisposable
         var harvesters = new Dictionary<string, IUsageHarvester>();
         if (ClaudeProjectPaths.ProjectsRoot() is { } claudeProjects)
             harvesters["claude"] = new ClaudeTranscriptHarvester(claudeProjects);
+        if (CodexRolloutHarvester.SessionsRoot() is { } codexSessions)
+            harvesters["codex"] = new CodexRolloutHarvester(codexSessions);
         // Several agents can share a run directory: keep each agent's pending reports apart,
         // the backend only accepts a run's usage from the agent it was launched on.
         var pendingDirectory = Path.Combine(
@@ -356,6 +358,18 @@ public class WebSocketClient : IAsyncDisposable
             {
                 if (_usageCollector.IsTracked(ptySessionId))
                     RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
+                return;
+            }
+
+            // Written by the codex wrapper: codex has no session id to announce, so the harvester
+            // matches its rollout by cwd and launch time. Not forwarded to the backend.
+            if (ev == "cli-launched")
+            {
+                var launchedProvider = root.TryGetProperty("provider", out var lpP) ? lpP.GetString() : null;
+                var launchedCwd = root.TryGetProperty("cwd", out var lcP) ? lcP.GetString() : null;
+                if (string.IsNullOrEmpty(launchedProvider) || string.IsNullOrEmpty(launchedCwd)) return;
+                Log($"CLI launched in PTY {ptySessionId}: provider={launchedProvider} cwd={launchedCwd}");
+                _usageCollector.RecordCliLaunch(ptySessionId, launchedProvider!, launchedCwd!, DateTimeOffset.UtcNow);
                 return;
             }
 

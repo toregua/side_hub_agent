@@ -18,7 +18,20 @@ public interface IUsageHarvester
 
 /// <param name="Cwd">Real path of the run's working directory.</param>
 /// <param name="CliSessionIds">CLI sessions started in the run's PTY for this harvester's provider.</param>
-public sealed record RunUsageContext(Guid RunId, string Cwd, IReadOnlyList<string> CliSessionIds);
+/// <param name="Launches">Launches of this harvester's CLI in the run's PTY, for CLIs whose session id
+/// is not known in advance (codex).</param>
+/// <param name="OtherLaunches">Launches of the same CLI in the agent's other PTYs, to detect sessions
+/// that could belong to either.</param>
+public sealed record RunUsageContext(
+    Guid RunId,
+    string Cwd,
+    IReadOnlyList<string> CliSessionIds,
+    IReadOnlyList<CliLaunch> Launches,
+    IReadOnlyList<CliLaunch> OtherLaunches);
+
+/// <summary>A CLI started in a PTY, as announced by its wrapper (<c>cli-launched</c>).</summary>
+/// <param name="Cwd">Physical directory the CLI was started in.</param>
+public sealed record CliLaunch(string PtySessionId, string Provider, string Cwd, DateTimeOffset At);
 
 /// <summary>
 /// Runtimes whose usage cannot be measured (gemini, shell, or a CLI session we never saw start).

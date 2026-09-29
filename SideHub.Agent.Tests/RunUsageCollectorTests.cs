@@ -8,6 +8,7 @@ public class RunUsageCollectorTests : IDisposable
     private const string Cwd = "/work/side_hub";
     private const string SessionId = "11111111-2222-3333-4444-555555555555";
     private readonly ClaudeTemp _claude = new();
+    private readonly CodexTemp _codex = new();
     private readonly List<RunUsageMessage> _sent = [];
     private readonly PendingUsageStore _pending;
     private bool _connected = true;
@@ -17,10 +18,18 @@ public class RunUsageCollectorTests : IDisposable
         _pending = new PendingUsageStore(Path.Combine(_claude.Root, "pending-usage"));
     }
 
-    public void Dispose() => _claude.Dispose();
+    public void Dispose()
+    {
+        _claude.Dispose();
+        _codex.Dispose();
+    }
 
     private RunUsageCollector Collector() => new(
-        new Dictionary<string, IUsageHarvester> { ["claude"] = new ClaudeTranscriptHarvester(_claude.Root) },
+        new Dictionary<string, IUsageHarvester>
+        {
+            ["claude"] = new ClaudeTranscriptHarvester(_claude.Root),
+            ["codex"] = new CodexRolloutHarvester(_codex.Root),
+        },
         _pending,
         (report, _) =>
         {
@@ -61,6 +70,43 @@ public class RunUsageCollectorTests : IDisposable
         Assert.Equal(ClaudeTranscriptHarvester.SourceName, report.Source);
         Assert.Equal(2, report.Models.Count);
         Assert.False(collector.IsTracked("run-1"));
+    }
+
+    [Fact]
+    public async Task CodexRun_ReportsItsRolloutUsage()
+    {
+        var launchedAt = DateTimeOffset.UtcNow;
+        _codex.AddRollout(launchedAt.AddSeconds(2), Cwd);
+        var runId = Guid.NewGuid();
+        var collector = Collector();
+        collector.TrackRun("run-1", runId, Cwd);
+        collector.RecordCliLaunch("run-1", "codex", Cwd, launchedAt);
+
+        await collector.HarvestAsync("run-1", "exit", final: true, CancellationToken.None);
+
+        var report = Assert.Single(_sent);
+        Assert.Equal(runId, report.RunId);
+        Assert.Equal(CodexRolloutHarvester.SourceName, report.Source);
+        Assert.Equal(["gpt-test", "gpt-test-mini"], report.Models.Select(m => m.Model));
+    }
+
+    [Fact]
+    public async Task CodexRun_WithACodexStartedAlongsideInTheSameCwd_IsReportedUnavailable()
+    {
+        var launchedAt = DateTimeOffset.UtcNow;
+        _codex.AddRollout(launchedAt.AddSeconds(2), Cwd);
+        _codex.AddRollout(launchedAt.AddSeconds(4), Cwd, "short.jsonl");
+        var collector = Collector();
+        collector.TrackRun("run-1", Guid.NewGuid(), Cwd);
+        collector.RecordCliLaunch("run-1", "codex", Cwd, launchedAt);
+        // An interactive terminal: not a run, but its launch makes the rollouts ambiguous.
+        collector.RecordCliLaunch("terminal-1", "codex", Cwd, launchedAt.AddSeconds(1));
+
+        await collector.HarvestAsync("run-1", "exit", final: true, CancellationToken.None);
+
+        var report = Assert.Single(_sent);
+        Assert.Equal(NullHarvester.Unavailable, report.Source);
+        Assert.Empty(report.Models);
     }
 
     [Fact]

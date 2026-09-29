@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# SideHub wrapper around `codex`.
+#
+# Why this exists: SideHub reads a run's token usage from the CLI's own session
+# files. Unlike claude (see ./claude), codex doesn't accept a pre-set session id,
+# so SideHub cannot know which ~/.codex/sessions/**/rollout-*.jsonl belongs to a
+# run. This wrapper tells the agent when and in which directory codex starts
+# (through the FIFO at $SIDEHUB_PTY_NOTIFY_FIFO); the agent then matches the
+# rollout by cwd + start time.
+#
+# Failure modes: the notification is best-effort. If the FIFO write fails we
+# still launch codex; if the real codex can't be found we exit like a shell would.
+
+# Locate the real `codex` binary, skipping our own wrapper dir.
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+real=""
+IFS=':' read -ra _paths <<< "$PATH"
+for _p in "${_paths[@]}"; do
+  [ -z "$_p" ] && continue
+  candidate="$_p/codex"
+  if [ "$_p" = "$self_dir" ]; then continue; fi
+  if [ -x "$candidate" ]; then
+    real="$candidate"
+    break
+  fi
+done
+
+if [ -z "$real" ]; then
+  echo "sidehub: real 'codex' not found in PATH" >&2
+  exit 127
+fi
+
+# Physical path, as codex records it in the rollout's session_meta.cwd.
+if [ -n "$SIDEHUB_PTY_NOTIFY_FIFO" ] && [ -p "$SIDEHUB_PTY_NOTIFY_FIFO" ]; then
+  _cwd="$(pwd -P 2>/dev/null)"
+  _cwd="${_cwd//\\/\\\\}"
+  _cwd="${_cwd//\"/\\\"}"
+  ( printf '{"event":"cli-launched","provider":"codex","cwd":"%s"}\n' "$_cwd" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
+fi
+
+exec "$real" "$@"

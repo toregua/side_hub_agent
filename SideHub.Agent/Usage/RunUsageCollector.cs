@@ -12,6 +12,8 @@ namespace SideHub.Agent.Usage;
 public sealed class RunUsageCollector
 {
     private const string RunPtyPrefix = "run-";
+    // A launch outside any tracked run only matters to disambiguate runs started around the same time.
+    private static readonly TimeSpan LaunchRetention = TimeSpan.FromHours(24);
 
     private readonly IReadOnlyDictionary<string, IUsageHarvester> _harvestersByProvider;
     private readonly IUsageHarvester _unavailable = new NullHarvester();
@@ -19,10 +21,12 @@ public sealed class RunUsageCollector
     private readonly Func<RunUsageMessage, CancellationToken, Task<bool>> _trySend;
     private readonly Action<string> _log;
     private readonly ConcurrentDictionary<string, TrackedRun> _runs = new();
+    // CLI launches in every PTY (runs and interactive terminals), guarded by itself.
+    private readonly List<CliLaunch> _launches = [];
     // Harvests of one run can race (step end vs exit); serializing them keeps the latest report last.
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    /// <param name="harvestersByProvider">Keyed by the CLI provider reported by the wrappers ("claude").</param>
+    /// <param name="harvestersByProvider">Keyed by the CLI provider reported by the wrappers ("claude", "codex").</param>
     /// <param name="trySend">Sends a report; false when the backend is unreachable.</param>
     public RunUsageCollector(
         IReadOnlyDictionary<string, IUsageHarvester> harvestersByProvider,
@@ -52,7 +56,7 @@ public sealed class RunUsageCollector
     }
 
     public void TrackRun(string ptySessionId, Guid runId, string cwd) =>
-        _runs[ptySessionId] = new TrackedRun(runId, cwd);
+        _runs[ptySessionId] = new TrackedRun(ptySessionId, runId, cwd);
 
     public bool IsTracked(string ptySessionId) => _runs.ContainsKey(ptySessionId);
 
@@ -60,6 +64,19 @@ public sealed class RunUsageCollector
     {
         if (_runs.TryGetValue(ptySessionId, out var run))
             run.CliSessions[cliSessionId] = provider;
+    }
+
+    /// <summary>
+    /// Records a CLI started in any PTY. A run's own launches tell which CLI it ran; the others let the
+    /// harvester detect a session that could belong to another PTY.
+    /// </summary>
+    public void RecordCliLaunch(string ptySessionId, string provider, string cwd, DateTimeOffset at)
+    {
+        lock (_launches)
+        {
+            _launches.RemoveAll(l => l.At < at - LaunchRetention && !_runs.ContainsKey(l.PtySessionId));
+            _launches.Add(new CliLaunch(ptySessionId, provider, cwd, at));
+        }
     }
 
     /// <param name="final">The PTY is gone: stop tracking the run after this report.</param>
@@ -110,7 +127,15 @@ public sealed class RunUsageCollector
     private RunUsageMessage BuildReport(TrackedRun run)
     {
         var sessions = run.CliSessions.ToArray();
-        foreach (var provider in sessions.Select(s => s.Value).Distinct(StringComparer.OrdinalIgnoreCase))
+        CliLaunch[] launches;
+        lock (_launches)
+            launches = _launches.ToArray();
+        bool IsOwn(CliLaunch l) => l.PtySessionId == run.PtySessionId;
+
+        var providers = sessions.Select(s => s.Value)
+            .Concat(launches.Where(IsOwn).Select(l => l.Provider))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var provider in providers)
         {
             if (!_harvestersByProvider.TryGetValue(provider, out var harvester))
                 continue;
@@ -118,7 +143,11 @@ public sealed class RunUsageCollector
                 .Where(s => string.Equals(s.Value, provider, StringComparison.OrdinalIgnoreCase))
                 .Select(s => s.Key)
                 .ToList();
-            var models = harvester.Harvest(new RunUsageContext(run.RunId, run.Cwd, ids));
+            var sameCli = launches
+                .Where(l => string.Equals(l.Provider, provider, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var models = harvester.Harvest(new RunUsageContext(
+                run.RunId, run.Cwd, ids, sameCli.Where(IsOwn).ToList(), sameCli.Where(l => !IsOwn(l)).ToList()));
             if (models is not null)
                 return Report(run.RunId, harvester.Source, models);
         }
@@ -146,7 +175,7 @@ public sealed class RunUsageCollector
         Models = models,
     };
 
-    private sealed record TrackedRun(Guid RunId, string Cwd)
+    private sealed record TrackedRun(string PtySessionId, Guid RunId, string Cwd)
     {
         /// <summary>cliSessionId → provider, as announced by the CLI wrappers.</summary>
         public ConcurrentDictionary<string, string> CliSessions { get; } = new();

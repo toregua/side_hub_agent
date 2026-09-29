@@ -12,7 +12,7 @@ public class ClaudeTranscriptHarvesterTests : IDisposable
 
     private ClaudeTranscriptHarvester Harvester => new(_claude.Root);
 
-    private static RunUsageContext Run(params string[] sessionIds) => new(Guid.NewGuid(), Cwd, sessionIds);
+    private static RunUsageContext Run(params string[] sessionIds) => new(Guid.NewGuid(), Cwd, sessionIds, [], []);
 
     [Fact]
     public void EncodeCwd_ReplacesEveryNonAlphanumericCharacter()
