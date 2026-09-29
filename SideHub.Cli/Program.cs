@@ -29,7 +29,7 @@ if (!agentToken.StartsWith("sh_agent_"))
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
-    Console.Error.WriteLine("Domains: drive, sqlite, table, task, scheduler, workflow");
+    Console.Error.WriteLine("Domains: drive, sqlite, table, task, repository, scheduler, workflow");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
@@ -56,7 +56,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  table add-column <pageId> --name \"...\" [--type text|image|dropdown] [--options \"val=Label,val2=Label 2\"]");
     Console.Error.WriteLine("  task list [--status <status>]");
     Console.Error.WriteLine("  task get <taskId>");
-    Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>]");
+    Console.Error.WriteLine("  task create --title \"...\" [--description \"...\"] [--type <type>] [--repository <id|name>]");
     Console.Error.WriteLine("  task update <taskId> [--title \"...\"] [--description \"...\"] [--type <type>]");
     Console.Error.WriteLine("  task delete <taskId> [--yes]");
     Console.Error.WriteLine("  task status <taskId> --status <status>");
@@ -66,6 +66,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  task drive-link-add <taskId> --item <driveItemId>");
     Console.Error.WriteLine("  task drive-link-remove <taskId> --item <driveItemId>");
     Console.Error.WriteLine("  task search --query \"...\" [--status <s>] [--type <t>]");
+    Console.Error.WriteLine("  repository list");
     Console.Error.WriteLine("  scheduler list [--active | --paused]");
     Console.Error.WriteLine("  scheduler get <id>");
     Console.Error.WriteLine("  scheduler create --title \"...\" (--prompt \"...\" | --workflow <id>) --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
@@ -154,6 +155,7 @@ try
         ("task", "drive-link-add") => await TaskCommands.DriveLinkAddAsync(client, restArgs, jsonOutput),
         ("task", "drive-link-remove") => await TaskCommands.DriveLinkRemoveAsync(client, restArgs, jsonOutput),
         ("task", "search") => await TaskCommands.SearchAsync(client, restArgs, jsonOutput),
+        ("repository", "list") => await RepositoryCommands.ListAsync(client, jsonOutput),
         ("scheduler", "list") => await SchedulerCommands.ListAsync(client, restArgs, jsonOutput),
         ("scheduler", "get") => await SchedulerCommands.GetAsync(client, restArgs, jsonOutput),
         ("scheduler", "create") => await SchedulerCommands.CreateAsync(client, restArgs, jsonOutput),

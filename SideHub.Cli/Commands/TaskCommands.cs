@@ -39,14 +39,16 @@ public static class TaskCommands
         var title = GetOption(args, "--title");
         var description = GetOption(args, "--description");
         var type = GetOption(args, "--type");
+        var repository = GetOption(args, "--repository");
 
         if (string.IsNullOrEmpty(title))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli task create --title \"...\" [--description \"...\"] [--type <type>]");
+            Console.Error.WriteLine("Usage: sidehub-cli task create --title \"...\" [--description \"...\"] [--type <type>] [--repository <id|name>]");
             return 1;
         }
 
-        var result = await client.CreateTaskAsync(title, description, type);
+        var repositoryId = repository is null ? null : await client.ResolveRepositoryIdAsync(repository);
+        var result = await client.CreateTaskAsync(title, description, type, repositoryId);
 
         if (json)
         {

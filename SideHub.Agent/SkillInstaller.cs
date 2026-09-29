@@ -33,7 +33,8 @@ Environment variables are already configured in your session.
 
 ### Tasks
 - `sidehub-cli task list [--status <status>]` — List workspace tasks (filter by status)
-- `sidehub-cli task create --title "..." [--description "..."] [--type <type>]` — Create a task
+- `sidehub-cli task create --title "..." [--description "..."] [--type <type>] [--repository <id|name>]` — Create a task, optionally attached to a workspace repository
+- `sidehub-cli repository list` — List the workspace repositories (id, name, default branch)
 - `sidehub-cli task comment [<taskId>] --text "..."` — Comment on the current task
 - `sidehub-cli task blocker [<taskId>] --reason "..."` — Report a blocker on the current task
 

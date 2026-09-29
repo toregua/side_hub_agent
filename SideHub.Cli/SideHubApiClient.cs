@@ -273,6 +273,34 @@ public class SideHubApiClient : IDisposable
         _ => "application/octet-stream"
     };
 
+    // --- Repositories ---
+
+    public async Task<JsonElement> GetRepositoriesAsync()
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/repositories");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>Resolves a repository given by id or by (case-insensitive) name to its id.</summary>
+    public async Task<string> ResolveRepositoryIdAsync(string idOrName)
+    {
+        var result = await GetRepositoriesAsync();
+        var repositories = result.TryGetProperty("repositories", out var r) ? r.EnumerateArray().ToList() : [];
+        var match = repositories.FirstOrDefault(repo =>
+            string.Equals(repo.GetProperty("id").GetString(), idOrName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(repo.GetProperty("name").GetString(), idOrName, StringComparison.OrdinalIgnoreCase));
+
+        if (match.ValueKind == JsonValueKind.Undefined)
+        {
+            var known = string.Join(", ", repositories.Select(repo => repo.GetProperty("name").GetString()));
+            throw new InvalidOperationException(
+                $"Repository '{idOrName}' not found in this workspace. Known repositories: {(known.Length > 0 ? known : "(none)")}");
+        }
+
+        return match.GetProperty("id").GetString()!;
+    }
+
     // --- Tasks ---
 
     public async Task<JsonElement> GetTasksAsync(string? status)
@@ -285,11 +313,12 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> CreateTaskAsync(string title, string? description, string? type)
+    public async Task<JsonElement> CreateTaskAsync(string title, string? description, string? type, string? repositoryId = null)
     {
         var body = new Dictionary<string, object?> { ["title"] = title };
         if (description is not null) body["description"] = description;
         if (type is not null) body["type"] = type;
+        if (repositoryId is not null) body["repositoryId"] = repositoryId;
 
         var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/tasks", body);
         await EnsureSuccessAsync(resp);
