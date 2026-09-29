@@ -13,7 +13,8 @@ public sealed class CodexTemp : IDisposable
     public CodexTemp() => Directory.CreateDirectory(Root);
 
     /// <param name="source">session_meta.source: "cli", "exec", "vscode" (app-server) or a JSON object (sub-agent).</param>
-    public void AddRollout(DateTimeOffset startedAt, string cwd, string fixture = "session.jsonl", string source = "cli")
+    /// <returns>The rollout's path.</returns>
+    public string AddRollout(DateTimeOffset startedAt, string cwd, string fixture = "session.jsonl", string source = "cli")
     {
         var lines = File.ReadAllLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "codex", fixture));
         var meta = JsonNode.Parse(lines[0])!;
@@ -27,7 +28,9 @@ public sealed class CodexTemp : IDisposable
 
         var dir = Path.Combine(Root, startedAt.ToString("yyyy"), startedAt.ToString("MM"), startedAt.ToString("dd"));
         Directory.CreateDirectory(dir);
-        File.WriteAllLines(Path.Combine(dir, $"rollout-{startedAt:yyyy-MM-ddTHH-mm-ss}-{id}.jsonl"), lines);
+        var path = Path.Combine(dir, $"rollout-{startedAt:yyyy-MM-ddTHH-mm-ss}-{id}.jsonl");
+        File.WriteAllLines(path, lines);
+        return path;
     }
 
     public void Dispose()

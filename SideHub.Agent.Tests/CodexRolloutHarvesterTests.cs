@@ -144,6 +144,84 @@ public class CodexRolloutHarvesterTests : IDisposable
         Assert.Equal(2, models.Single(m => m.Model == "gpt-test").Requests);
     }
 
+    /// <summary>A launch whose process was seen holding <paramref name="files"/>, then exited or not.</summary>
+    private static async Task<CliLaunch> Observed(string pty, DateTimeOffset at, bool exited, params string[] files)
+    {
+        var observation = new LaunchObservation(TimeSpan.Zero, TimeSpan.Zero);
+        using var cts = new CancellationTokenSource();
+        var calls = 0;
+        try
+        {
+            await observation.WatchAsync(() =>
+            {
+                if (calls++ == 0) return files;
+                if (exited) return null;
+                cts.Cancel();
+                return files;
+            }, cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        return new CliLaunch(pty, "codex", Cwd, at, observation);
+    }
+
+    [Fact]
+    public async Task Harvest_ConcurrentRunsInTheSameCwd_WhenObserved_EachGetsItsOwnRollout()
+    {
+        var first = _codex.AddRollout(T0.AddSeconds(2), Cwd);
+        var second = _codex.AddRollout(T0.AddSeconds(22), Cwd, "short.jsonl");
+        var a = await Observed("run-a", T0, exited: false, first);
+        var b = await Observed("run-b", T0.AddSeconds(20), exited: true, second);
+
+        Assert.Equal(50000 + 800, Total(Harvester.Harvest(Run([a], b))!));
+        Assert.Equal(1000 + 7, Total(Harvester.Harvest(Run([b], a))!));
+    }
+
+    [Fact]
+    public async Task Harvest_UnobservedLaunch_IgnoresRolloutsHeldByObservedOnes()
+    {
+        _codex.AddRollout(T0.AddSeconds(2), Cwd);
+        var other = _codex.AddRollout(T0.AddSeconds(22), Cwd, "short.jsonl");
+        var b = await Observed("terminal-1", T0.AddSeconds(20), exited: false, other);
+
+        Assert.Equal(50000 + 800, Total(Harvester.Harvest(Run([Launch("run-a", T0)], b))!));
+    }
+
+    [Fact]
+    public async Task Harvest_ObservedLaunchThatNeverOpenedARollout_IsNotGivenANearbyOne()
+    {
+        // codex failed before starting a session; another agent's codex started in the same cwd meanwhile.
+        _codex.AddRollout(T0.AddSeconds(2), Cwd);
+        var a = await Observed("run-a", T0, exited: true);
+
+        Assert.Null(Harvester.Harvest(Run([a])));
+    }
+
+    [Fact]
+    public async Task Harvest_ObservedResumedSession_CountsOnlyWhatFollowsTheLaunch()
+    {
+        // The fixture's responses are at 00:00:05 (gpt-test) and 00:01:03 (gpt-test-mini).
+        var resumed = _codex.AddRollout(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), Cwd);
+        var a = await Observed("run-a", new DateTimeOffset(2026, 1, 1, 0, 0, 30, TimeSpan.Zero), exited: true, resumed);
+
+        var model = Assert.Single(Harvester.Harvest(Run([a]))!);
+
+        Assert.Equal("gpt-test-mini", model.Model);
+        Assert.Equal(30000 + 500, Total([model]));
+    }
+
+    [Fact]
+    public async Task Harvest_ObservedLaunchWithSeveralSessions_AddsThem()
+    {
+        // e.g. /new, or a sub-agent rollout the process also holds (not counted: not a top-level session).
+        var first = _codex.AddRollout(T0.AddSeconds(2), Cwd);
+        var second = _codex.AddRollout(T0.AddMinutes(10), Cwd, "short.jsonl");
+        var subagent = _codex.AddRollout(T0.AddMinutes(1), Cwd, "short.jsonl",
+            source: """{"subagent":{"thread_spawn":{"parent_thread_id":"x","depth":1}}}""");
+        var a = await Observed("run-a", T0, exited: true, first, second, subagent);
+
+        Assert.Equal(50000 + 800 + 1000 + 7, Total(Harvester.Harvest(Run([a]))!));
+    }
+
     [Fact]
     public void Harvest_MissingSessionsRoot_ReturnsNull()
     {

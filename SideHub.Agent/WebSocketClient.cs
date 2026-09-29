@@ -362,14 +362,28 @@ public class WebSocketClient : IAsyncDisposable
             }
 
             // Written by the codex wrapper: codex has no session id to announce, so the harvester
-            // matches its rollout by cwd and launch time. Not forwarded to the backend.
+            // needs the rollout its process holds open, or matches it by cwd and launch time.
+            // Not forwarded to the backend.
             if (ev == "cli-launched")
             {
                 var launchedProvider = root.TryGetProperty("provider", out var lpP) ? lpP.GetString() : null;
                 var launchedCwd = root.TryGetProperty("cwd", out var lcP) ? lcP.GetString() : null;
                 if (string.IsNullOrEmpty(launchedProvider) || string.IsNullOrEmpty(launchedCwd)) return;
-                Log($"CLI launched in PTY {ptySessionId}: provider={launchedProvider} cwd={launchedCwd}");
-                _usageCollector.RecordCliLaunch(ptySessionId, launchedProvider!, launchedCwd!, DateTimeOffset.UtcNow);
+                var pid = root.TryGetProperty("pid", out var pidP) && pidP.TryGetInt32(out var p) ? p : (int?)null;
+                Log($"CLI launched in PTY {ptySessionId}: provider={launchedProvider} cwd={launchedCwd} pid={pid}");
+
+                LaunchObservation? observation = null;
+                if (pid is { } launchedPid
+                    && string.Equals(launchedProvider, "codex", StringComparison.OrdinalIgnoreCase)
+                    && ProcessOpenFiles.IsSupported())
+                {
+                    observation = new LaunchObservation();
+                    // Until the process exits, whatever happens to the PTY.
+                    RunInBackground("codex rollout watch", () => observation.WatchAsync(
+                        () => ProcessOpenFiles.Find(launchedPid, CodexRolloutHarvester.IsRolloutPath),
+                        CancellationToken.None));
+                }
+                _usageCollector.RecordCliLaunch(ptySessionId, launchedProvider!, launchedCwd!, DateTimeOffset.UtcNow, observation);
                 return;
             }
 

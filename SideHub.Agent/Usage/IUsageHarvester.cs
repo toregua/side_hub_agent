@@ -31,7 +31,10 @@ public sealed record RunUsageContext(
 
 /// <summary>A CLI started in a PTY, as announced by its wrapper (<c>cli-launched</c>).</summary>
 /// <param name="Cwd">Physical directory the CLI was started in.</param>
-public sealed record CliLaunch(string PtySessionId, string Provider, string Cwd, DateTimeOffset At);
+/// <param name="Observation">Session files its process was seen holding open; null when it cannot be
+/// watched (no pid announced, no <c>/proc</c>).</param>
+public sealed record CliLaunch(
+    string PtySessionId, string Provider, string Cwd, DateTimeOffset At, LaunchObservation? Observation = null);
 
 /// <summary>
 /// Runtimes whose usage cannot be measured (gemini, shell, or a CLI session we never saw start).

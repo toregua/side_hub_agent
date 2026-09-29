@@ -4,9 +4,10 @@
 # Why this exists: SideHub reads a run's token usage from the CLI's own session
 # files. Unlike claude (see ./claude), codex doesn't accept a pre-set session id,
 # so SideHub cannot know which ~/.codex/sessions/**/rollout-*.jsonl belongs to a
-# run. This wrapper tells the agent when and in which directory codex starts
-# (through the FIFO at $SIDEHUB_PTY_NOTIFY_FIFO); the agent then matches the
-# rollout by cwd + start time.
+# run. This wrapper tells the agent when, in which directory and as which
+# process codex starts (through the FIFO at $SIDEHUB_PTY_NOTIFY_FIFO); the
+# agent then finds the rollout the process holds open (or, failing that,
+# matches it by cwd + start time).
 #
 # Failure modes: the notification is best-effort. If the FIFO write fails we
 # still launch codex; if the real codex can't be found we exit like a shell would.
@@ -31,11 +32,12 @@ if [ -z "$real" ]; then
 fi
 
 # Physical path, as codex records it in the rollout's session_meta.cwd.
+# $$ is codex's own pid once we exec it below.
 if [ -n "$SIDEHUB_PTY_NOTIFY_FIFO" ] && [ -p "$SIDEHUB_PTY_NOTIFY_FIFO" ]; then
   _cwd="$(pwd -P 2>/dev/null)"
   _cwd="${_cwd//\\/\\\\}"
   _cwd="${_cwd//\"/\\\"}"
-  ( printf '{"event":"cli-launched","provider":"codex","cwd":"%s"}\n' "$_cwd" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
+  ( printf '{"event":"cli-launched","provider":"codex","cwd":"%s","pid":%d}\n' "$_cwd" "$$" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
 fi
 
 exec "$real" "$@"

@@ -70,12 +70,13 @@ public sealed class RunUsageCollector
     /// Records a CLI started in any PTY. A run's own launches tell which CLI it ran; the others let the
     /// harvester detect a session that could belong to another PTY.
     /// </summary>
-    public void RecordCliLaunch(string ptySessionId, string provider, string cwd, DateTimeOffset at)
+    public void RecordCliLaunch(
+        string ptySessionId, string provider, string cwd, DateTimeOffset at, LaunchObservation? observation = null)
     {
         lock (_launches)
         {
             _launches.RemoveAll(l => l.At < at - LaunchRetention && !_runs.ContainsKey(l.PtySessionId));
-            _launches.Add(new CliLaunch(ptySessionId, provider, cwd, at));
+            _launches.Add(new CliLaunch(ptySessionId, provider, cwd, at, observation));
         }
     }
 

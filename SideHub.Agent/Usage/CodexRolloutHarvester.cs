@@ -7,20 +7,24 @@ namespace SideHub.Agent.Usage;
 
 /// <summary>
 /// Reads a run's usage from its Codex rollouts (<c>&lt;sessions&gt;/YYYY/MM/DD/rollout-*.jsonl</c>).
+/// Codex has no pre-set session id, so each launch announced by the <c>codex</c> wrapper is tied to its
+/// rollouts in one of two ways:
+/// <list type="bullet">
+/// <item>Observed: the rollouts its process was seen holding open (<see cref="LaunchObservation"/>). Certain,
+/// including a resumed session (counted from the launch on) or a new one opened later (<c>/new</c>).</item>
+/// <item>Otherwise guessed: the rollout whose <c>session_meta</c> has the same cwd and starts within
+/// <see cref="StartupWindow"/> of the launch, among the rollouts no launch was seen holding. The guess must
+/// be one-to-one: a launch near two rollouts, or a rollout near another launch that could not be observed
+/// either, makes the whole run unavailable rather than wrongly attributed.</item>
+/// </list>
+/// Only top-level sessions are read (<c>session_meta.source</c> cli/exec), not sub-agent rollouts.
 /// <para>
-/// Codex has no pre-set session id, so each launch announced by the <c>codex</c> wrapper is matched to the
-/// rollout whose <c>session_meta</c> has the same cwd and starts within <see cref="StartupWindow"/> of it.
-/// A match counts only if it is one-to-one: a launch near two rollouts, or a rollout near a launch of
-/// another PTY (two runs started together in the same directory, or a codex started outside SideHub),
-/// makes the whole run unavailable rather than wrongly attributed.
-/// </para>
 /// <para>
 /// A rollout's <c>token_count</c> events carry cumulative totals; the last one is the session's usage. It is
 /// split per model at each <c>turn_context</c> (the model can change mid-session). OpenAI counts cached
 /// input inside <c>input_tokens</c> and reasoning inside <c>output_tokens</c>: input is reported without
 /// the cached part (as Claude does), reasoning as a subset of output.
 /// </para>
-/// Not counted: resumed sessions (the rollout started before the launch) and sub-agent rollouts.
 /// </summary>
 public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
 {
@@ -61,30 +65,65 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
         if (run.Launches.Count == 0)
             return null;
 
-        var candidates = FindSessions(
-            run.Launches.Min(l => l.At) - ClockSkew,
-            run.Launches.Max(l => l.At) + StartupWindow);
-        var allLaunches = run.Launches.Concat(run.OtherLaunches).ToList();
+        // Rollout file name (unique: it holds the session id) → when to count from (a resumed session's launch).
+        var owned = new Dictionary<string, (string Path, DateTimeOffset Since)>(StringComparer.Ordinal);
+        void Own(string path, DateTimeOffset since)
+        {
+            var name = Path.GetFileName(path);
+            if (!owned.TryGetValue(name, out var seen) || since < seen.Since)
+                owned[name] = (path, since);
+        }
 
-        var owned = new HashSet<SessionMeta>();
+        // Observations are still being updated: look at each launch once.
+        var guessed = new List<CliLaunch>();
         foreach (var launch in run.Launches)
         {
-            var near = candidates.Where(s => IsNear(launch, s)).ToList();
-            if (near.Count == 0)
-                continue; // codex failed before starting a session
-            if (near.Count > 1)
-                return null;
-            if (allLaunches.Count(l => IsNear(l, near[0])) > 1)
-                return null;
-            owned.Add(near[0]);
+            var files = launch.Observation?.Files ?? [];
+            if (files.Count == 0 && launch.Observation?.IsComplete != true)
+            {
+                guessed.Add(launch);
+                continue;
+            }
+            foreach (var file in files)
+            {
+                if (ReadSessionMeta(file) is not { } meta)
+                    continue;
+                var resumed = meta.StartedAt < launch.At - ClockSkew;
+                Own(file, resumed ? launch.At - ClockSkew : DateTimeOffset.MinValue);
+            }
+        }
+
+        if (guessed.Count > 0)
+        {
+            var allLaunches = run.Launches.Concat(run.OtherLaunches).ToList();
+            var held = allLaunches
+                .SelectMany(l => l.Observation?.Files ?? [])
+                .Select(Path.GetFileName)
+                .ToHashSet(StringComparer.Ordinal);
+            var unobserved = guessed.Concat(run.OtherLaunches.Where(l => !IsObserved(l))).ToList();
+            var candidates = FindSessions(
+                    guessed.Min(l => l.At) - ClockSkew,
+                    guessed.Max(l => l.At) + StartupWindow)
+                .Where(s => !held.Contains(Path.GetFileName(s.Path)))
+                .ToList();
+
+            foreach (var launch in guessed)
+            {
+                var near = candidates.Where(s => IsNear(launch, s)).ToList();
+                if (near.Count == 0)
+                    continue; // codex failed before starting a session
+                if (near.Count > 1 || unobserved.Count(l => IsNear(l, near[0])) > 1)
+                    return null;
+                Own(near[0].Path, DateTimeOffset.MinValue);
+            }
         }
 
         if (owned.Count == 0)
             return null;
 
         var perModel = new Dictionary<string, TokenTotals>(StringComparer.Ordinal);
-        foreach (var session in owned)
-            ReadRollout(session.Path, perModel);
+        foreach (var (path, since) in owned.Values)
+            ReadRollout(path, since, perModel);
 
         return perModel
             .Select(kv => new ModelUsageReport
@@ -99,6 +138,20 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
             })
             .OrderBy(r => r.Model, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>
+    /// Its rollouts are known: its process was seen holding one, or was watched from start to exit
+    /// without opening any (codex failed before starting a session).
+    /// </summary>
+    private static bool IsObserved(CliLaunch launch) =>
+        launch.Observation is { } o && (o.Files.Count > 0 || o.IsComplete);
+
+    /// <summary>A rollout path as <c>/proc/&lt;pid&gt;/fd</c> shows it.</summary>
+    public static bool IsRolloutPath(string path)
+    {
+        var name = Path.GetFileName(path);
+        return name.StartsWith("rollout-", StringComparison.Ordinal) && name.EndsWith(".jsonl", StringComparison.Ordinal);
     }
 
     private static bool IsNear(CliLaunch launch, SessionMeta session) =>
@@ -168,9 +221,10 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
 
     /// <summary>
     /// Adds each <c>token_count</c>'s increase of <c>info.total_token_usage</c> to the model of the latest
-    /// <c>turn_context</c>. Each increase is one model response.
+    /// <c>turn_context</c>. Each increase is one model response. Events before <paramref name="since"/>
+    /// (a resumed session's earlier runs) only set the baseline.
     /// </summary>
-    private static void ReadRollout(string path, Dictionary<string, TokenTotals> perModel)
+    private static void ReadRollout(string path, DateTimeOffset since, Dictionary<string, TokenTotals> perModel)
     {
         var model = UnknownModel;
         var previous = default(TokenTotals);
@@ -187,11 +241,14 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
                         model = turnModel;
                 }
                 else if (line.Contains("\"token_count\"", StringComparison.Ordinal)
-                    && TryParseTotal(line) is { } total
+                    && TryParseTotal(line, out var at) is { } total
                     && total.Total > previous.Total)
                 {
-                    var delta = total.Minus(previous);
-                    perModel[model] = perModel.TryGetValue(model, out var sum) ? sum.Plus(delta) : delta;
+                    if (at >= since)
+                    {
+                        var delta = total.Minus(previous);
+                        perModel[model] = perModel.TryGetValue(model, out var sum) ? sum.Plus(delta) : delta;
+                    }
                     previous = total;
                 }
             }
@@ -220,8 +277,9 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
     }
 
     /// <summary><c>{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{…}}}}</c>; info is null before the first response.</summary>
-    private static TokenTotals? TryParseTotal(string line)
+    private static TokenTotals? TryParseTotal(string line, out DateTimeOffset at)
     {
+        at = DateTimeOffset.MaxValue;
         try
         {
             using var doc = JsonDocument.Parse(line);
@@ -233,6 +291,11 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
                 || !payload.TryGetProperty("info", out var info) || info.ValueKind != JsonValueKind.Object
                 || !info.TryGetProperty("total_token_usage", out var u) || u.ValueKind != JsonValueKind.Object)
                 return null;
+
+            // An event without a readable time is counted.
+            if (DateTimeOffset.TryParse(Str(root, "timestamp"), CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal, out var parsed))
+                at = parsed;
 
             return new TokenTotals(
                 Long(u, "input_tokens"),
