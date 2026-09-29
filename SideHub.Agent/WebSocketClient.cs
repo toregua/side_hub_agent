@@ -649,6 +649,10 @@ public class WebSocketClient : IAsyncDisposable
         var defaultShell = SystemInfoProvider.GetDefaultShell();
         var availableShells = SystemInfoProvider.GetAvailableShells();
         Log($"OS: {SystemInfoProvider.GetOsPlatform()}, Default shell: {defaultShell}, Available: [{string.Join(", ", availableShells)}]");
+        var cliVersions = VersionInfo.CachedCliVersions;
+        Log($"Agent version: {VersionInfo.AgentVersion}, CLIs: " + (cliVersions is null
+            ? "probing"
+            : $"[{string.Join(", ", cliVersions.Select(v => $"{v.Key} {v.Value}"))}]"));
 
         var message = new AgentConnectedMessage
         {
@@ -657,9 +661,19 @@ public class WebSocketClient : IAsyncDisposable
             Capabilities = _config.Capabilities!,
             DefaultShell = defaultShell,
             AvailableShells = availableShells,
-            RootPath = _workingDirectory
+            RootPath = _workingDirectory,
+            AgentVersion = VersionInfo.AgentVersion,
+            CliVersions = cliVersions
         };
         await SendAsync(message, ct);
+
+        // agent.connected is an idempotent state report: re-send it once the CLI versions are known.
+        if (cliVersions is null)
+            RunInBackground("CLI version probe", async () =>
+            {
+                await VersionInfo.GetCliVersionsAsync(ct);
+                await SendConnectedMessageAsync(ct);
+            });
     }
 
     private void StartHeartbeat(CancellationToken ct)

@@ -24,6 +24,16 @@ public class AgentConnectedMessage
 
     [JsonPropertyName("rootPath")]
     public string? RootPath { get; init; }
+
+    [JsonPropertyName("agentVersion")]
+    public required string AgentVersion { get; init; }
+
+    /// <summary>
+    /// Detected CLI versions keyed by runtime ("claude", "codex", "gemini"). Null while not probed yet:
+    /// the backend keeps what it knows, and the message is sent again once the probe completes.
+    /// </summary>
+    [JsonPropertyName("cliVersions")]
+    public IReadOnlyDictionary<string, string>? CliVersions { get; init; }
 }
 
 public class AgentHeartbeatMessage
