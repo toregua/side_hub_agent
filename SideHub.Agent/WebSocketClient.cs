@@ -569,6 +569,9 @@ public class WebSocketClient : IAsyncDisposable
 
         while (!ct.IsCancellationRequested)
         {
+            // Cleared each attempt so a failed handshake (e.g. 401) never counts as a stable connection
+            _connectedAt = default;
+
             try
             {
                 _ws = new ClientWebSocket();
@@ -602,7 +605,7 @@ public class WebSocketClient : IAsyncDisposable
                 StopPtyReaper();
 
                 // Only reset backoff if connection was stable for at least 60 seconds
-                var connectionDuration = (DateTime.UtcNow - _connectedAt).TotalMilliseconds;
+                var connectionDuration = _connectedAt == default ? 0 : (DateTime.UtcNow - _connectedAt).TotalMilliseconds;
                 if (connectionDuration >= StableConnectionThresholdMs)
                 {
                     reconnectAttempts = 0;
