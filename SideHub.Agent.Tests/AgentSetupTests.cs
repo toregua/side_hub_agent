@@ -57,4 +57,13 @@ public class AgentSetupTests : IDisposable
         Assert.Contains(".sidehub/", lines);
         Assert.Equal("node_modules", lines[0]);
     }
+
+    [Theory]
+    [InlineData(null, "https://api.sidehub.io/api")]
+    [InlineData("https://api.sidehub.io", "https://api.sidehub.io/api")]
+    [InlineData("https://api.sidehub.io/", "https://api.sidehub.io/api")]
+    [InlineData("https://api.sidehub.io/api", "https://api.sidehub.io/api")]
+    [InlineData("http://localhost:5000/api/", "http://localhost:5000/api")]
+    public void Api_base_accepts_the_host_or_the_api_root(string? value, string expected) =>
+        Assert.Equal(expected, AgentSetup.ApiBase(value));
 }

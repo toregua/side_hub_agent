@@ -4,7 +4,7 @@ set -e
 # SideHub Agent Installer for macOS/Linux
 # Requires: Node.js (for PTY terminal support)
 #
-# Usage: curl -fsSL https://www.sidehub.io/api/agent/install.sh | bash -s -- [--token <token>] [version]
+# Usage: curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s -- [--token <token>] [version]
 #   --token  run from the project folder: after installing, configure this folder for the agent and start it
 
 SIDEHUB_API="${SIDEHUB_API:-https://www.sidehub.io/api}"

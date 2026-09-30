@@ -12,7 +12,8 @@ namespace SideHub.Agent;
 /// </summary>
 public static class AgentSetup
 {
-    public const string DefaultApi = "https://www.sidehub.io/api";
+    /// <summary>www.sidehub.io serves the web app, not the API.</summary>
+    public const string DefaultApi = "https://api.sidehub.io";
 
     public record SetupInfo(
         [property: JsonPropertyName("name")] string Name,
@@ -30,7 +31,7 @@ public static class AgentSetup
             return 1;
         }
 
-        var apiBase = (api ?? Environment.GetEnvironmentVariable("SIDEHUB_API") ?? DefaultApi).TrimEnd('/');
+        var apiBase = ApiBase(api ?? Environment.GetEnvironmentVariable("SIDEHUB_API"));
         SetupInfo? info;
         try
         {
@@ -63,6 +64,16 @@ public static class AgentSetup
         if (IgnoreInGit(baseDirectory))
             Console.WriteLine("[SideHub] Added .sidehub/ to .gitignore (the file holds the agent's token)");
         return 0;
+    }
+
+    /// <summary>
+    /// The API root for REST calls. install.sh passes the host alone (https://api.sidehub.io, where downloads live
+    /// under /agent), while the REST routes are under /api: accept both.
+    /// </summary>
+    public static string ApiBase(string? value)
+    {
+        var baseUrl = (string.IsNullOrWhiteSpace(value) ? DefaultApi : value).TrimEnd('/');
+        return baseUrl.EndsWith("/api", StringComparison.OrdinalIgnoreCase) ? baseUrl : baseUrl + "/api";
     }
 
     /// <summary>
