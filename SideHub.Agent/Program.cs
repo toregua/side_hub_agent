@@ -43,6 +43,7 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
     return command switch
     {
         "start" => await HandleStart(args, baseDirectory, ct),
+        "setup" => await HandleSetup(args, baseDirectory, ct),
         "stop" => HandleStop(args, baseDirectory),
         "restart" => await HandleRestart(args, baseDirectory, ct),
         "logs" => await HandleLogs(args, baseDirectory),
@@ -76,6 +77,20 @@ static async Task<int> HandleStart(string[] args, string baseDirectory, Cancella
         return await Commands.StartAll(daemon, ct);
 
     return await Commands.Start(baseDirectory, daemon, ct);
+}
+
+/// <summary>setup --token &lt;token&gt; [--api &lt;url&gt;] [--no-start]: write .sidehub config here, then start in the background.</summary>
+static async Task<int> HandleSetup(string[] args, string baseDirectory, CancellationToken ct)
+{
+    string? Value(string flag)
+    {
+        var i = Array.IndexOf(args, flag);
+        return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+    }
+
+    var code = await AgentSetup.Run(baseDirectory, Value("--token") ?? "", Value("--api"), ct);
+    if (code != 0 || args.Contains("--no-start")) return code;
+    return await Commands.Start(baseDirectory, daemon: true, ct);
 }
 
 static int HandleStop(string[] args, string baseDirectory)

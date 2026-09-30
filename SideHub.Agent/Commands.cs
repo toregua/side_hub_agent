@@ -480,6 +480,9 @@ public static class Commands
         Console.WriteLine("Usage: sidehub-agent [command] [options]");
         Console.WriteLine();
         Console.WriteLine("Commands:");
+        Console.WriteLine("  setup           Configure this folder for an agent, then start it");
+        Console.WriteLine("    --token <t>   The agent's token (copied from SideHub)");
+        Console.WriteLine("    --no-start    Only write .sidehub/agent.json");
         Console.WriteLine("  start           Start the agent (default)");
         Console.WriteLine("    -d, --daemon  Run in background");
         Console.WriteLine("    --all         Operate on all registered instances");
@@ -496,6 +499,7 @@ public static class Commands
         Console.WriteLine("  help            Show this help");
         Console.WriteLine();
         Console.WriteLine("Examples:");
+        Console.WriteLine("  sidehub-agent setup --token sh_agent_...  # Configure and start");
         Console.WriteLine("  sidehub-agent              # Start in foreground");
         Console.WriteLine("  sidehub-agent start -d     # Start in background");
         Console.WriteLine("  sidehub-agent restart --all -d  # Restart all agents");
