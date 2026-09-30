@@ -215,6 +215,11 @@ public class PtyCliSessionStartedMessage
 
     [JsonPropertyName("cliSessionId")]
     public required string CliSessionId { get; init; }
+
+    /// <summary>Re-sent after a backend reconnect for a CLI session already reported: the backend
+    /// restores its state without treating it as a new conversation.</summary>
+    [JsonPropertyName("replayed")]
+    public bool Replayed { get; init; }
 }
 
 /// <summary>

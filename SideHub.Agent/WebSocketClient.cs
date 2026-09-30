@@ -33,6 +33,10 @@ public class WebSocketClient : IAsyncDisposable
     // "<ptySessionId>:<cliSessionId>" so multiple Claude runs in the same PTY
     // don't collide.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _claudeTitleWatchers = new();
+    // Last CLI session (and its title) seen in each PTY, re-reported after a backend reconnect
+    // so every device can show the terminal as that conversation.
+    private readonly ConcurrentDictionary<string, PtyCliSession> _ptyCliSessions = new();
+    private sealed record PtyCliSession(string Provider, string CliSessionId, string? Title = null);
     private const int PtyIdleTimeoutMinutes = 30;
     // PTY sessions driven by the backend (workflow steps, scheduled prompts, runs) run
     // unattended and often produce no input for long stretches. The backend owns their
@@ -266,6 +270,7 @@ public class WebSocketClient : IAsyncDisposable
             cts.Dispose();
         }
         _ptyCwd.TryRemove(ptySessionId, out _);
+        _ptyCliSessions.TryRemove(ptySessionId, out _);
         StopClaudeTitleWatchers(ptySessionId);
         try
         {
@@ -396,6 +401,7 @@ public class WebSocketClient : IAsyncDisposable
 
             Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
             _usageCollector.RecordCliSession(ptySessionId, provider!, cliSessionId!);
+            _ptyCliSessions[ptySessionId] = new PtyCliSession(provider!, cliSessionId!);
             await SendAsync(new PtyCliSessionStartedMessage
             {
                 PtySessionId = ptySessionId,
@@ -482,6 +488,8 @@ public class WebSocketClient : IAsyncDisposable
                     if (string.IsNullOrEmpty(title)) return;
                     emitted = true;
                     Log($"Claude ai-title for {cliSessionId}: {title}");
+                    if (_ptyCliSessions.TryGetValue(ptySessionId, out var cliSession) && cliSession.CliSessionId == cliSessionId)
+                        _ptyCliSessions.TryUpdate(ptySessionId, cliSession with { Title = title }, cliSession);
                     try
                     {
                         await SendAsync(new PtyCliSessionTitledMessage
@@ -1483,6 +1491,7 @@ public class WebSocketClient : IAsyncDisposable
                 // Reattached: the process (and any CLI inside it) survived, so the
                 // frontend must not auto-type `<provider> --resume` into it.
                 await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId, Reattached = true }, ct);
+                await ReportCliSessionAsync(ptySessionId, ct);
             }
         }
 
@@ -1493,6 +1502,29 @@ public class WebSocketClient : IAsyncDisposable
             {
                 Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell(),
                 Reattached = true
+            }, ct);
+        }
+    }
+
+    /// <summary>The backend keeps CLI sessions in memory only: after it restarts, tell it again which
+    /// conversation runs in the PTY and its title.</summary>
+    private async Task ReportCliSessionAsync(string ptySessionId, CancellationToken ct)
+    {
+        if (!_ptyCliSessions.TryGetValue(ptySessionId, out var cliSession)) return;
+        await SendAsync(new PtyCliSessionStartedMessage
+        {
+            PtySessionId = ptySessionId,
+            Provider = cliSession.Provider,
+            CliSessionId = cliSession.CliSessionId,
+            Replayed = true,
+        }, ct);
+        if (cliSession.Title is { } title)
+        {
+            await SendAsync(new PtyCliSessionTitledMessage
+            {
+                PtySessionId = ptySessionId,
+                CliSessionId = cliSession.CliSessionId,
+                Title = title,
             }, ct);
         }
     }
@@ -1516,6 +1548,7 @@ public class WebSocketClient : IAsyncDisposable
         _ptySessions.Clear();
         _ptyLastActivity.Clear();
         _ptyCwd.Clear();
+        _ptyCliSessions.Clear();
         foreach (var cts in _ptyFifoReaders.Values)
         {
             try { cts.Cancel(); cts.Dispose(); } catch { }
