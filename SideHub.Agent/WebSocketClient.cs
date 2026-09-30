@@ -1480,7 +1480,9 @@ public class WebSocketClient : IAsyncDisposable
             if (executor.IsRunning)
             {
                 Log($"Reporting alive PTY session {ptySessionId} (shell: {shell})");
-                await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
+                // Reattached: the process (and any CLI inside it) survived, so the
+                // frontend must not auto-type `<provider> --resume` into it.
+                await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId, Reattached = true }, ct);
             }
         }
 
@@ -1489,7 +1491,8 @@ public class WebSocketClient : IAsyncDisposable
             Log("Reporting alive legacy PTY session");
             await SendAsync(new PtyStartedMessage
             {
-                Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell()
+                Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell(),
+                Reattached = true
             }, ct);
         }
     }
