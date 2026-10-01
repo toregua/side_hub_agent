@@ -1,0 +1,15 @@
+# Keeps the SHA-pinned GitHub Actions and the pty-helper lockfile up to date.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /SideHub.Agent/pty-helper
+    schedule:
+      interval: weekly

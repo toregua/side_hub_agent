@@ -5,8 +5,14 @@ on:
     tags:
       - 'v*'
 
+# Actions are pinned by commit SHA (tags can be moved); Dependabot bumps them (.github/dependabot.yml).
+# Least privilege by default: jobs that need more ask for it explicitly.
+permissions:
+  contents: read
+
 env:
   DOTNET_VERSION: '10.0.x'
+  NODE_VERSION: '22'
 
 jobs:
   build:
@@ -36,10 +42,12 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -54,6 +62,31 @@ jobs:
       - name: Publish CLI
         run: |
           dotnet publish SideHub.Cli -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version=${{ env.VERSION }} -o ./publish-cli
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # node_modules ships in the archive so installs never resolve packages from the registry.
+      # npm ci installs exactly the lockfile (integrity-checked); --ignore-scripts skips node-pty's
+      # install scripts, which are only needed to compile from source: every target has a prebuild.
+      - name: Bundle pty-helper dependencies
+        shell: bash
+        working-directory: publish/pty-helper
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          npm ci --omit=dev --ignore-scripts
+          case "$RID" in
+            osx-*) platform=darwin ;;
+            win-*) platform=win32 ;;
+            *) platform=linux ;;
+          esac
+          prebuild="$platform-${RID##*-}"
+          test -d "node_modules/node-pty/prebuilds/$prebuild"
+          # Only this platform's native prebuild is needed
+          find node_modules/node-pty/prebuilds -mindepth 1 -maxdepth 1 ! -name "$prebuild" -exec rm -rf {} +
 
       - name: Create tar.gz archive (Unix)
         if: runner.os != 'Windows'
@@ -81,7 +114,7 @@ jobs:
           Compress-Archive -Path * -DestinationPath ..\${{ matrix.artifact }}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact }}
           path: ./publish/${{ matrix.artifact }}.*
@@ -96,10 +129,12 @@ jobs:
       attestations: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
@@ -116,7 +151,7 @@ jobs:
 
       # Verify with: gh attestation verify <file> --repo toregua/side_hub_agent (see SECURITY.md)
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             release/*.tar.gz
@@ -124,7 +159,7 @@ jobs:
             release/checksums.sha256
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
           files: |

@@ -155,8 +155,17 @@ install() {
     mkdir -p "$extract_dir"
     tar -xzf "$archive_file" -C "$extract_dir"
 
-    echo "📦 Installation des dépendances Node.js..."
-    cd "$extract_dir/pty-helper" && npm install --silent
+    # node_modules ships prebuilt in the archive (npm ci from the lockfile, in the release CI).
+    # Archives built before that only carry package.json: install from the registry as before.
+    if [ -d "$extract_dir/pty-helper/node_modules/node-pty" ]; then
+        echo "✓ Dépendances Node.js incluses dans l'archive"
+    elif [ -f "$extract_dir/pty-helper/package-lock.json" ]; then
+        echo "📦 Installation des dépendances Node.js (lockfile)..."
+        (cd "$extract_dir/pty-helper" && npm ci --omit=dev --ignore-scripts --silent)
+    else
+        echo "📦 Installation des dépendances Node.js (ancienne version, sans lockfile)..."
+        (cd "$extract_dir/pty-helper" && npm install --omit=dev --silent)
+    fi
 
     echo "🔧 Installation dans ${INSTALL_DIR}..."
     if [ -w "$(dirname "$INSTALL_DIR")" ]; then

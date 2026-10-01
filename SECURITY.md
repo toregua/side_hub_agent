@@ -83,8 +83,9 @@ Recommended practice:
 Releases are built by GitHub Actions from a tag (`.github/workflows/release.yml`); no binary
 is committed to the repository. Each release ships:
 
-- `sidehub-agent-<platform>.tar.gz` / `.zip` — the agent, `sidehub-cli`, `pty-helper` and
-  `cli-wrappers`;
+- `sidehub-agent-<platform>.tar.gz` / `.zip` — the agent, `sidehub-cli`, `pty-helper` (with its
+  `node_modules`, installed by the CI with `npm ci --omit=dev --ignore-scripts` from the committed
+  lockfile, `node-pty` pinned to an exact version) and `cli-wrappers`;
 - `checksums.sha256` — SHA-256 of every archive;
 - a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
   (Sigstore, signed with the workflow's OIDC identity) for each archive and for
@@ -95,7 +96,13 @@ is committed to the repository. Each release ships:
 archive through the SideHub API, then download `checksums.sha256` **directly from GitHub
 Releases** and check the archive's SHA-256 before extracting it. A missing checksum file, a
 missing entry or a mismatch aborts the install. Because the checksum does not come from the
-SideHub proxy, a compromised proxy cannot serve a tampered archive with a matching checksum.
+SideHub proxy, a compromised proxy cannot serve a tampered archive with a matching checksum. The
+Node.js dependencies come inside the verified archive: the install does not run `npm` (only
+releases built before they were bundled fall back to installing them from the registry).
+
+The release workflow pins every action by commit SHA (updated by Dependabot) and runs with
+`contents: read` except for the job that publishes the release. Release tags are never moved:
+each release is a new `v1.0.x` tag.
 
 **Manual verification.**
 

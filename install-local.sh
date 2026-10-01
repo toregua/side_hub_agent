@@ -16,7 +16,7 @@ dotnet publish -c Release -o ./publish --self-contained -r osx-arm64 --verbosity
 
 echo "📦 Installing pty-helper dependencies..."
 cd "$AGENT_DIR/pty-helper"
-npm install --silent
+npm ci --omit=dev --ignore-scripts --silent
 
 echo "📁 Installing to $INSTALL_DIR..."
 

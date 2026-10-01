@@ -10,10 +10,12 @@
     <Version>0.0.0-dev</Version>
   </PropertyGroup>
 
-  <!-- Include pty-helper Node.js files (node_modules must be installed separately via npm install) -->
+  <!-- Include pty-helper Node.js files. node_modules is installed from the lockfile with npm ci
+       (production deps, no install scripts): bundled in the release archive by the CI, or by install-local.sh. -->
   <ItemGroup>
     <None Include="pty-helper\index.js" CopyToOutputDirectory="PreserveNewest" Link="pty-helper\index.js" />
     <None Include="pty-helper\package.json" CopyToOutputDirectory="PreserveNewest" Link="pty-helper\package.json" />
+    <None Include="pty-helper\package-lock.json" CopyToOutputDirectory="PreserveNewest" Link="pty-helper\package-lock.json" />
   </ItemGroup>
 
   <!-- CLI wrappers prepended to PATH inside each PTY shell so that `claude` etc.

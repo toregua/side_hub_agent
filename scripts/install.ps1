@@ -130,11 +130,22 @@ function Install-SideHubAgent {
     $extractDir = Join-Path $tempDir "package"
     Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
 
-    Write-Host "Installing Node.js dependencies..."
+    # node_modules ships prebuilt in the archive (npm ci from the lockfile, in the release CI).
+    # Archives built before that only carry package.json: install from the registry as before.
     $ptyHelperDir = Join-Path $extractDir "pty-helper"
-    Push-Location $ptyHelperDir
-    & npm install --silent
-    Pop-Location
+    if (Test-Path (Join-Path $ptyHelperDir "node_modules\node-pty")) {
+        Write-Host "Node.js dependencies bundled in the archive"
+    } else {
+        Push-Location $ptyHelperDir
+        if (Test-Path (Join-Path $ptyHelperDir "package-lock.json")) {
+            Write-Host "Installing Node.js dependencies (lockfile)..."
+            & npm ci --omit=dev --ignore-scripts --silent
+        } else {
+            Write-Host "Installing Node.js dependencies (older release, no lockfile)..."
+            & npm install --omit=dev --silent
+        }
+        Pop-Location
+    }
 
     Write-Host "Installing to $InstallDir..."
     if (Test-Path $InstallDir) {
