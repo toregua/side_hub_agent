@@ -33,6 +33,8 @@ public class WebSocketClient : IAsyncDisposable
     // don't collide.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _claudeTitleWatchers = new();
     private const int MaxClaudeTitleWatchersPerPty = 16;
+    // An ai-title line is a few hundred bytes; longer transcript lines (tool results, images) are skipped unbuffered.
+    private const int MaxClaudeTitleLineBytes = 64 * 1024;
     // Last CLI session (and its title) seen in each PTY, re-reported after a backend reconnect
     // so every device can show the terminal as that conversation.
     private readonly ConcurrentDictionary<string, PtyCliSession> _ptyCliSessions = new();
@@ -496,10 +498,13 @@ public class WebSocketClient : IAsyncDisposable
                 };
 
                 var emitted = false;
+                // Read from where the previous scan stopped: the poll below must not re-read the whole transcript.
+                var transcript = new JsonlTail(jsonlPath, MaxClaudeTitleLineBytes);
                 async Task TryEmitAsync()
                 {
                     if (emitted || token.IsCancellationRequested) return;
-                    var title = TryReadClaudeTitle(jsonlPath);
+                    string? title;
+                    lock (transcript) title = TryReadClaudeTitle(transcript);
                     if (string.IsNullOrEmpty(title)) return;
                     emitted = true;
                     Log($"Claude ai-title for {cliSessionId}: {title}");
@@ -552,17 +557,13 @@ public class WebSocketClient : IAsyncDisposable
         }, token);
     }
 
-    /// <summary>Scan a Claude project JSONL file for the first ai-title line and
-    /// return the title string, or null if absent / unreadable.</summary>
-    private static string? TryReadClaudeTitle(string jsonlPath)
+    /// <summary>Scan the lines appended to a Claude project JSONL file since the last call for the first
+    /// ai-title line and return the title string, or null if absent / unreadable.</summary>
+    private static string? TryReadClaudeTitle(JsonlTail transcript)
     {
-        if (!File.Exists(jsonlPath)) return null;
         try
         {
-            using var fs = new FileStream(jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(fs, Encoding.UTF8);
-            string? line;
-            while ((line = reader.ReadLine()) != null)
+            foreach (var line in transcript.ReadNewLines())
             {
                 if (line.Length < 20) continue;
                 if (line.IndexOf("\"ai-title\"", StringComparison.Ordinal) < 0) continue;
@@ -1119,10 +1120,20 @@ public class WebSocketClient : IAsyncDisposable
     {
         if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Data))
             return;
-        if (_pendingFileWrites.Append(message.CommandId, message.Data) == FileWriteChunkResult.TooLarge)
+        switch (_pendingFileWrites.Append(message.CommandId, message.Data))
         {
-            Log($"SECURITY: file write {message.CommandId} dropped — larger than {FileWritePolicy.MaxFileBytes} bytes");
-            await SendFileWriteFailedAsync(message.CommandId, $"File is larger than the {FileWritePolicy.MaxFileBytes / (1024 * 1024)} MB limit", ct);
+            case FileWriteChunkResult.TooLarge:
+                Log($"SECURITY: file write {message.CommandId} dropped — larger than {FileWritePolicy.MaxFileBytes} bytes");
+                await SendFileWriteFailedAsync(message.CommandId, $"File is larger than the {FileWritePolicy.MaxFileBytes / (1024 * 1024)} MB limit", ct);
+                break;
+            case FileWriteChunkResult.OverBudget:
+                Log($"SECURITY: file write {message.CommandId} dropped — file writes in progress already hold {PendingFileWrites.MaxTotalBytes} bytes");
+                await SendFileWriteFailedAsync(message.CommandId, $"Too much file data in progress (max {PendingFileWrites.MaxTotalBytes / (1024 * 1024)} MB)", ct);
+                break;
+            case FileWriteChunkResult.Invalid:
+                Log($"File write {message.CommandId} dropped — chunk is not valid base64");
+                await SendFileWriteFailedAsync(message.CommandId, "File data is not valid base64", ct);
+                break;
         }
     }
 
@@ -1150,6 +1161,7 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
+        using var _ = state;
         try
         {
             // Checked again right before writing: a link may have been planted since file.write.start.
@@ -1164,16 +1176,17 @@ public class WebSocketClient : IAsyncDisposable
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var bytes = Convert.FromBase64String(state.Data.ToString());
-            if (bytes.LongLength > FileWritePolicy.MaxFileBytes)
+            // The chunks were decoded and size-checked as they came: only a truncated last group is left to refuse.
+            if (!state.IsComplete)
             {
-                Log($"SECURITY: file write {message.CommandId} dropped — larger than {FileWritePolicy.MaxFileBytes} bytes");
-                await SendFileWriteFailedAsync(message.CommandId, $"File is larger than the {FileWritePolicy.MaxFileBytes / (1024 * 1024)} MB limit", ct);
+                Log($"File write {message.CommandId} dropped — base64 data ends mid-group");
+                await SendFileWriteFailedAsync(message.CommandId, "File data is not valid base64", ct);
                 return;
             }
-            await File.WriteAllBytesAsync(state.Path, bytes, ct);
+            await using (var file = new FileStream(state.Path, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+                await state.WriteToAsync(file, ct);
 
-            Log($"File written: {state.Path} ({bytes.Length} bytes)");
+            Log($"File written: {state.Path} ({state.Length} bytes)");
 
             // Paste into the correct PTY session (multi-PTY first, then legacy fallback)
             if (!string.IsNullOrEmpty(state.PtyPaste))

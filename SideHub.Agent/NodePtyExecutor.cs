@@ -21,6 +21,9 @@ public class NodePtyExecutor : IAsyncDisposable
     private readonly PtyOutputBuffer _outputBuffer = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingPings = new();
 
+    private const int MaxStderrLineLength = 8192;
+    private const int MaxStderrLinesLogged = 1000;
+
     public bool IsRunning
     {
         get
@@ -143,6 +146,8 @@ public class NodePtyExecutor : IAsyncDisposable
 
         // Start reading output
         _readTask = ReadOutputAsync(ct);
+        // stderr is redirected: left unread, its pipe fills and the helper blocks on its next write to it.
+        _ = DrainStderrAsync(_nodeProcess.StandardError);
 
         // Wait for ready signal
         await Task.Delay(100, ct);
@@ -281,6 +286,28 @@ public class NodePtyExecutor : IAsyncDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"[NodePty] Read error: {ex.Message}");
+        }
+    }
+
+    /// <summary>Reads the helper's stderr until it closes, logging the first lines (bounded) and discarding the rest.</summary>
+    private static async Task DrainStderrAsync(StreamReader stderr)
+    {
+        var reader = new BoundedLineReader(stderr, MaxStderrLineLength);
+        var logged = 0;
+        try
+        {
+            while (await reader.ReadLineAsync(CancellationToken.None) is { } line)
+            {
+                if (logged == MaxStderrLinesLogged) continue;
+                logged++;
+                Console.WriteLine(logged == MaxStderrLinesLogged
+                    ? $"[NodePty] stderr: {MaxStderrLinesLogged} lines logged, the rest is discarded"
+                    : $"[NodePty] stderr: {(line.TooLong ? $"[line longer than {MaxStderrLineLength} characters omitted]" : line.Text)}");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // The helper was stopped and its streams disposed.
         }
     }
 

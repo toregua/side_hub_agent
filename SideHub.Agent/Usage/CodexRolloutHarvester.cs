@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using SideHub.Agent.Models;
 
@@ -192,9 +191,10 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
         try
         {
             string? line;
-            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (var reader = new StreamReader(fs, Encoding.UTF8))
-                line = reader.ReadLine();
+            using (var reader = TranscriptLines.Open(path))
+                line = new BoundedLineReader(reader, TranscriptLines.MaxLineLength).ReadLine() is { TooLong: false } first
+                    ? first.Text
+                    : null;
             if (string.IsNullOrEmpty(line))
                 return null;
 
@@ -230,10 +230,8 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
         var previous = default(TokenTotals);
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(fs, Encoding.UTF8);
-            string? line;
-            while ((line = reader.ReadLine()) != null)
+            using var reader = TranscriptLines.Open(path);
+            foreach (var line in TranscriptLines.Read(reader))
             {
                 if (line.Contains("\"turn_context\"", StringComparison.Ordinal))
                 {

@@ -4,11 +4,18 @@ public class PendingFileWritesTests
 {
     private DateTimeOffset _now = new(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
 
-    private PendingFileWrites Create(long maxBase64Length = FileWritePolicy.MaxBase64Length) =>
-        new(() => _now, maxBase64Length);
+    private PendingFileWrites Create(long maxFileBytes = FileWritePolicy.MaxFileBytes, long maxTotalBytes = PendingFileWrites.MaxTotalBytes) =>
+        new(() => _now, maxFileBytes, maxTotalBytes);
+
+    private static async Task<string> Content(PendingFileWrite write)
+    {
+        using var stream = new MemoryStream();
+        await write.WriteToAsync(stream, CancellationToken.None);
+        return System.Text.Encoding.ASCII.GetString(stream.ToArray());
+    }
 
     [Fact]
-    public void Chunks_are_buffered_until_the_write_is_taken()
+    public async Task Chunks_are_decoded_and_buffered_until_the_write_is_taken()
     {
         var writes = Create();
         Assert.True(writes.TryStart("c1", "/repo/a.png", null, "pty1"));
@@ -17,7 +24,8 @@ public class PendingFileWritesTests
         Assert.Equal(FileWriteChunkResult.Appended, writes.Append("c1", "REVG"));
 
         Assert.True(writes.TryTake("c1", out var write));
-        Assert.Equal("QUJDREVG", write.Data.ToString());
+        Assert.Equal("ABCDEF", await Content(write));
+        Assert.True(write.IsComplete);
         Assert.Equal("pty1", write.PtySessionId);
         Assert.False(writes.TryTake("c1", out _));
     }
@@ -29,21 +37,112 @@ public class PendingFileWritesTests
     }
 
     [Fact]
+    public async Task Chunks_split_mid_group_are_joined()
+    {
+        var writes = Create();
+        writes.TryStart("c1", "/repo/a.txt", null, null);
+        // "hello, world\n" = aGVsbG8sIHdvcmxkCg==
+        foreach (var chunk in new[] { "aGV", "sbG8s", "I", "HdvcmxkCg==" })
+            Assert.Equal(FileWriteChunkResult.Appended, writes.Append("c1", chunk));
+
+        Assert.True(writes.TryTake("c1", out var write));
+        Assert.Equal("hello, world\n", await Content(write));
+    }
+
+    [Fact]
+    public void A_write_ending_mid_group_is_incomplete()
+    {
+        var writes = Create();
+        writes.TryStart("c1", "/repo/a.txt", null, null);
+        writes.Append("c1", "QUJDRE");
+
+        Assert.True(writes.TryTake("c1", out var write));
+        Assert.False(write.IsComplete);
+    }
+
+    [Theory]
+    [InlineData("QU*D")]
+    [InlineData("QQ==QUJD")]
+    public void Invalid_base64_drops_the_write(string chunk)
+    {
+        var writes = Create();
+        writes.TryStart("c1", "/repo/a.txt", null, null);
+
+        Assert.Equal(FileWriteChunkResult.Invalid, writes.Append("c1", chunk));
+        Assert.False(writes.TryTake("c1", out _));
+        Assert.Equal(0, writes.TotalBytes);
+    }
+
+    [Fact]
+    public void Data_after_padding_drops_the_write()
+    {
+        var writes = Create();
+        writes.TryStart("c1", "/repo/a.txt", null, null);
+
+        Assert.Equal(FileWriteChunkResult.Appended, writes.Append("c1", "QQ=="));
+        Assert.Equal(FileWriteChunkResult.Invalid, writes.Append("c1", "QUJD"));
+        Assert.Equal(0, writes.TotalBytes);
+    }
+
+    [Fact]
     public void Write_exceeding_the_size_limit_is_dropped()
     {
-        var writes = Create(maxBase64Length: 8);
+        var writes = Create(maxFileBytes: 6);
         writes.TryStart("c1", "/repo/a.png", null, null);
 
         Assert.Equal(FileWriteChunkResult.Appended, writes.Append("c1", "QUJDREVG"));
         Assert.Equal(FileWriteChunkResult.TooLarge, writes.Append("c1", "Rw=="));
         Assert.False(writes.TryTake("c1", out _));
         Assert.Equal(FileWriteChunkResult.Unknown, writes.Append("c1", "Rw=="));
+        Assert.Equal(0, writes.TotalBytes);
     }
 
     [Fact]
-    public void Default_limit_matches_the_maximum_file_size()
+    public void Writes_share_a_byte_budget_freed_when_a_write_is_disposed()
     {
-        Assert.Equal(FileWritePolicy.MaxBase64Length, Convert.ToBase64String(new byte[FileWritePolicy.MaxFileBytes]).Length);
+        var writes = Create(maxFileBytes: 6, maxTotalBytes: 9);
+        writes.TryStart("c1", "/repo/a.png", null, null);
+        writes.TryStart("c2", "/repo/b.png", null, null);
+
+        Assert.Equal(FileWriteChunkResult.Appended, writes.Append("c1", "QUJDREVG")); // 6 bytes
+        Assert.Equal(FileWriteChunkResult.OverBudget, writes.Append("c2", "QUJDREVG"));
+        Assert.False(writes.TryTake("c2", out _));
+        Assert.Equal(6, writes.TotalBytes);
+
+        Assert.True(writes.TryTake("c1", out var taken));
+        Assert.Equal(6, writes.TotalBytes); // still held until written
+        taken.Dispose();
+        Assert.Equal(0, writes.TotalBytes);
+
+        writes.TryStart("c3", "/repo/c.png", null, null);
+        Assert.Equal(FileWriteChunkResult.Appended, writes.Append("c3", "QUJDREVG"));
+    }
+
+    [Fact]
+    public void A_chunk_for_a_taken_write_is_not_counted()
+    {
+        var writes = Create();
+        writes.TryStart("c1", "/repo/a.png", null, null);
+        writes.TryTake("c1", out var taken);
+        taken.Dispose();
+
+        Assert.Equal(FileWriteChunkResult.Unknown, writes.Append("c1", "QUJD"));
+        Assert.Equal(0, writes.TotalBytes);
+    }
+
+    [Fact]
+    public void Restarting_or_expiring_a_write_frees_its_bytes()
+    {
+        var writes = Create();
+        writes.TryStart("c1", "/repo/a.png", null, null);
+        writes.Append("c1", "QUJD");
+        writes.TryStart("c1", "/repo/a.png", null, null);
+        Assert.Equal(0, writes.TotalBytes);
+
+        writes.Append("c1", "QUJD");
+        _now += PendingFileWrites.Expiry + TimeSpan.FromSeconds(1);
+        writes.RemoveExpired();
+        Assert.Equal(0, writes.TotalBytes);
     }
 
     [Fact]

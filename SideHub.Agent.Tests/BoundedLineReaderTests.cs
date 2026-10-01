@@ -40,4 +40,15 @@ public class BoundedLineReaderTests
         var reader = new BoundedLineReader(new StringReader(""), 5);
         Assert.Null(await reader.ReadLineAsync(CancellationToken.None));
     }
+
+    [Fact]
+    public void The_synchronous_reader_reads_the_same_lines()
+    {
+        var reader = new BoundedLineReader(new StringReader("ok\r\n" + new string('x', 10_000) + "\nnext"), 5);
+        var lines = new List<BoundedLine>();
+        while (reader.ReadLine() is { } line)
+            lines.Add(line);
+
+        Assert.Equal([new BoundedLine("ok", false), new BoundedLine("", true), new BoundedLine("next", false)], lines);
+    }
 }

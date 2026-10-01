@@ -11,6 +11,9 @@ public class CommandExecutor
 
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromHours(1);
 
+    /// <summary>Longest output line forwarded, in characters: a longer one is replaced by a notice, never buffered whole.</summary>
+    public const int MaxOutputLineLength = 1024 * 1024;
+
     public bool IsBusy
     {
         get { lock (_lock) return _isBusy; }
@@ -130,18 +133,22 @@ public class CommandExecutor
     }
 
     private static async Task ReadStreamAsync(
-        StreamReader reader,
+        StreamReader stream,
         string streamName,
         Func<string, string, Task> onOutput,
         CancellationToken ct)
     {
+        // The command's output is not ours: a line without a newline must not grow the daemon's memory
+        // until it takes down every agent it hosts.
+        var reader = new BoundedLineReader(stream, MaxOutputLineLength);
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync(ct);
-                if (line == null) break;
-                await onOutput(streamName, line);
+                if (await reader.ReadLineAsync(ct) is not { } line) break;
+                await onOutput(streamName, line.TooLong
+                    ? $"[line longer than {MaxOutputLineLength} characters omitted]"
+                    : line.Text);
             }
         }
         catch (OperationCanceledException)

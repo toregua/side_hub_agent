@@ -9,9 +9,6 @@ public static class FileWritePolicy
 {
     public const long MaxFileBytes = 50L * 1024 * 1024;
 
-    /// <summary>Base64 length of a <see cref="MaxFileBytes"/> file: the bound on the chunks buffered for one write.</summary>
-    public const long MaxBase64Length = (MaxFileBytes + 2) / 3 * 4;
-
     private static readonly string[] ProtectedDirectories = [".git", ".sidehub"];
 
     /// <summary>

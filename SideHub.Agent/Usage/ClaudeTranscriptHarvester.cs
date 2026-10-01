@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using SideHub.Agent.Models;
 
@@ -123,11 +122,9 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
         var lastAssistantLine = 0;
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(fs, Encoding.UTF8);
-            string? line;
+            using var reader = TranscriptLines.Open(path);
             var lineNumber = 0;
-            while ((line = reader.ReadLine()) != null)
+            foreach (var line in TranscriptLines.Read(reader))
             {
                 lineNumber++;
                 if (line.Contains("\"cost-state\"", StringComparison.Ordinal) && TryParseCostState(line) is { } parsed)
