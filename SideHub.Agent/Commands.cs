@@ -42,7 +42,8 @@ public static class Commands
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath,
-            Arguments = $"--foreground-daemon \"{logFile}\" \"{pidFile}\"",
+            // Reaching here as root means root was allowed explicitly (RootPolicy): the daemon re-checks, so forward it
+            Arguments = $"--foreground-daemon \"{logFile}\" \"{pidFile}\"" + (RootPolicy.IsCurrentUserRoot() ? $" {RootPolicy.AllowFlag}" : ""),
             WorkingDirectory = baseDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -141,6 +142,9 @@ public static class Commands
         var timestampWriter = new TimestampTextWriter(logWriter);
         Console.SetOut(timestampWriter);
         Console.SetError(timestampWriter);
+
+        if (RootPolicy.IsCurrentUserRoot())
+            Console.WriteLine($"[SideHub] {RootPolicy.Warning}");
 
         try
         {
@@ -511,6 +515,9 @@ public static class Commands
         Console.WriteLine("  status          Show agent status");
         Console.WriteLine("    --all         Show all registered instances");
         Console.WriteLine("  help            Show this help");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --allow-root    Allow setup/start/restart as root (refused by default; or SIDEHUB_ALLOW_ROOT=1)");
         Console.WriteLine();
         Console.WriteLine("Examples:");
         Console.WriteLine("  sidehub-agent setup --token-stdin  # Paste the token, then Enter: configure and start");

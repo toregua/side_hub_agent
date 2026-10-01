@@ -7,6 +7,7 @@ set -e
 # Usage: curl -fsSL https://api.sidehub.io/agent/install.sh | SIDEHUB_SETUP_TOKEN=<token> bash -s -- [version]
 #   SIDEHUB_SETUP_TOKEN (or --token <token>, visible in ps)  run from the project folder: after installing,
 #   configure this folder for the agent and start it
+#   --allow-root  configure and start it even as root (refused by default: the backend would control the machine)
 #
 # The archive is checked against the release's checksums.sha256, downloaded from GitHub Releases
 # (SIDEHUB_GITHUB_REPO, default toregua/side_hub_agent); a missing or mismatching checksum aborts the install.
@@ -111,8 +112,11 @@ install() {
     local platform=$(detect_platform)
     local version="latest"
     local token="${SIDEHUB_SETUP_TOKEN:-}"
+    local allow_root=""
+    case "${SIDEHUB_ALLOW_ROOT:-}" in 1|true|TRUE|True) allow_root="--allow-root" ;; esac
     while [ $# -gt 0 ]; do
         case "$1" in
+            --allow-root) allow_root="--allow-root"; shift ;;
             --token) token="$2"; shift 2 ;;
             --token=*) token="${1#--token=}"; shift ;;
             *) version="$1"; shift ;;
@@ -196,17 +200,32 @@ install() {
     echo "✅ SideHub Agent installé avec succès!"
     echo ""
 
+    if [ -n "$token" ] && [ "$(id -u)" -eq 0 ] && [ -z "$allow_root" ]; then
+        # `curl … | sudo bash` with a token: installing system-wide needs root, running the agent must not.
+        echo "⛔ Agent non configuré : ce script tourne en root, et l'agent refuse de tourner en root"
+        echo "   (le backend SideHub pilote ses terminaux : en root, il contrôlerait toute la machine)."
+        echo ""
+        echo "   Depuis le dossier du projet, en tant qu'utilisateur non privilégié :"
+        echo "     sidehub-agent setup --token-stdin   (puis collez le jeton copié depuis SideHub)"
+        echo "   Service systemd (utilisateur dédié) : ${INSTALL_DIR}/contrib/systemd/sidehub-agent@.service"
+        echo "   Pour forcer malgré tout : relancez avec --allow-root (ou SIDEHUB_ALLOW_ROOT=1)."
+        exit 1
+    fi
+
     if [ -n "$token" ]; then
         # Configure the folder the command was run from (the project), then start the agent in the background.
         cd "$PROJECT_DIR"
         echo "🔗 Configuration de l'agent dans ${PROJECT_DIR}..."
         # Token through the environment, not argv: argv is visible to every user in ps.
-        SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup
+        SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup $allow_root
         echo ""
         echo "Commandes utiles : sidehub-agent status · sidehub-agent logs · sidehub-agent stop"
     else
         echo "Pour commencer, depuis le dossier de votre projet :"
         echo "  sidehub-agent setup --token-stdin   (puis collez le jeton copié depuis SideHub)"
+        echo "  (en tant qu'utilisateur non privilégié : l'agent refuse de tourner en root)"
+        echo ""
+        echo "Modèles de service (systemd, launchd) : ${INSTALL_DIR}/contrib/"
         echo ""
     fi
 }

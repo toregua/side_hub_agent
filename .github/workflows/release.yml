@@ -114,6 +114,7 @@ jobs:
           cp ../publish-cli/sidehub-cli package/sidehub-cli
           cp -r pty-helper package/
           cp -r cli-wrappers package/
+          cp -r ../contrib package/
           cd package
           tar -czvf ../${{ matrix.artifact }}.tar.gz *
 

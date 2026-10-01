@@ -135,8 +135,9 @@ What the agent enforces:
 - PTYs get an allowlisted environment; the backend cannot override `PATH`, `LD_PRELOAD`, rcfiles or agent-owned variables
 - PTY working directories and file writes are confined to `workingDirectory`
 - `command.execute` and file writes can be disabled with `"allowCommandExecute": false` / `"allowFileWrite": false`
+- `setup`, `start` and `restart` refuse to run as `root` unless `--allow-root` (or `SIDEHUB_ALLOW_ROOT=1`) is given; `install.sh` run with `sudo` installs the binaries but does not configure the agent
 
-Run the agent as a dedicated unprivileged user (never `root`), keep `.sidehub/*.json` out of
+Run the agent as a dedicated unprivileged user, keep `.sidehub/*.json` out of
 version control, and use a container or VM if the machine holds anything you would not hand
 to the backend. See [SECURITY.md](SECURITY.md) for the full threat model and how to report a
 vulnerability.
@@ -154,6 +155,9 @@ Commands:
     --no-follow     Print current logs without following
   status            Show agent status
   help              Show help
+
+Options:
+  --allow-root      Allow setup/start/restart as root (refused by default)
 ```
 
 ### Examples
@@ -177,6 +181,30 @@ sidehub-agent status
 # Stop the daemon
 sidehub-agent stop
 ```
+
+### Running as a service
+
+The agent refuses to run as `root` (`--allow-root` overrides it, at your own risk). To start it at boot,
+run it under a dedicated user with the templates in [`contrib/`](contrib/) (also installed in
+`/usr/local/lib/sidehub-agent/contrib/`):
+
+- **systemd** — [`contrib/systemd/sidehub-agent@.service`](contrib/systemd/sidehub-agent@.service), one
+  instance per project folder, `User=sidehub`, `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`…
+
+  ```bash
+  sudo useradd --system --create-home --shell /bin/bash sidehub
+  # as sidehub, from the project folder: sidehub-agent setup --token-stdin --no-start
+  sudo cp /usr/local/lib/sidehub-agent/contrib/systemd/sidehub-agent@.service /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now "sidehub-agent@$(systemd-escape --path /home/sidehub/my-project).service"
+  ```
+
+  `NoNewPrivileges` means `sudo` does not work in the agent's terminals. The CLIs (`claude`, `codex`,
+  `node`) must be on the unit's `PATH`. Stop it with `systemctl stop`, not `sidehub-agent stop`.
+
+- **launchd (macOS)** — [`contrib/launchd/io.sidehub.agent.plist`](contrib/launchd/io.sidehub.agent.plist),
+  a per-user LaunchAgent (never a LaunchDaemon, which runs as root): fill in the project path, copy it to
+  `~/Library/LaunchAgents/` and `launchctl bootstrap gui/$(id -u) <plist>`.
 
 ## Architecture
 

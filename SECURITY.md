@@ -57,6 +57,12 @@ silently do. They are not a security boundary against a compromised backend.
   usage reports and notification FIFOs under `.sidehub/run/` are never written or chmodded
   through a symbolic link or an entry owned by another user; the agent refuses to start
   instead.
+- **No root by default** — on Linux and macOS, `setup`, `start`, `restart` and the daemon refuse to
+  run with effective UID 0: as root, the backend would control the whole machine. `--allow-root`
+  (or `SIDEHUB_ALLOW_ROOT=1`) overrides it and logs a warning. `install.sh` run as root (`curl … |
+  sudo bash`) installs the binaries but does not configure or start the agent. Service templates
+  for an unprivileged user ship in `contrib/` (systemd unit with `NoNewPrivileges`,
+  `ProtectSystem=full`, `PrivateTmp`…, and a per-user launchd agent).
 - **Opt-out switches** — `command.execute` and file writes can be turned off per agent.
 
 ### What the agent does not protect
@@ -83,7 +89,8 @@ backend that can open a terminal.
 
 Recommended practice:
 
-- Run the agent as a **dedicated, unprivileged user**, never as `root`.
+- Run the agent as a **dedicated, unprivileged user**, never as `root` (the agent refuses root
+  unless `--allow-root`), ideally as a service from `contrib/systemd/sidehub-agent@.service`.
 - Point `workingDirectory` at the project only, and run the agent in a container or VM when
   the machine holds anything you would not hand to the backend.
 - Rotate the agent token (delete and recreate the agent in SideHub) if it may have leaked.

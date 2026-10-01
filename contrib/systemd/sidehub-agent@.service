@@ -1,0 +1,56 @@
+# SideHub agent as a systemd service, one instance per project folder, run as an unprivileged user.
+#
+# The instance name is the escaped absolute path of the project (the folder holding .sidehub/):
+#   sudo useradd --system --create-home --shell /bin/bash sidehub      # dedicated user (once)
+#   sudo cp sidehub-agent@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now "sidehub-agent@$(systemd-escape --path /home/sidehub/my-project).service"
+#
+# The project must belong to that user (sudo -u sidehub sidehub-agent setup --token-stdin --no-start,
+# from the project folder). Another user: `sudo systemctl edit sidehub-agent@.service` and set
+# [Service] User= / Group=. Stop with systemctl, not `sidehub-agent stop` (systemd would restart it).
+# Logs stay in <project>/.sidehub/run/ (`sidehub-agent logs` works as usual).
+
+[Unit]
+Description=SideHub agent (%f)
+Documentation=https://github.com/toregua/side_hub_agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sidehub
+Group=sidehub
+WorkingDirectory=%f
+ExecStart=/usr/local/bin/sidehub-agent --foreground-daemon "%f/.sidehub/run/sidehub-agent.log" "%f/.sidehub/run/sidehub-agent.pid"
+# The CLIs (claude, codex, node…) must be on this PATH; installed with nvm, add their bin directory.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# SIGINT is the agent's graceful shutdown (closes terminals, flushes usage reports)
+KillSignal=SIGINT
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+# Hardening. The backend still controls everything this user can do (see SECURITY.md); these keep
+# it from going further: no sudo/setuid from the terminals, read-only OS, no kernel or device access.
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+ProtectSystem=full
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# Not set on purpose: ProtectHome (the project and the CLIs' config live in the user's home),
+# MemoryDenyWriteExecute (breaks the .NET and Node.js JITs), RestrictNamespaces (CLI sandboxes use them).
+
+[Install]
+WantedBy=multi-user.target

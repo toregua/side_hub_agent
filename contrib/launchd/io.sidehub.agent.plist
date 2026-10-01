@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SideHub agent as a launchd user agent: runs as the logged-in user, never as root.
+  One file per project folder (the folder holding .sidehub/):
+    1. Replace PROJECT_DIR below (3 places) with the project's absolute path, and the Label suffix
+       with a name unique to that project.
+    2. cp io.sidehub.agent.plist ~/Library/LaunchAgents/io.sidehub.agent.my-project.plist
+    3. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.sidehub.agent.my-project.plist
+  Stop: launchctl bootout gui/$(id -u)/io.sidehub.agent.my-project
+  Do not install it in /Library/LaunchDaemons: that runs it as root, which the agent refuses.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.sidehub.agent.my-project</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/sidehub-agent</string>
+        <string>--foreground-daemon</string>
+        <string>PROJECT_DIR/.sidehub/run/sidehub-agent.log</string>
+        <string>PROJECT_DIR/.sidehub/run/sidehub-agent.pid</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>PROJECT_DIR</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- The CLIs (claude, codex, node…) must be on this PATH -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart after a crash, not after a clean stop -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <!-- 077: files the agent creates are private to the user -->
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

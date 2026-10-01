@@ -40,6 +40,18 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
 {
     var command = args.Length > 0 ? args[0].ToLowerInvariant() : "start";
 
+    if (RootPolicy.IsCurrentUserRoot() && RootPolicy.IsGuarded(command))
+    {
+        var refusal = RootPolicy.Check(command, args, isRoot: true, Environment.GetEnvironmentVariable(RootPolicy.AllowEnvVar));
+        if (refusal != null)
+        {
+            Console.WriteLine($"[SideHub] Error: {refusal}");
+            return 1;
+        }
+        if (command != "--foreground-daemon") // its stdout is discarded: it logs the warning itself
+            Console.WriteLine($"[SideHub] {RootPolicy.Warning}");
+    }
+
     return command switch
     {
         "start" => await HandleStart(args, baseDirectory, ct),
