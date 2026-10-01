@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -52,6 +51,8 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
     // Token usage of backend-launched runs (run-* PTYs), reported as run.usage.
     private readonly RunUsageCollector _usageCollector;
+    // Agent-owned 0700 folder holding the notification FIFOs (see NotifyFifo).
+    private readonly string _fifoDirectory;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -85,10 +86,9 @@ public class WebSocketClient : IAsyncDisposable
             harvesters["codex"] = new CodexRolloutHarvester(codexSessions);
         // Several agents can share a run directory: keep each agent's pending reports apart,
         // the backend only accepts a run's usage from the agent it was launched on.
-        var pendingDirectory = Path.Combine(
-            runDirectory ?? Path.Combine(workingDirectory, ".sidehub", "run"),
-            "pending-usage",
-            config.AgentId ?? "default");
+        var runDir = runDirectory ?? Path.Combine(workingDirectory, ".sidehub", "run");
+        var pendingDirectory = Path.Combine(runDir, "pending-usage", config.AgentId ?? "default");
+        _fifoDirectory = Path.Combine(runDir, "fifo", config.AgentId ?? "default");
         _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync, Log);
     }
 
@@ -190,8 +190,7 @@ public class WebSocketClient : IAsyncDisposable
             : "?";
     }
 
-    private static string GetFifoPath(string ptySessionId)
-        => $"/tmp/sidehub-pty-{ptySessionId}.fifo";
+    private string GetFifoPath(string ptySessionId) => NotifyFifo.PathFor(_fifoDirectory, ptySessionId);
 
     private static bool _cliWrappersChecked;
     private static readonly object _cliWrappersLock = new();
@@ -213,15 +212,9 @@ public class WebSocketClient : IAsyncDisposable
             {
                 try
                 {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = "chmod",
-                        Arguments = $"+x {file}",
-                        UseShellExecute = false,
-                        RedirectStandardError = true,
-                    };
-                    using var p = Process.Start(psi);
-                    p?.WaitForExit(2000);
+                    if (!OperatingSystem.IsWindows())
+                        File.SetUnixFileMode(file, File.GetUnixFileMode(file)
+                            | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
                 }
                 catch { /* best effort */ }
             }
@@ -250,34 +243,8 @@ public class WebSocketClient : IAsyncDisposable
     /// no-op its notification and the existing session behavior is preserved.</summary>
     private void EnsureNotifyFifo(string ptySessionId)
     {
-        var fifoPath = GetFifoPath(ptySessionId);
-        try
-        {
-            if (File.Exists(fifoPath))
-                File.Delete(fifoPath);
-        }
-        catch { /* ignore */ }
-
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "mkfifo",
-                Arguments = $"-m 0600 {fifoPath}",
-                UseShellExecute = false,
-                RedirectStandardError = true,
-            };
-            using var p = Process.Start(psi);
-            p?.WaitForExit(2000);
-            if (p is null || p.ExitCode != 0)
-            {
-                Log($"mkfifo failed for {fifoPath} (exit {p?.ExitCode}); CLI session notifications disabled for this PTY");
-            }
-        }
-        catch (Exception ex)
-        {
-            Log($"mkfifo unavailable ({ex.Message}); CLI session notifications disabled for this PTY");
-        }
+        if (!NotifyFifo.TryCreate(_fifoDirectory, ptySessionId, out var fifoPath, out var error))
+            Log($"mkfifo failed for {fifoPath} ({error}); CLI session notifications disabled for this PTY");
     }
 
     /// <summary>Tear down the FIFO and stop its reader task, plus any Claude
@@ -292,13 +259,7 @@ public class WebSocketClient : IAsyncDisposable
         _ptyCwd.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
         StopClaudeTitleWatchers(ptySessionId);
-        try
-        {
-            var fifoPath = GetFifoPath(ptySessionId);
-            if (File.Exists(fifoPath))
-                File.Delete(fifoPath);
-        }
-        catch { /* ignore */ }
+        NotifyFifo.Delete(_fifoDirectory, ptySessionId);
     }
 
     /// <summary>Cancel any pending Claude ai-title watchers bound to this PTY.
@@ -832,6 +793,14 @@ public class WebSocketClient : IAsyncDisposable
         {
             var message = JsonSerializer.Deserialize<IncomingMessage>(json, _jsonOptions);
             if (message == null) return;
+
+            // The PTY session id names files (notification FIFO) and keys every PTY structure:
+            // anything but a plain id is refused before reaching a handler. Absent = legacy single PTY.
+            if (!string.IsNullOrEmpty(message.PtySessionId) && !NotifyFifo.IsValidPtySessionId(message.PtySessionId))
+            {
+                Log($"SECURITY: refused {message.Type} with an invalid ptySessionId ({message.PtySessionId.Length} chars)");
+                return;
+            }
 
             // Slow handlers (command.execute, pty.start, file.write.end) run off the receive
             // loop: awaiting them here would stop heartbeat ACKs from being read and trigger
