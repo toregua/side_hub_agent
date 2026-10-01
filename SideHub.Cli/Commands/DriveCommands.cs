@@ -347,6 +347,33 @@ public static class DriveCommands
         return fullPath;
     }
 
+    /// <summary>
+    /// Writes a download to <paramref name="targetPath"/> without following a link already there: File.Create would
+    /// write through a planted <c>report.pdf -> ~/.bashrc</c>. The content goes to a new temporary file next to it
+    /// (O_EXCL, which never follows a link), then a rename replaces the entry itself. Returns the bytes written.
+    /// </summary>
+    public static async Task<long> SaveDownloadAsync(string targetPath, Func<Stream, Task> download)
+    {
+        var fullPath = Path.GetFullPath(targetPath);
+        var tempPath = Path.Combine(Path.GetDirectoryName(fullPath)!, $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.part");
+        try
+        {
+            long bytesWritten;
+            await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write))
+            {
+                await download(fs);
+                bytesWritten = fs.Length;
+            }
+            File.Move(tempPath, fullPath, overwrite: true);
+            return bytesWritten;
+        }
+        catch
+        {
+            try { File.Delete(tempPath); } catch { /* best effort */ }
+            throw;
+        }
+    }
+
     public static async Task<int> DownloadAsync(SideHubApiClient client, string[] args, bool json)
     {
         var pageId = args.FirstOrDefault(a => !a.StartsWith("--") && !a.StartsWith("-"));
@@ -418,12 +445,7 @@ public static class DriveCommands
             if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
         }
 
-        long bytesWritten;
-        await using (var fs = File.Create(targetPath))
-        {
-            await client.DownloadToStreamAsync(info.DownloadUrl, fs);
-            bytesWritten = fs.Length;
-        }
+        var bytesWritten = await SaveDownloadAsync(targetPath, fs => client.DownloadToStreamAsync(info.DownloadUrl, fs));
 
         var absolutePath = Path.GetFullPath(targetPath);
 

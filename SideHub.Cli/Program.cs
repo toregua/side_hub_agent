@@ -22,9 +22,9 @@ if (string.IsNullOrEmpty(apiUrl) || string.IsNullOrEmpty(agentToken) || string.I
     return 1;
 }
 
-if (!apiUrl.StartsWith("https://") && !apiUrl.StartsWith("http://"))
+if (ApiUrlPolicy.RejectionReason(apiUrl) is { } apiUrlProblem)
 {
-    Console.Error.WriteLine($"Invalid SIDEHUB_API_URL: '{apiUrl}' — must start with http:// or https://");
+    Console.Error.WriteLine($"Invalid SIDEHUB_API_URL: '{apiUrl}' — {apiUrlProblem}");
     return 1;
 }
 

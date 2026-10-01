@@ -50,6 +50,11 @@ public static class AgentSetup
         }
 
         var apiBase = ApiBase(api ?? Environment.GetEnvironmentVariable("SIDEHUB_API"));
+        if (ApiRejectionReason(apiBase) is { } apiProblem)
+        {
+            Console.WriteLine($"[SideHub] Error: invalid API URL {apiBase}: {apiProblem}.");
+            return 1;
+        }
         SetupInfo? info;
         try
         {
@@ -79,8 +84,8 @@ public static class AgentSetup
 
         var path = WriteConfig(baseDirectory, info, token.Trim());
         Console.WriteLine($"[SideHub] Agent \"{info.Name}\" configured in {path}");
-        if (IgnoreInGit(baseDirectory))
-            Console.WriteLine("[SideHub] Added .sidehub/ to .gitignore (the file holds the agent's token)");
+        if (await IgnoreInGitAsync(baseDirectory))
+            Console.WriteLine("[SideHub] Added .sidehub/ to .git/info/exclude (the file holds the agent's token)");
         return 0;
     }
 
@@ -92,6 +97,19 @@ public static class AgentSetup
     {
         var baseUrl = (string.IsNullOrWhiteSpace(value) ? DefaultApi : value).TrimEnd('/');
         return baseUrl.EndsWith("/api", StringComparison.OrdinalIgnoreCase) ? baseUrl : baseUrl + "/api";
+    }
+
+    /// <summary>
+    /// Why the API URL must not receive the token, or null when it may: https, or http to the local machine only
+    /// (development). Plain http to any other host would hand the token to whoever sits on the network path.
+    /// </summary>
+    public static string? ApiRejectionReason(string apiBase)
+    {
+        if (!Uri.TryCreate(apiBase, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            return "it must be an absolute http:// or https:// URL";
+        if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback)
+            return "http:// (unencrypted) is only allowed for localhost, use https://";
+        return null;
     }
 
     /// <summary>
@@ -123,17 +141,24 @@ public static class AgentSetup
         return path;
     }
 
-    /// <summary>Adds .sidehub/ to the project's .gitignore when the folder is a git repository and it isn't there yet.</summary>
-    public static bool IgnoreInGit(string baseDirectory)
+    /// <summary>
+    /// Keeps .sidehub/ out of git when the folder is in a work tree: adds it to the repository's info/exclude, local
+    /// to the clone (never committed, unlike .gitignore). Asks git where that file is, so worktrees and submodules
+    /// (whose .git is a file, not a folder) are covered too. Returns whether the pattern was added.
+    /// </summary>
+    public static async Task<bool> IgnoreInGitAsync(string baseDirectory)
     {
-        if (!Directory.Exists(Path.Combine(baseDirectory, ".git"))) return false;
-        var gitignore = Path.Combine(baseDirectory, ".gitignore");
-        var lines = File.Exists(gitignore) ? File.ReadAllLines(gitignore) : [];
-        if (lines.Any(l => l.Trim() is ".sidehub" or ".sidehub/" or "/.sidehub" or "/.sidehub/")) return false;
-
-        var prefix = lines.Length > 0 && !string.IsNullOrEmpty(lines[^1]) ? Environment.NewLine : "";
-        File.AppendAllText(gitignore, $"{prefix}# SideHub agent (holds its token){Environment.NewLine}.sidehub/{Environment.NewLine}");
-        return true;
+        var repository = await GitRepository.OpenAsync(baseDirectory);
+        if (repository is null) return false;
+        try
+        {
+            return await repository.ExcludeAsync(Path.Combine(baseDirectory, ".sidehub"));
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine($"[SideHub] Warning: couldn't add .sidehub/ to {repository.ExcludeFile} ({ex.Message}): keep it out of your commits, it holds the agent's token.");
+            return false;
+        }
     }
 
     private static string? ExistingFileFor(string dir, string agentId)

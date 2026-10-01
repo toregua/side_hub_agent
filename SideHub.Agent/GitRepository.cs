@@ -57,12 +57,12 @@ public sealed class GitRepository
     /// <summary>Adds <paramref name="path"/> (anchored to the repository root) to
     /// <c>.git/info/exclude</c> unless it is already listed. The only write the agent makes under
     /// <c>.git/</c> (protected for <see cref="FileWritePolicy"/>): it goes through
-    /// <see cref="ConfinedFile"/> so no link is followed.</summary>
-    public async Task ExcludeAsync(string path)
+    /// <see cref="ConfinedFile"/> so no link is followed. Returns whether the pattern was added.</summary>
+    public async Task<bool> ExcludeAsync(string path)
     {
         var relative = Path.GetRelativePath(TopLevel, Path.GetFullPath(path)).Replace('\\', '/');
         if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
-            return;
+            return false;
         var pattern = "/" + relative;
 
         await ExcludeLock.WaitAsync();
@@ -73,11 +73,12 @@ public sealed class GitRepository
             var relativeExclude = Path.GetRelativePath(gitDirectory, ExcludeFile);
             var existing = ConfinedFile.ReadAllTextOrNull(gitDirectory, relativeExclude) ?? "";
             if (existing.Split('\n').Any(line => line.Trim() == pattern))
-                return;
+                return false;
 
             var separator = existing.Length > 0 && !existing.EndsWith('\n') ? "\n" : "";
             await using var file = ConfinedFile.Open(gitDirectory, relativeExclude, FileMode.Append, FileAccess.Write);
             await file.WriteAsync(Encoding.UTF8.GetBytes($"{separator}{pattern}\n"));
+            return true;
         }
         finally
         {

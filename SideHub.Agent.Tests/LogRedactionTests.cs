@@ -14,3 +14,13 @@ public class LogRedactionTests
     public void Only_a_plain_program_name_is_logged(string input, string expected) =>
         Assert.Equal(expected, WebSocketClient.ProgramNameForLog(input));
 }
+
+public class MaskUrlTests
+{
+    [Theory]
+    [InlineData("wss://api.sidehub.io/ws/agent", "wss://api.sidehub.io/ws/agent")]
+    [InlineData("wss://user:pass@api.sidehub.io/ws/agent", "wss://api.sidehub.io/ws/agent")]
+    [InlineData("wss://api.sidehub.io/ws/agent?token=sh_agent_abcdef", "wss://api.sidehub.io/ws/agent?token=sh_a***")]
+    public void Credentials_never_reach_the_log(string url, string expected) =>
+        Assert.Equal(expected, WebSocketClient.MaskUrl(url));
+}

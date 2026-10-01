@@ -70,12 +70,18 @@ public static class InstanceRegistry
 
     private static void Save(List<InstanceEntry> entries)
     {
-        var dir = Path.GetDirectoryName(RegistryPath)!;
-        if (!Directory.Exists(dir))
-            Directory.CreateDirectory(dir);
-
-        var json = JsonSerializer.Serialize(entries, JsonOptions);
-        File.WriteAllText(RegistryPath, json);
+        // The registry lists the user's projects: ~/.sidehub is 0700 and instances.json 0600, set at creation
+        // (and tightened when left by an older version) rather than left to the umask.
+        try
+        {
+            PrivateFiles.CreateDirectory(Path.GetDirectoryName(RegistryPath)!);
+            PrivateFiles.WriteAllText(RegistryPath, JsonSerializer.Serialize(entries, JsonOptions));
+        }
+        catch (IOException ex)
+        {
+            // The agent runs without it; only `start --all` / `stop --all` miss this project.
+            Console.WriteLine($"[SideHub] Warning: couldn't update {RegistryPath}: {ex.Message}");
+        }
     }
 }
 

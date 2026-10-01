@@ -162,7 +162,7 @@ public sealed class RunUsageCollector
                 .Where(l => string.Equals(l.Provider, provider, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             var models = harvester.Harvest(new RunUsageContext(
-                run.RunId, run.Cwd, ids, sameCli.Where(IsOwn).ToList(), sameCli.Where(l => !IsOwn(l)).ToList()));
+                run.RunId, run.Cwd, ids, sameCli.Where(IsOwn).ToList(), sameCli.Where(l => !IsOwn(l)).ToList(), run.StartedAt));
             if (models is not null)
                 return Report(run.RunId, harvester.Source, models);
         }
@@ -192,6 +192,8 @@ public sealed class RunUsageCollector
 
     private sealed record TrackedRun(string PtySessionId, Guid RunId, string Cwd)
     {
+        public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+
         /// <summary>cliSessionId → provider, as announced by the CLI wrappers.</summary>
         public ConcurrentDictionary<string, string> CliSessions { get; } = new();
     }

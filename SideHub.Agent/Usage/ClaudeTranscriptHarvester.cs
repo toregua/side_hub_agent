@@ -36,7 +36,7 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
         foreach (var sessionId in run.CliSessionIds.Distinct().Where(FifoNotification.IsValidCliSessionId))
         {
             var sessionFile = FindSessionFile(run.Cwd, sessionId);
-            if (sessionFile is null)
+            if (sessionFile is null || !BelongsToRun(sessionFile, run))
                 continue;
             found = true;
 
@@ -101,6 +101,61 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
         return Directory.EnumerateDirectories(projectsRoot)
             .Select(dir => Path.Combine(dir, fileName))
             .FirstOrDefault(File.Exists);
+    }
+
+    /// <summary>
+    /// Whether the transcript can be the run's. Any process in the run's terminal can write to the FIFO and announce
+    /// any session id: an id taken from another project, or from an old session of this one, must not have that
+    /// session's usage billed to the run. So the session must have been written since the run started, and started
+    /// in the run's directory (or below it) when the transcript records its cwd.
+    /// </summary>
+    private static bool BelongsToRun(string sessionFile, RunUsageContext run)
+    {
+        if (run.StartedAt is { } startedAt && File.GetLastWriteTimeUtc(sessionFile) < startedAt.UtcDateTime - ClockSkew)
+            return false;
+        return FirstCwd(sessionFile) is not { } cwd || IsWithin(run.Cwd, cwd);
+    }
+
+    // File times and the agent's clock may disagree slightly (network filesystems, coarse mtimes).
+    private static readonly TimeSpan ClockSkew = TimeSpan.FromSeconds(5);
+
+    // The cwd is on the first user/assistant line; a transcript naming none in its head is judged by time alone.
+    private const int CwdScanLines = 200;
+
+    private static string? FirstCwd(string path)
+    {
+        try
+        {
+            using var reader = TranscriptLines.Open(path);
+            foreach (var line in TranscriptLines.Read(reader).Take(CwdScanLines))
+            {
+                if (!line.Contains("\"cwd\"", StringComparison.Ordinal))
+                    continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object && Str(doc.RootElement, "cwd") is { Length: > 0 } cwd)
+                        return cwd;
+                }
+                catch (JsonException) { /* half-written line */ }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return null;
+    }
+
+    /// <summary>Whether <paramref name="cwd"/> is the run's directory (a real path) or below it, as written or once
+    /// its links are resolved.</summary>
+    private static bool IsWithin(string runCwd, string cwd)
+    {
+        if (!Path.IsPathRooted(cwd))
+            return false;
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(cwd));
+        if (PathConfinement.IsWithin(runCwd, full))
+            return true;
+        try { return PathConfinement.IsWithin(runCwd, PathConfinement.RealPath(full)); }
+        catch (IOException) { return false; }
     }
 
     private static IEnumerable<string> FindSubagentFiles(string sessionFile, string cliSessionId)

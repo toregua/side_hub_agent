@@ -22,12 +22,15 @@ public interface IUsageHarvester
 /// is not known in advance (codex).</param>
 /// <param name="OtherLaunches">Launches of the same CLI in the agent's other PTYs, to detect sessions
 /// that could belong to either.</param>
+/// <param name="StartedAt">When the agent started tracking the run; a session not written since then is not
+/// the run's. Null when unknown.</param>
 public sealed record RunUsageContext(
     Guid RunId,
     string Cwd,
     IReadOnlyList<string> CliSessionIds,
     IReadOnlyList<CliLaunch> Launches,
-    IReadOnlyList<CliLaunch> OtherLaunches);
+    IReadOnlyList<CliLaunch> OtherLaunches,
+    DateTimeOffset? StartedAt = null);
 
 /// <summary>A CLI started in a PTY, as announced by its wrapper (<c>cli-launched</c>).</summary>
 /// <param name="Cwd">Physical directory the CLI was started in.</param>

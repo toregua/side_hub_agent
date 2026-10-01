@@ -31,13 +31,15 @@ silently do. They are not a security boundary against a compromised backend.
 - **Shell allowlist** — `pty.start` only spawns `bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`
   (Unix) or `cmd`, `powershell`, `pwsh` (Windows). Names are resolved by the agent from fixed
   system directories (`/bin`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`), never from
-  `PATH`; any other binary or path is refused and no PTY is started. `command.execute` uses
-  the same kind of fixed shell list.
+  `PATH`; any other binary or path is refused and no PTY is started. `command.execute` resolves
+  its shells (`bash`, `sh`, `zsh`, `pwsh`, `cmd`) through the same policy.
 - **PTY environment** — the PTY does not inherit the daemon's environment (API keys, cloud
   credentials…), only an allowlist. The backend may only add `SIDEHUB_*` / telemetry
   variables and cannot override `PATH`, `LD_PRELOAD`, rcfiles or the agent-owned `SIDEHUB_*`
   variables (`PtyEnvironmentPolicy`). `command.execute` children get the same allowlist
-  (`DaemonEnvironmentPolicy`).
+  (`DaemonEnvironmentPolicy`). Both then load the user's own shell init like any login
+  terminal (`/etc/profile`, `~/.profile`, `~/.bashrc`; `command.execute` runs `bash -l -c`):
+  whatever those files export is visible to the commands, so keep secrets out of them.
 - **No agent token in terminals** — the agent token never enters a PTY environment. A terminal
   only gets the token SideHub scoped to it in `SIDEHUB_AGENT_TOKEN`: a run token (`sh_run_…`)
   for a SideHub-launched run, a session token (`sh_pty_…`) for an interactive terminal. Both
@@ -113,7 +115,10 @@ is committed to the repository. Each release ships:
 
 - `sidehub-agent-<platform>.tar.gz` / `.zip` — the agent, `sidehub-cli`, `pty-helper` (with its
   `node_modules`, installed by the CI with `npm ci --omit=dev --ignore-scripts` from the committed
-  lockfile, `node-pty` pinned to an exact version) and `cli-wrappers`;
+  lockfile, `node-pty` pinned to an exact version) and `cli-wrappers`. `node-pty` is a
+  `1.2.0` prerelease on purpose: the latest stable (`1.1.0`) ships no Linux prebuilds, so it
+  would have to be compiled at install time, running its install scripts. Move to `1.2.x`
+  once it is released;
 - `checksums.sha256` — SHA-256 of every archive;
 - `checksums.sha256.sig` — RSA signature (PKCS#1 v1.5, SHA-256) of `checksums.sha256` by the
   release signing key, whose public half is embedded in `install.sh` / `install.ps1`;

@@ -132,4 +132,46 @@ public class ClaudeTranscriptHarvesterTests : IDisposable
 
         Assert.Equal(2, models.Single(m => m.Model == "claude-opus-test").Requests);
     }
+
+    private string SessionFile(string projectDirName, string sessionId) =>
+        Path.Combine(_claude.Root, projectDirName, sessionId + ".jsonl");
+
+    private void PrependCwd(string projectDirName, string sessionId, string cwd)
+    {
+        var file = SessionFile(projectDirName, sessionId);
+        File.WriteAllText(file,
+            $"{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"role\":\"user\",\"content\":\"hi\"}},\"sessionId\":\"s\"}}\n"
+            + File.ReadAllText(file));
+    }
+
+    [Fact]
+    public void Harvest_IgnoresAnAnnouncedSessionOfAnotherDirectory()
+    {
+        // Anything in the run's terminal can announce any session id: one from another project is not the run's.
+        _claude.AddSession("-some-other-project", SessionId, withSubagents: false);
+        PrependCwd("-some-other-project", SessionId, "/work/some_other_project");
+
+        Assert.Null(Harvester.Harvest(Run(SessionId)));
+    }
+
+    [Fact]
+    public void Harvest_CountsASessionStartedBelowTheRunDirectory()
+    {
+        _claude.AddSession("-work-side-hub-frontend", SessionId, withSubagents: false);
+        PrependCwd("-work-side-hub-frontend", SessionId, Cwd + "/frontend");
+
+        Assert.NotNull(Harvester.Harvest(Run(SessionId)));
+    }
+
+    [Fact]
+    public void Harvest_IgnoresASessionNotWrittenSinceTheRunStarted()
+    {
+        _claude.AddSession("-work-side-hub", SessionId, withSubagents: false);
+        File.SetLastWriteTimeUtc(SessionFile("-work-side-hub", SessionId), DateTime.UtcNow.AddHours(-2));
+
+        var run = new RunUsageContext(Guid.NewGuid(), Cwd, [SessionId], [], [], DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        Assert.Null(Harvester.Harvest(run));
+        Assert.NotNull(Harvester.Harvest(run with { StartedAt = DateTimeOffset.UtcNow.AddHours(-3) }));
+    }
 }

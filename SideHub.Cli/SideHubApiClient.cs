@@ -21,7 +21,9 @@ public class SideHubApiClient : IDisposable
     {
         _workspaceId = workspaceId;
         DefaultAgentId = string.IsNullOrWhiteSpace(defaultAgentId) ? null : defaultAgentId;
-        _http = new HttpClient { BaseAddress = new Uri(apiUrl.TrimEnd('/') + "/") };
+        // X-Agent-Token goes on every request: redirects are only followed within the API's origin.
+        var handler = new SameOriginRedirectHandler(new SocketsHttpHandler { AllowAutoRedirect = false });
+        _http = new HttpClient(handler) { BaseAddress = new Uri(apiUrl.TrimEnd('/') + "/") };
         _http.DefaultRequestHeaders.Add("X-Agent-Token", agentToken);
     }
 

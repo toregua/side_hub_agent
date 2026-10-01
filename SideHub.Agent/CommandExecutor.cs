@@ -119,17 +119,23 @@ public class CommandExecutor
         //
         // Uses ArgumentList (via string[]) instead of a single Arguments string
         // so .NET handles escaping correctly across all platforms.
-        return shell.ToLowerInvariant() switch
+        //
+        // The binary comes from ShellPolicy, like a pty.start: fixed system folders on Unix (never the PATH),
+        // absolute PATH entries only on Windows. bash/sh/zsh run as login shells (-l): the command sees the user's
+        // profile, as an interactive terminal does (see SECURITY.md).
+        var name = shell.ToLowerInvariant();
+        string[] args = name switch
         {
-            "bash" => ("/bin/bash", new[] { "-l", "-c", command }),
-            "sh" => ("/bin/sh", new[] { "-l", "-c", command }),
-            "zsh" => ("/bin/zsh", new[] { "-l", "-c", command }),
-            "powershell" or "pwsh" => (ExecutableResolver.Resolve("pwsh") ?? throw new ArgumentException("pwsh not found in PATH"),
-                new[] { "-Command", command }),
-            "cmd" => (ExecutableResolver.Resolve("cmd.exe") ?? throw new ArgumentException("cmd.exe not found"),
-                new[] { "/c", command }),
+            "bash" or "sh" or "zsh" => ["-l", "-c", command],
+            "powershell" or "pwsh" => ["-Command", command],
+            "cmd" => ["/c", command],
             _ => throw new ArgumentException($"Unsupported shell: {shell}")
         };
+        // "powershell" has always meant PowerShell 7 (pwsh) here.
+        var binary = name == "powershell" ? "pwsh" : name;
+        if (!ShellPolicy.TryResolve(binary, out var fileName))
+            throw new ArgumentException($"Shell not found: {binary}");
+        return (fileName, args);
     }
 
     private static async Task ReadStreamAsync(

@@ -48,3 +48,41 @@ public class DriveDownloadPathTests
         Assert.Throws<InvalidOperationException>(() => DriveCommands.ResolveDownloadPath(Dir, serverName));
     }
 }
+
+public class DriveDownloadSaveTests : IDisposable
+{
+    private readonly string _dir = Directory.CreateTempSubdirectory("sidehub-download-save-").FullName;
+
+    public void Dispose() => Directory.Delete(_dir, recursive: true);
+
+    private static Func<Stream, Task> Content(string text) =>
+        stream => stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes(text)).AsTask();
+
+    [Fact]
+    public async Task An_existing_link_is_replaced_not_written_through()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var victim = Path.Combine(_dir, "victim");
+        File.WriteAllText(victim, "keep me");
+        var target = Path.Combine(_dir, "report.pdf");
+        File.CreateSymbolicLink(target, victim);
+
+        var written = await DriveCommands.SaveDownloadAsync(target, Content("downloaded"));
+
+        Assert.Equal(10, written);
+        Assert.Equal("keep me", File.ReadAllText(victim));
+        Assert.Null(new FileInfo(target).LinkTarget);
+        Assert.Equal("downloaded", File.ReadAllText(target));
+    }
+
+    [Fact]
+    public async Task A_failed_download_leaves_no_partial_file()
+    {
+        var target = Path.Combine(_dir, "report.pdf");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            DriveCommands.SaveDownloadAsync(target, _ => throw new HttpRequestException("boom")));
+
+        Assert.Empty(Directory.GetFiles(_dir));
+    }
+}

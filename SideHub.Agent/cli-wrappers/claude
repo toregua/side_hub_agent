@@ -20,14 +20,20 @@
 set -e
 
 # Locate the real `claude` binary, skipping our own wrapper dir.
-self_dir="$(cd "$(dirname "$0")" && pwd)"
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+self="$self_dir/$(basename "$0")"
 real=""
 IFS=':' read -ra _paths <<< "$PATH"
 for _p in "${_paths[@]}"; do
-  [ -z "$_p" ] && continue
+  # Only absolute entries: empty and relative ones resolve against the current
+  # directory (a repository), where a committed ./claude would run instead.
+  case "$_p" in /*) ;; *) continue ;; esac
+  # Compared by file identity, not text: a link to this folder, a trailing
+  # slash or another path to this wrapper would otherwise make it exec itself.
+  if [ "$_p" -ef "$self_dir" ]; then continue; fi
   candidate="$_p/claude"
-  if [ "$_p" = "$self_dir" ]; then continue; fi
-  if [ -x "$candidate" ]; then
+  if [ "$candidate" -ef "$self" ]; then continue; fi
+  if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
     real="$candidate"
     break
   fi

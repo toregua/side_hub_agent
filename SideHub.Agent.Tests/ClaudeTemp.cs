@@ -20,6 +20,8 @@ public sealed class ClaudeTemp : IDisposable
         File.Copy(Path.Combine(fixtures, "session.jsonl"), sessionFile);
         foreach (var extra in appendFixtures)
             File.AppendAllText(sessionFile, "\n" + File.ReadAllText(Path.Combine(fixtures, extra)));
+        // As if Claude had just written it: File.Copy keeps the fixture's build-time mtime.
+        File.SetLastWriteTimeUtc(sessionFile, DateTime.UtcNow);
 
         if (!withSubagents) return;
         var subagents = Path.Combine(projectDir, sessionId, "subagents");

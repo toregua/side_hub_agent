@@ -44,19 +44,70 @@ public class AgentSetupTests : IDisposable
         Assert.Equal(2, Directory.GetFiles(Path.Combine(_dir, ".sidehub")).Length);
     }
 
+    private static bool GitAvailable => !OperatingSystem.IsWindows() && ExecutableResolver.Resolve("git") is not null;
+
     [Fact]
-    public void Sidehub_folder_is_ignored_once_in_a_git_repository()
+    public async Task Sidehub_folder_is_excluded_once_in_a_git_repository_without_touching_gitignore()
     {
-        Assert.False(AgentSetup.IgnoreInGit(_dir));
-        Directory.CreateDirectory(Path.Combine(_dir, ".git"));
+        if (!GitAvailable) return;
+        Assert.False(await AgentSetup.IgnoreInGitAsync(_dir));
+        Git(_dir, "init", "-q");
         File.WriteAllText(Path.Combine(_dir, ".gitignore"), "node_modules");
 
-        Assert.True(AgentSetup.IgnoreInGit(_dir));
-        Assert.False(AgentSetup.IgnoreInGit(_dir));
-        var lines = File.ReadAllLines(Path.Combine(_dir, ".gitignore"));
-        Assert.Contains(".sidehub/", lines);
-        Assert.Equal("node_modules", lines[0]);
+        Assert.True(await AgentSetup.IgnoreInGitAsync(_dir));
+        Assert.False(await AgentSetup.IgnoreInGitAsync(_dir));
+        Assert.Contains("/.sidehub", File.ReadAllLines(Path.Combine(_dir, ".git", "info", "exclude")));
+        Assert.Equal("node_modules", File.ReadAllText(Path.Combine(_dir, ".gitignore")));
     }
+
+    [Fact]
+    public async Task Sidehub_folder_is_excluded_in_a_worktree_whose_git_is_a_file()
+    {
+        if (!GitAvailable) return;
+        var main = Path.Combine(_dir, "main");
+        var worktree = Path.Combine(_dir, "wt");
+        Directory.CreateDirectory(main);
+        Git(main, "init", "-q");
+        Git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
+        Git(main, "worktree", "add", "-q", worktree);
+        Assert.True(File.Exists(Path.Combine(worktree, ".git")));
+
+        Assert.True(await AgentSetup.IgnoreInGitAsync(worktree));
+
+        Directory.CreateDirectory(Path.Combine(worktree, ".sidehub"));
+        File.WriteAllText(Path.Combine(worktree, ".sidehub", "agent.json"), "{}");
+        Assert.Equal("", GitOutput(worktree, "status", "--porcelain"));
+    }
+
+    private static void Git(string cwd, params string[] args) => GitOutput(cwd, args);
+
+    private static string GitOutput(string cwd, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(ExecutableResolver.Resolve("git")!)
+        {
+            WorkingDirectory = cwd,
+            RedirectStandardOutput = true,
+        };
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        Assert.Equal(0, process.ExitCode);
+        return output.Trim();
+    }
+
+    [Theory]
+    [InlineData("https://api.sidehub.io/api", true)]
+    [InlineData("http://localhost:5000/api", true)]
+    [InlineData("http://127.0.0.1:5000/api", true)]
+    [InlineData("http://[::1]:5000/api", true)]
+    [InlineData("http://api.sidehub.io/api", false)]
+    [InlineData("http://192.168.1.10/api", false)]
+    [InlineData("ftp://api.sidehub.io/api", false)]
+    [InlineData("api.sidehub.io/api", false)]
+    public void Api_must_be_https_unless_local(string apiBase, bool allowed) =>
+        Assert.Equal(allowed, AgentSetup.ApiRejectionReason(apiBase) is null);
 
     [Theory]
     [InlineData(null, "https://api.sidehub.io/api")]

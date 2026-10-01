@@ -101,13 +101,14 @@ public class WebSocketClient : IAsyncDisposable
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
 
-    /// <summary>Mask sensitive query-string values (token, key, secret) in URLs for safe logging.</summary>
-    private static string MaskUrl(string url)
+    /// <summary>Mask sensitive query-string values (token, key, secret) and drop any user:password in URLs for safe logging.</summary>
+    public static string MaskUrl(string url)
     {
         try
         {
             var uri = new Uri(url);
-            if (string.IsNullOrEmpty(uri.Query) || uri.Query == "?") return $"{uri.GetLeftPart(UriPartial.Path)}";
+            var left = uri.GetComponents(UriComponents.SchemeAndServer | UriComponents.Path, UriFormat.UriEscaped);
+            if (string.IsNullOrEmpty(uri.Query) || uri.Query == "?") return left;
             var qs = System.Web.HttpUtility.ParseQueryString(uri.Query);
             var sensitiveKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "token", "key", "secret", "apikey", "api_key" };
             foreach (var key in qs.AllKeys)
@@ -118,7 +119,7 @@ public class WebSocketClient : IAsyncDisposable
                     qs[key] = val.Length > 4 ? val[..4] + "***" : "***";
                 }
             }
-            return $"{uri.GetLeftPart(UriPartial.Path)}?{qs}";
+            return $"{left}?{qs}";
         }
         catch
         {
@@ -143,32 +144,34 @@ public class WebSocketClient : IAsyncDisposable
     private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null)
     {
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
-        var agentLibDir = "/usr/local/lib/sidehub-agent";
-        var wrappersDir = Path.Combine(AppContext.BaseDirectory.TrimEnd('/'), "cli-wrappers");
+        // The folder the agent actually runs from (sidehub-cli ships next to it), not a hard-coded install path.
+        var agentLibDir = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
+        var wrappersDir = Path.Combine(agentLibDir, "cli-wrappers");
 
-        var pathParts = new List<string>();
-        if (Directory.Exists(wrappersDir) && !currentPath.Contains(wrappersDir))
-            pathParts.Add(wrappersDir);
-        if (!currentPath.Contains(agentLibDir))
-            pathParts.Add(agentLibDir);
-        var fullPath = pathParts.Count > 0
-            ? string.Join(Path.PathSeparator, pathParts) + Path.PathSeparator + currentPath
+        var trusted = new[] { wrappersDir, agentLibDir }.Where(IsTrustedForPath).ToList();
+        var existing = currentPath.Split(Path.PathSeparator).Select(Path.TrimEndingDirectorySeparator).ToHashSet();
+        var prepended = trusted.Where(dir => !existing.Contains(dir)).ToList();
+        var fullPath = prepended.Count > 0
+            ? string.Join(Path.PathSeparator, prepended) + Path.PathSeparator + currentPath
             : currentPath;
 
         var env = new Dictionary<string, string>
         {
             ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
             ["SIDEHUB_PTY_NOTIFY_FIFO"] = GetFifoPath(ptySessionId),
-            ["SIDEHUB_CLI_WRAPPERS"] = wrappersDir,
             ["PATH"] = fullPath,
             ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
         };
-        // Point the pty-helper at our custom rcfile so it can pass `--rcfile`
-        // to bash, ensuring our PATH wins after the user's .bashrc runs.
-        var sidehubBashrc = Path.Combine(wrappersDir, "sidehub.bashrc");
-        if (File.Exists(sidehubBashrc))
-            env["SIDEHUB_BASHRC"] = sidehubBashrc;
+        if (trusted.Contains(wrappersDir))
+        {
+            env["SIDEHUB_CLI_WRAPPERS"] = wrappersDir;
+            // Point the pty-helper at our custom rcfile so it can pass `--rcfile`
+            // to bash, ensuring our PATH wins after the user's .bashrc runs.
+            var sidehubBashrc = Path.Combine(wrappersDir, "sidehub.bashrc");
+            if (File.Exists(sidehubBashrc))
+                env["SIDEHUB_BASHRC"] = sidehubBashrc;
+        }
         if (!string.IsNullOrEmpty(_config.AgentId))
             env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
 
@@ -200,6 +203,15 @@ public class WebSocketClient : IAsyncDisposable
         return first.Length is > 0 and <= 40 && first.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.')
             ? first
             : "?";
+    }
+
+    /// <summary>Whether <paramref name="dir"/> may go in front of the terminal PATH (see <see cref="TrustedDirectory"/>):
+    /// a folder missing or writable by another user would let that user shadow every command typed there.</summary>
+    private bool IsTrustedForPath(string dir)
+    {
+        if (TrustedDirectory.UntrustedReason(dir) is not { } reason) return true;
+        Log($"Not adding {dir} to the terminal PATH: {reason}");
+        return false;
     }
 
     private string GetFifoPath(string ptySessionId) => NotifyFifo.PathFor(_fifoDirectory, ptySessionId);
@@ -514,7 +526,8 @@ public class WebSocketClient : IAsyncDisposable
                     lock (transcript) title = TryReadClaudeTitle(transcript);
                     if (string.IsNullOrEmpty(title)) return;
                     emitted = true;
-                    Log($"Claude ai-title for {cliSessionId}: {title}");
+                    // Not the title itself: Claude derives it from the prompt.
+                    Log($"Claude ai-title for {cliSessionId} ({title.Length} chars)");
                     if (_ptyCliSessions.TryGetValue(ptySessionId, out var cliSession) && cliSession.CliSessionId == cliSessionId)
                         _ptyCliSessions.TryUpdate(ptySessionId, cliSession with { Title = title }, cliSession);
                     try
@@ -609,7 +622,7 @@ public class WebSocketClient : IAsyncDisposable
                 _ws.Options.SetRequestHeader("Authorization", $"Bearer {_config.AgentToken}");
                 _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
 
-                Log($"Connecting to {_config.SidehubUrl}...");
+                Log($"Connecting to {MaskUrl(_config.SidehubUrl!)}...");
                 await _ws.ConnectAsync(new Uri(_config.SidehubUrl!), ct);
                 Log("Connected");
 
