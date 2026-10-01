@@ -104,44 +104,18 @@ public static partial class PtyEnvironmentPolicy
             return false;
         }
 
-        if (!IsWithin(root, candidate) || !IsWithin(RealPath(root), RealPath(candidate)))
+        try
+        {
+            if (!PathConfinement.IsWithin(root, candidate)
+                || !PathConfinement.IsWithin(PathConfinement.RealPath(root), PathConfinement.RealPath(candidate)))
+                return false;
+        }
+        catch (IOException)
+        {
             return false;
+        }
 
         resolved = candidate;
         return true;
-    }
-
-    private static bool IsWithin(string root, string path)
-    {
-        var trimmedRoot = root.Length > 1 ? root.TrimEnd(Path.DirectorySeparatorChar) : root;
-        if (path == trimmedRoot) return true;
-        var prefix = trimmedRoot.EndsWith(Path.DirectorySeparatorChar) ? trimmedRoot : trimmedRoot + Path.DirectorySeparatorChar;
-        return path.StartsWith(prefix, StringComparison.Ordinal);
-    }
-
-    /// <summary>Resolves symlinks segment by segment (missing segments are kept as is), so a link
-    /// inside the working directory cannot point the shell outside it.</summary>
-    private static string RealPath(string path)
-    {
-        var full = Path.GetFullPath(path);
-        var root = Path.GetPathRoot(full) ?? "/";
-        var current = root;
-        foreach (var segment in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var next = Path.Combine(current, segment);
-            try
-            {
-                var info = new DirectoryInfo(next);
-                if (info.Exists && info.LinkTarget is not null
-                    && info.ResolveLinkTarget(returnFinalTarget: true) is { } target)
-                {
-                    current = RealPath(target.FullName);
-                    continue;
-                }
-            }
-            catch { /* unreadable: keep the lexical path */ }
-            current = next;
-        }
-        return current;
     }
 }

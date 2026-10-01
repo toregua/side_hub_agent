@@ -29,7 +29,7 @@ public class AgentConnectedMessage
     public required string AgentVersion { get; init; }
 
     /// <summary>
-    /// Detected CLI versions keyed by runtime ("claude", "codex", "gemini"). Null while not probed yet:
+    /// Detected CLI versions keyed by runtime ("claude", "codex", "gemini", "copilot"). Null while not probed yet:
     /// the backend keeps what it knows, and the message is sent again once the probe completes.
     /// </summary>
     [JsonPropertyName("cliVersions")]

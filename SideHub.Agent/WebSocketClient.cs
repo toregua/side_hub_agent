@@ -48,7 +48,7 @@ public class WebSocketClient : IAsyncDisposable
     // ClientWebSocket forbids concurrent SendAsync calls; handlers, PTY output callbacks
     // and the heartbeat timer all send, so serialize them.
     private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private readonly ConcurrentDictionary<string, (string Path, StringBuilder Data, string? PtyPaste, string? PtySessionId)> _pendingFileWrites = new();
+    private readonly PendingFileWrites _pendingFileWrites = new();
     // Token usage of backend-launched runs (run-* PTYs), reported as run.usage.
     private readonly RunUsageCollector _usageCollector;
     // Agent-owned 0700 folder holding the notification FIFOs (see NotifyFifo).
@@ -713,6 +713,7 @@ public class WebSocketClient : IAsyncDisposable
         _ptyReaperTimer = new Timer(
             async _ =>
             {
+                await ExpirePendingFileWritesAsync(CancellationToken.None);
                 var now = DateTime.UtcNow;
                 foreach (var (sid, lastActivity) in _ptyLastActivity)
                 {
@@ -829,7 +830,7 @@ public class WebSocketClient : IAsyncDisposable
                     await HandleFileWriteStartAsync(message, ct);
                     break;
                 case "file.write.chunk":
-                    HandleFileWriteChunk(message);
+                    await HandleFileWriteChunkAsync(message, ct);
                     break;
                 case "file.write.end":
                     // start/chunk only touch _pendingFileWrites and stay inline so every
@@ -1036,16 +1037,6 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    private bool IsPathWithinWorkingDirectory(string path)
-    {
-        var fullPath = Path.GetFullPath(path);
-        var allowedDir = Path.GetFullPath(_workingDirectory);
-        if (!allowedDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
-            allowedDir += Path.DirectorySeparatorChar;
-        return fullPath.StartsWith(allowedDir, StringComparison.Ordinal)
-            || fullPath == allowedDir.TrimEnd(Path.DirectorySeparatorChar);
-    }
-
     private async Task HandleFileWriteStartAsync(IncomingMessage message, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Path))
@@ -1057,29 +1048,14 @@ public class WebSocketClient : IAsyncDisposable
         if (!_config.AllowFileWrite)
         {
             Log($"SECURITY: file write {message.CommandId} refused — file.write is disabled (allowFileWrite: false)");
-            await SendAsync(new CommandFailedMessage
-            {
-                CommandId = message.CommandId,
-                ExitCode = -1,
-                Error = "file.write is disabled on this agent (allowFileWrite: false)"
-            }, ct);
+            await SendFileWriteFailedAsync(message.CommandId, "file.write is disabled on this agent (allowFileWrite: false)", ct);
             return;
         }
 
-        // Resolve relative paths within the working directory
-        var resolvedPath = Path.IsPathRooted(message.Path)
-            ? message.Path
-            : Path.GetFullPath(Path.Combine(_workingDirectory, message.Path));
-
-        if (!IsPathWithinWorkingDirectory(resolvedPath))
+        if (!FileWritePolicy.TryResolveTarget(_workingDirectory, message.Path, out var resolvedPath, out var error))
         {
-            Log($"SECURITY: file write rejected — path '{resolvedPath}' is outside working directory '{_workingDirectory}'");
-            await SendAsync(new CommandFailedMessage
-            {
-                CommandId = message.CommandId,
-                ExitCode = -1,
-                Error = $"Path '{resolvedPath}' is outside the allowed working directory"
-            }, ct);
+            Log($"SECURITY: file write {message.CommandId} rejected — {error} (working directory '{_workingDirectory}')");
+            await SendFileWriteFailedAsync(message.CommandId, error, ct);
             return;
         }
 
@@ -1088,37 +1064,72 @@ public class WebSocketClient : IAsyncDisposable
             ? message.PtyPaste
             : $"\x1b[200~Please look at this image I just uploaded: {resolvedPath}\x1b[201~";
 
-        _pendingFileWrites[message.CommandId] = (resolvedPath, new StringBuilder(), ptyPaste, message.PtySessionId);
+        await ExpirePendingFileWritesAsync(ct);
+        if (!_pendingFileWrites.TryStart(message.CommandId, resolvedPath, ptyPaste, message.PtySessionId))
+        {
+            Log($"SECURITY: file write {message.CommandId} refused — {PendingFileWrites.MaxConcurrentWrites} writes already in progress");
+            await SendFileWriteFailedAsync(message.CommandId, $"Too many file writes in progress (max {PendingFileWrites.MaxConcurrentWrites})", ct);
+            return;
+        }
         Log($"File write started: {resolvedPath}");
     }
 
-    private void HandleFileWriteChunk(IncomingMessage message)
+    private async Task HandleFileWriteChunkAsync(IncomingMessage message, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Data))
             return;
-        if (_pendingFileWrites.TryGetValue(message.CommandId, out var state))
-            state.Data.Append(message.Data);
+        if (_pendingFileWrites.Append(message.CommandId, message.Data) == FileWriteChunkResult.TooLarge)
+        {
+            Log($"SECURITY: file write {message.CommandId} dropped — larger than {FileWritePolicy.MaxFileBytes} bytes");
+            await SendFileWriteFailedAsync(message.CommandId, $"File is larger than the {FileWritePolicy.MaxFileBytes / (1024 * 1024)} MB limit", ct);
+        }
     }
+
+    /// <summary>Drops the writes whose file.write.end never came, so their chunks don't stay in memory.</summary>
+    private async Task ExpirePendingFileWritesAsync(CancellationToken ct)
+    {
+        foreach (var commandId in _pendingFileWrites.RemoveExpired())
+        {
+            Log($"File write {commandId} expired — no file.write.end within {PendingFileWrites.Expiry.TotalMinutes:0} min");
+            try { await SendFileWriteFailedAsync(commandId, "File write expired before file.write.end", ct); } catch { }
+        }
+    }
+
+    private Task SendFileWriteFailedAsync(string commandId, string error, CancellationToken ct) =>
+        SendAsync(new CommandFailedMessage { CommandId = commandId, ExitCode = -1, Error = error }, ct);
 
     private async Task HandleFileWriteEndAsync(IncomingMessage message, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(message.CommandId))
             return;
 
-        if (!_pendingFileWrites.TryGetValue(message.CommandId, out var state))
+        if (!_pendingFileWrites.TryTake(message.CommandId, out var state))
         {
             Log("file.write.end received for unknown commandId");
             return;
         }
-        _pendingFileWrites.TryRemove(message.CommandId, out _);
 
         try
         {
+            // Checked again right before writing: a link may have been planted since file.write.start.
+            if (!FileWritePolicy.TryResolveTarget(_workingDirectory, state.Path, out var target, out var error) || target != state.Path)
+            {
+                Log($"SECURITY: file write {message.CommandId} rejected at write time — {(error.Length > 0 ? error : $"'{state.Path}' now resolves to '{target}'")}");
+                await SendFileWriteFailedAsync(message.CommandId, error.Length > 0 ? error : $"Path '{state.Path}' changed during the upload", ct);
+                return;
+            }
+
             var dir = Path.GetDirectoryName(state.Path);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
             var bytes = Convert.FromBase64String(state.Data.ToString());
+            if (bytes.LongLength > FileWritePolicy.MaxFileBytes)
+            {
+                Log($"SECURITY: file write {message.CommandId} dropped — larger than {FileWritePolicy.MaxFileBytes} bytes");
+                await SendFileWriteFailedAsync(message.CommandId, $"File is larger than the {FileWritePolicy.MaxFileBytes / (1024 * 1024)} MB limit", ct);
+                return;
+            }
             await File.WriteAllBytesAsync(state.Path, bytes, ct);
 
             Log($"File written: {state.Path} ({bytes.Length} bytes)");

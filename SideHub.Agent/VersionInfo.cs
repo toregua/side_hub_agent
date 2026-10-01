@@ -12,7 +12,7 @@ namespace SideHub.Agent;
 public static partial class VersionInfo
 {
     /// <summary>Runtimes probed with <c>&lt;cli&gt; --version</c>; keys match the backend runtime names.</summary>
-    private static readonly string[] Clis = ["claude", "codex", "gemini"];
+    private static readonly string[] Clis = ["claude", "codex", "gemini", "copilot"];
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
