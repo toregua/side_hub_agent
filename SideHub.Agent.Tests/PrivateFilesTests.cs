@@ -52,20 +52,20 @@ public class PrivateFilesTests : IDisposable
     }
 
     [Fact]
-    public void Startup_restricts_an_exposed_config_and_warns_once()
+    public async Task Startup_restricts_an_exposed_config_and_warns_once()
     {
         if (OperatingSystem.IsWindows()) return;
         var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x");
         File.SetUnixFileMode(path, WorldReadable);
         File.SetUnixFileMode(SidehubDir, WorldListable);
 
-        var warnings = AgentConfig.RestrictPermissions(_dir, AgentConfig.LoadAll(_dir));
+        var warnings = AgentConfig.RestrictPermissions(_dir, await AgentConfig.LoadAllAsync(_dir));
 
         Assert.Equal(2, warnings.Count);
         Assert.Contains(warnings, w => w.Contains(path) && w.Contains("0600"));
         Assert.Equal(Rw, Mode(path));
         Assert.Equal(Rwx, Mode(SidehubDir));
-        Assert.Empty(AgentConfig.RestrictPermissions(_dir, AgentConfig.LoadAll(_dir)));
+        Assert.Empty(AgentConfig.RestrictPermissions(_dir, await AgentConfig.LoadAllAsync(_dir)));
     }
 
     [Fact]

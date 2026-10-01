@@ -6,7 +6,8 @@ namespace SideHub.Agent;
 /// <summary>
 /// The per-PTY FIFO through which the CLI wrappers report the CLI session id (and title) to the agent.
 /// It lives in an agent-owned 0700 folder (<c>.sidehub/run/fifo/</c>), never in a shared one like <c>/tmp</c>: there,
-/// another user could create the predictable path first and feed the agent forged events. The PTY session id comes
+/// another user could create the predictable path first and feed the agent forged events. The folder is refused when it,
+/// or a folder up to <c>.sidehub/</c>, is a link or belongs to another user (see <see cref="PrivateFiles"/>). The PTY session id comes
 /// from the backend and is part of the path, so only <see cref="IsValidPtySessionId"/> ids may reach it.
 /// </summary>
 public static partial class NotifyFifo

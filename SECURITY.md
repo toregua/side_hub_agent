@@ -47,6 +47,13 @@ silently do. They are not a security boundary against a compromised backend.
   can still `cd` anywhere.
 - **Secrets in logs** — commands, terminal output and tokens are not written to the agent
   logs; setup tokens are kept out of the process arguments.
+- **Untrusted `.sidehub/` content** — `.sidehub/` sits in the work tree, so a commit can fill
+  it. At startup the agent ignores (with a warning) any `.sidehub/*.json` tracked by git, that
+  is a symbolic link or that belongs to another user: such a config could point the agent to
+  another backend, which would then run commands in its terminals. Logs, PID file, pending
+  usage reports and notification FIFOs under `.sidehub/run/` are never written or chmodded
+  through a symbolic link or an entry owned by another user; the agent refuses to start
+  instead.
 - **Opt-out switches** — `command.execute` and file writes can be turned off per agent.
 
 ### What the agent does not protect

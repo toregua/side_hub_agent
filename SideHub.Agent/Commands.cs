@@ -100,7 +100,7 @@ public static class Commands
 
     public static async Task<int> RunForeground(string baseDirectory, CancellationToken ct)
     {
-        var configs = AgentConfig.LoadAll(baseDirectory);
+        var configs = await AgentConfig.LoadAllAsync(baseDirectory, warning => Console.WriteLine($"[SideHub] Warning: {warning}"));
         foreach (var warning in AgentConfig.RestrictPermissions(baseDirectory, configs))
             Console.WriteLine($"[SideHub] Warning: {warning}");
 

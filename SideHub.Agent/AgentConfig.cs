@@ -46,7 +46,14 @@ public class AgentConfig
     [JsonIgnore]
     public string? ConfigFilePath { get; private set; }
 
-    public static List<AgentConfig> LoadAll(string baseDirectory)
+    /// <summary>
+    /// Loads every <c>.sidehub/*.json</c> the agent may trust. A config decides which backend the agent obeys, and
+    /// the backend runs commands in its PTYs: a config arriving through a commit (<c>sidehubUrl</c> pointing to an
+    /// attacker's server) would hand the machine over after the next pull and restart. So configs tracked by git,
+    /// symbolic links and files belonging to another user are ignored, with one warning each. Throws when no
+    /// config is left.
+    /// </summary>
+    public static async Task<List<AgentConfig>> LoadAllAsync(string baseDirectory, Action<string>? warn = null)
     {
         var configDir = Path.Combine(baseDirectory, ConfigFolder);
 
@@ -57,6 +64,9 @@ public class AgentConfig
                 $"Please create a .sidehub folder with agent configuration files (*.json)");
         }
 
+        if (PrivateFiles.UntrustedReason(configDir) is { } dirReason)
+            throw new InvalidOperationException($"Refusing to load agent configurations: {dirReason}");
+
         var configFiles = Directory.GetFiles(configDir, "*.json");
 
         if (configFiles.Length == 0)
@@ -66,12 +76,28 @@ public class AgentConfig
                 "Please create at least one .json configuration file");
         }
 
+        var repository = await GitRepository.OpenAsync(configDir);
         var configs = new List<AgentConfig>();
 
-        foreach (var file in configFiles)
+        foreach (var file in configFiles.Order(StringComparer.Ordinal))
         {
-            var config = Load(file);
-            configs.Add(config);
+            var reason = PrivateFiles.UntrustedReason(file);
+            if (reason is null && repository is not null && await repository.IsTrackedAsync(file))
+                reason = "it is tracked by git (a commit could point the agent to another backend); " +
+                         $"git rm --cached it and keep {ConfigFolder}/ in .gitignore";
+            if (reason is not null)
+            {
+                warn?.Invoke($"Ignoring {file}: {reason}");
+                continue;
+            }
+
+            configs.Add(Load(file));
+        }
+
+        if (configs.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No trusted agent configuration in {configDir} (see the warnings above)");
         }
 
         return configs;
