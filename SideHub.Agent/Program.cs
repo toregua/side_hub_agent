@@ -97,6 +97,7 @@ static async Task<int> HandleSetup(string[] args, string baseDirectory, Cancella
         fromStdin,
         Console.In,
         Environment.GetEnvironmentVariable(AgentSetup.TokenEnvVar));
+    DaemonEnvironmentPolicy.ClearSetupToken();
     var code = await AgentSetup.Run(baseDirectory, token, Value("--api"), ct);
     if (code != 0 || args.Contains("--no-start")) return code;
     return await Commands.Start(baseDirectory, daemon: true, ct);

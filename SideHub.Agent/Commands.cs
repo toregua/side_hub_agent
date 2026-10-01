@@ -51,6 +51,10 @@ public static class Commands
             RedirectStandardInput = false,
         };
 
+        // The agent token (setup) must not outlive setup: the daemon, its git calls, commands and
+        // pty-helper would inherit it, and a terminal could read it in /proc/<pid>/environ.
+        startInfo.Environment.Remove(AgentSetup.TokenEnvVar);
+
         // Set environment to prevent terminal attachment
         startInfo.Environment["DOTNET_RUNNING_IN_CONTAINER"] = "true";
 
@@ -100,6 +104,9 @@ public static class Commands
 
     public static async Task<int> RunForeground(string baseDirectory, CancellationToken ct)
     {
+        // Started by hand with the setup token still exported: keep it away from the children.
+        DaemonEnvironmentPolicy.ClearSetupToken();
+
         var configs = await AgentConfig.LoadAllAsync(baseDirectory, warning => Console.WriteLine($"[SideHub] Warning: {warning}"));
         foreach (var warning in AgentConfig.RestrictPermissions(baseDirectory, configs))
             Console.WriteLine($"[SideHub] Warning: {warning}");

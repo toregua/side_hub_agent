@@ -56,6 +56,8 @@ public class CommandExecutor
 
             foreach (var arg in args)
                 psi.ArgumentList.Add(arg);
+            // Same allowlist as the PTYs: the command must not inherit the daemon's secrets.
+            DaemonEnvironmentPolicy.Restrict(psi.Environment);
             if (OperatingSystem.IsWindows())
                 psi.Environment[ExecutableResolver.NoCurrentDirectoryLookupVariable] = "1";
 

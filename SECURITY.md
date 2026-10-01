@@ -36,12 +36,15 @@ silently do. They are not a security boundary against a compromised backend.
 - **PTY environment** — the PTY does not inherit the daemon's environment (API keys, cloud
   credentials…), only an allowlist. The backend may only add `SIDEHUB_*` / telemetry
   variables and cannot override `PATH`, `LD_PRELOAD`, rcfiles or the agent-owned `SIDEHUB_*`
-  variables (`PtyEnvironmentPolicy`).
+  variables (`PtyEnvironmentPolicy`). `command.execute` children get the same allowlist
+  (`DaemonEnvironmentPolicy`).
 - **No agent token in terminals** — the agent token never enters a PTY environment. A terminal
   only gets the token SideHub scoped to it in `SIDEHUB_AGENT_TOKEN`: a run token (`sh_run_…`)
   for a SideHub-launched run, a session token (`sh_pty_…`) for an interactive terminal. Both
   are short-lived, die with their run / terminal, are denied agent management and session
   launches, and cannot open the agent WebSocket. Without one, `sidehub-cli` is unavailable.
+  The setup token (`SIDEHUB_SETUP_TOKEN`) is removed from the agent's environment once read
+  and is not passed to the background daemon, so git, commands and `pty-helper` never inherit it.
 - **Working directory** — PTY working directories and `file.write` paths are confined to the
   agent's `workingDirectory`. This only limits where a terminal *starts*; the shell itself
   can still `cd` anywhere.
