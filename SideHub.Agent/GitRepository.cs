@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace SideHub.Agent;
 
@@ -54,7 +55,9 @@ public sealed class GitRepository
     }
 
     /// <summary>Adds <paramref name="path"/> (anchored to the repository root) to
-    /// <c>.git/info/exclude</c> unless it is already listed.</summary>
+    /// <c>.git/info/exclude</c> unless it is already listed. The only write the agent makes under
+    /// <c>.git/</c> (protected for <see cref="FileWritePolicy"/>): it goes through
+    /// <see cref="ConfinedFile"/> so no link is followed.</summary>
     public async Task ExcludeAsync(string path)
     {
         var relative = Path.GetRelativePath(TopLevel, Path.GetFullPath(path)).Replace('\\', '/');
@@ -65,13 +68,16 @@ public sealed class GitRepository
         await ExcludeLock.WaitAsync();
         try
         {
-            var existing = File.Exists(ExcludeFile) ? await File.ReadAllTextAsync(ExcludeFile) : "";
+            // Relative to the git directory git reported: neither info/ nor exclude may be a link.
+            var gitDirectory = Path.GetDirectoryName(Path.GetDirectoryName(ExcludeFile))!;
+            var relativeExclude = Path.GetRelativePath(gitDirectory, ExcludeFile);
+            var existing = ConfinedFile.ReadAllTextOrNull(gitDirectory, relativeExclude) ?? "";
             if (existing.Split('\n').Any(line => line.Trim() == pattern))
                 return;
 
-            Directory.CreateDirectory(Path.GetDirectoryName(ExcludeFile)!);
             var separator = existing.Length > 0 && !existing.EndsWith('\n') ? "\n" : "";
-            await File.AppendAllTextAsync(ExcludeFile, $"{separator}{pattern}\n");
+            await using var file = ConfinedFile.Open(gitDirectory, relativeExclude, FileMode.Append, FileAccess.Write);
+            await file.WriteAsync(Encoding.UTF8.GetBytes($"{separator}{pattern}\n"));
         }
         finally
         {

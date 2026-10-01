@@ -132,4 +132,73 @@ public class FileWritePolicyTests : IDisposable
         Assert.True(FileWritePolicy.TryResolveTarget(link, "a.txt", out var resolved, out _));
         Assert.Equal(Path.Combine(_root, "a.txt"), resolved);
     }
+
+    [Theory]
+    [InlineData(".claude/settings.json")]
+    [InlineData(".claude/settings.local.json")]
+    [InlineData("sub/.CLAUDE/Settings.json")]
+    [InlineData(".mcp.json")]
+    [InlineData(".envrc")]
+    [InlineData("packages/api/.envrc")]
+    [InlineData(".vscode/tasks.json")]
+    [InlineData(".gemini/settings.json")]
+    [InlineData(".g\u200Cit/hooks/pre-commit")]
+    [InlineData(".git./config")]
+    public void Tool_configuration_files_and_aliases_of_protected_folders_are_rejected(string requested)
+    {
+        Assert.False(FileWritePolicy.TryResolveTarget(_root, requested, out _, out var error));
+        Assert.Contains("protected", error);
+    }
+
+    [Theory]
+    [InlineData(".claude/commands/sidehub.md")]
+    [InlineData("AGENTS.md")]
+    [InlineData("docs/settings.json")]
+    public void Generated_files_are_not_protected(string requested)
+    {
+        Assert.True(Resolve(requested, out _));
+    }
+
+    [Theory]
+    [InlineData("GIT~1/hooks/pre-commit", true)]
+    [InlineData("SIDEHU~1/agent.json", true)]
+    [InlineData("PROGRA~1.TXT", true)]
+    [InlineData(".git::$INDEX_ALLOCATION/hooks/pre-commit", true)]
+    [InlineData("image.png:stream", true)]
+    [InlineData(".sidehub-images/1.png", false)]
+    [InlineData("notes~draft.md", false)]
+    public void Windows_short_names_and_data_streams_are_detected(string relativePath, bool alias)
+    {
+        Assert.Equal(alias, FileWritePolicy.HasWindowsAlias(relativePath));
+    }
+
+    [Fact]
+    public void Link_swapped_in_after_the_check_does_not_redirect_the_write()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "uploads"));
+        Assert.True(Resolve("uploads/a.png", out var resolved));
+
+        Directory.Delete(Path.Combine(_root, "uploads"));
+        Directory.CreateSymbolicLink(Path.Combine(_root, "uploads"), _outside);
+
+        Assert.Throws<IOException>(() =>
+            FileWritePolicy.OpenWrite(_root, Path.GetRelativePath(_root, resolved), FileMode.Create, out _));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_outside));
+    }
+
+    [Fact]
+    public void OpenWrite_refuses_protected_paths()
+    {
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            FileWritePolicy.OpenWrite(_root, ".git/info/exclude", FileMode.Append, out _));
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            FileWritePolicy.OpenWrite(_root, ".claude/settings.json", FileMode.Create, out _));
+    }
+
+    [Fact]
+    public void OpenWrite_reports_the_full_path()
+    {
+        using (FileWritePolicy.OpenWrite(_root, ".sidehub-images/1.png", FileMode.CreateNew, out var fullPath))
+            Assert.Equal(Path.Combine(_root, ".sidehub-images", "1.png"), fullPath);
+    }
 }

@@ -274,7 +274,10 @@ timeout accordingly when designing the workflow.
     /// <summary>
     /// Installs the skill for Claude, Codex and Gemini in <paramref name="workingDirectory"/>.
     /// Files versioned in the user's repository are never modified; the files the agent generates
-    /// are added to <c>.git/info/exclude</c> so they never show up in <c>git status</c>.
+    /// are added to <c>.git/info/exclude</c> so they never show up in <c>git status</c>. Every write
+    /// goes through <see cref="FileWritePolicy"/> and follows no symbolic link: a committed
+    /// <c>.claude</c> or <c>AGENTS.md</c> link (which git may not even report as tracked) makes the
+    /// install fail for that provider instead of writing wherever the link points.
     /// </summary>
     public static async Task EnsureSkillFilesAsync(string workingDirectory, string apiUrl,
         string agentToken, string workspaceId, Action<string> log)
@@ -297,7 +300,7 @@ timeout accordingly when designing the workflow.
         {
             ("claude", () => EnsureClaudeSkillAsync(workingDirectory, skillText, git, log)),
             ("codex", () => EnsureCodexSkillAsync(workingDirectory, skillText, git, log)),
-            ("gemini", () => EnsureInstructionFileAsync(Path.Combine(workingDirectory, "GEMINI.md"), skillText, git, log)),
+            ("gemini", () => EnsureInstructionFileAsync(workingDirectory, "GEMINI.md", skillText, git, log)),
         })
         {
             try
@@ -314,7 +317,8 @@ timeout accordingly when designing the workflow.
 
     private static async Task EnsureClaudeSkillAsync(string workingDirectory, string skillText, GitRepository? git, Action<string> log)
     {
-        var filePath = Path.Combine(workingDirectory, ".claude", "commands", "sidehub.md");
+        var relativePath = Path.Combine(".claude", "commands", "sidehub.md");
+        var filePath = Path.Combine(workingDirectory, relativePath);
         if (git is not null && await git.IsTrackedAsync(filePath))
         {
             log($"[SkillInstaller] {filePath} is versioned in git, left untouched (remove it from the repository to let the agent generate it)");
@@ -322,8 +326,7 @@ timeout accordingly when designing the workflow.
         }
 
         // Always overwrite — the drive index may have changed since last spawn
-        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-        WriteIfChanged(filePath, skillText);
+        WriteIfChanged(workingDirectory, relativePath, skillText);
         if (git is not null)
             await git.ExcludeAsync(filePath);
     }
@@ -335,25 +338,27 @@ timeout accordingly when designing the workflow.
     /// </summary>
     private static async Task EnsureCodexSkillAsync(string workingDirectory, string skillText, GitRepository? git, Action<string> log)
     {
-        var agentsPath = Path.Combine(workingDirectory, "AGENTS.md");
-        if (git is null || !await git.IsTrackedAsync(agentsPath))
+        if (git is null || !await git.IsTrackedAsync(Path.Combine(workingDirectory, "AGENTS.md")))
         {
-            await EnsureInstructionFileAsync(agentsPath, skillText, git, log);
+            await EnsureInstructionFileAsync(workingDirectory, "AGENTS.md", skillText, git, log);
             return;
         }
 
-        var overridePath = Path.Combine(workingDirectory, "AGENTS.override.md");
-        if (File.Exists(overridePath) && !File.ReadAllText(overridePath).StartsWith(OverrideHeader, StringComparison.Ordinal))
+        const string overrideName = "AGENTS.override.md";
+        var existingOverride = ConfinedFile.ReadAllTextOrNull(workingDirectory, overrideName);
+        if (existingOverride is not null && !existingOverride.StartsWith(OverrideHeader, StringComparison.Ordinal))
         {
             // The user's own override: the skill is appended to it like to any instruction file.
-            await EnsureInstructionFileAsync(overridePath, skillText, git, log);
+            await EnsureInstructionFileAsync(workingDirectory, overrideName, skillText, git, log);
             return;
         }
 
-        var projectInstructions = StripSkillSection(File.ReadAllText(agentsPath));
-        WriteIfChanged(overridePath, OverrideHeader + "\n\n"
+        // A versioned AGENTS.md may be a link (often to CLAUDE.md): it is read only while it stays
+        // inside the working directory, so a link to a secret is never copied into the override.
+        var projectInstructions = StripSkillSection(ConfinedFile.ReadAllTextOrNull(workingDirectory, "AGENTS.md") ?? "");
+        WriteIfChanged(workingDirectory, overrideName, OverrideHeader + "\n\n"
             + (projectInstructions.Length > 0 ? projectInstructions + "\n\n" : "") + skillText);
-        await git.ExcludeAsync(overridePath);
+        await git.ExcludeAsync(Path.Combine(workingDirectory, overrideName));
     }
 
     /// <summary>
@@ -361,16 +366,18 @@ timeout accordingly when designing the workflow.
     /// section or appending after the user's content. A versioned file is left untouched; a file that
     /// only holds the generated skill is excluded from git.
     /// </summary>
-    private static async Task EnsureInstructionFileAsync(string filePath, string skillText, GitRepository? git, Action<string> log)
+    private static async Task EnsureInstructionFileAsync(string workingDirectory, string relativePath, string skillText,
+        GitRepository? git, Action<string> log)
     {
+        var filePath = Path.Combine(workingDirectory, relativePath);
         if (git is not null && await git.IsTrackedAsync(filePath))
         {
             log($"[SkillInstaller] {filePath} is versioned in git, skill section not written");
             return;
         }
 
-        var userContent = File.Exists(filePath) ? StripSkillSection(File.ReadAllText(filePath)) : "";
-        WriteIfChanged(filePath, (userContent.Length > 0 ? userContent + "\n\n" : "") + skillText);
+        var userContent = StripSkillSection(ConfinedFile.ReadAllTextOrNull(workingDirectory, relativePath) ?? "");
+        WriteIfChanged(workingDirectory, relativePath, (userContent.Length > 0 ? userContent + "\n\n" : "") + skillText);
 
         // Only a file made entirely of generated content is excluded: an untracked file with the
         // user's own instructions may be meant to be committed later.
@@ -385,10 +392,10 @@ timeout accordingly when designing the workflow.
         return (markerIndex >= 0 ? content[..markerIndex] : content).TrimEnd();
     }
 
-    private static void WriteIfChanged(string filePath, string content)
+    private static void WriteIfChanged(string workingDirectory, string relativePath, string content)
     {
-        if (File.Exists(filePath) && File.ReadAllText(filePath) == content)
+        if (ConfinedFile.ReadAllTextOrNull(workingDirectory, relativePath) == content)
             return;
-        File.WriteAllText(filePath, content);
+        FileWritePolicy.WriteAllText(workingDirectory, relativePath, content);
     }
 }

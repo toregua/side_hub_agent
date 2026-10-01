@@ -85,8 +85,8 @@ public static partial class PtyEnvironmentPolicy
 
     /// <summary>
     /// The directory a PTY starts in: <paramref name="requested"/> when it is the agent's working
-    /// directory or one of its subfolders (relative paths resolve against it), else the agent's
-    /// working directory. Returns false when the request was refused.
+    /// directory or one of its subfolders (relative paths resolve against it), with its symbolic
+    /// links resolved, else the agent's working directory. Returns false when the request was refused.
     /// </summary>
     public static bool TryResolveWorkingDirectory(string agentWorkingDirectory, string? requested, out string resolved)
     {
@@ -104,10 +104,12 @@ public static partial class PtyEnvironmentPolicy
             return false;
         }
 
+        string realCandidate;
         try
         {
+            realCandidate = PathConfinement.RealPath(candidate);
             if (!PathConfinement.IsWithin(root, candidate)
-                || !PathConfinement.IsWithin(PathConfinement.RealPath(root), PathConfinement.RealPath(candidate)))
+                || !PathConfinement.IsWithin(PathConfinement.RealPath(root), realCandidate))
                 return false;
         }
         catch (IOException)
@@ -115,7 +117,9 @@ public static partial class PtyEnvironmentPolicy
             return false;
         }
 
-        resolved = candidate;
+        // The resolved path, not the requested one: the PTY (and the skill files written into it)
+        // must land where the check was made, not wherever a link points by the time it is used.
+        resolved = realCandidate;
         return true;
     }
 }

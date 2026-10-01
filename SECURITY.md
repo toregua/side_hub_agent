@@ -46,8 +46,19 @@ silently do. They are not a security boundary against a compromised backend.
   The setup token (`SIDEHUB_SETUP_TOKEN`) is removed from the agent's environment once read
   and is not passed to the background daemon, so git, commands and `pty-helper` never inherit it.
 - **Working directory** — PTY working directories and `file.write` paths are confined to the
-  agent's `workingDirectory`. This only limits where a terminal *starts*; the shell itself
-  can still `cd` anywhere.
+  agent's `workingDirectory`, symbolic links resolved. This only limits where a terminal
+  *starts*; the shell itself can still `cd` anywhere.
+- **File writes** — everything written into the working directory (`file.write`, terminal image
+  attachments under `.sidehub-images/`, the skill files `AGENTS.md` / `GEMINI.md` /
+  `.claude/commands/sidehub.md`) goes through `FileWritePolicy`: never under `.git/` or
+  `.sidehub/`, never into a file that makes a tool run commands (`.claude/settings*.json`,
+  `.mcp.json`, `.gemini/settings.json`, `.codex/config.toml`, `.envrc`, `.vscode/tasks.json`,
+  `settings.json`, `launch.json`), and on Windows never through an 8.3 short name or an
+  alternate data stream. The file is then opened folder by folder without following any
+  symbolic link (`openat` + `O_NOFOLLOW` on Linux/macOS), so a link committed in the repository
+  or planted after the check makes the write fail. A linked `AGENTS.md` / `GEMINI.md` / `.claude`
+  therefore gets no skill section. With `allowFileWrite: false` the skill files are not written
+  either.
 - **Secrets in logs** — commands, terminal output and tokens are not written to the agent
   logs; setup tokens are kept out of the process arguments.
 - **Untrusted `.sidehub/` content** — `.sidehub/` sits in the work tree, so a commit can fill
@@ -81,7 +92,7 @@ silently do. They are not a security boundary against a compromised backend.
 | Field | Default | Effect when `false` |
 |---|---|---|
 | `allowCommandExecute` | `true` | `command.execute` is refused with `command.failed` |
-| `allowFileWrite` | `true` | `file.write.*` is refused with `command.failed`; terminal image attachments are dropped |
+| `allowFileWrite` | `true` | `file.write.*` is refused with `command.failed`; terminal image attachments are dropped; skill files are not written |
 
 Both default to `true` so existing setups keep working (terminal image upload relies on file
 writes). Turning them off narrows the surface but, as explained above, does not stop a

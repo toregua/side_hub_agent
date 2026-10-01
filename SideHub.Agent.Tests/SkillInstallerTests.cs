@@ -157,6 +157,92 @@ public class SkillInstallerTests : IDisposable
         Assert.Equal("?? GEMINI.md", Git("status", "--porcelain", "--untracked-files=all"));
     }
 
+    [Fact]
+    public async Task Versioned_claude_link_leading_outside_is_not_followed()
+    {
+        var outside = Directory.CreateTempSubdirectory("sidehub-outside-").FullName;
+        try
+        {
+            Git("init", "-q");
+            Directory.CreateSymbolicLink(Path.Combine(_repo, ".claude"), outside);
+            Git("add", "-A");
+            Git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+
+            await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+            Assert.True(File.Exists(Path.Combine(_repo, "AGENTS.md")));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Outside_a_git_repository_instruction_links_are_not_followed()
+    {
+        var outside = Directory.CreateTempSubdirectory("sidehub-outside-").FullName;
+        try
+        {
+            var agents = Path.Combine(outside, "agents.md");
+            var gemini = Path.Combine(outside, "gemini.md");
+            File.WriteAllText(agents, "outside agents\n");
+            File.CreateSymbolicLink(Path.Combine(_repo, "AGENTS.md"), agents);
+            File.CreateSymbolicLink(Path.Combine(_repo, "GEMINI.md"), gemini);
+
+            await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+            Assert.Equal("outside agents\n", File.ReadAllText(agents));
+            Assert.False(File.Exists(gemini));
+            Assert.Contains(_logs, l => l.Contains("failed to install skill for codex"));
+            Assert.Contains(_logs, l => l.Contains("failed to install skill for gemini"));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Versioned_agents_link_to_a_secret_is_not_copied_into_the_override()
+    {
+        var outside = Directory.CreateTempSubdirectory("sidehub-outside-").FullName;
+        try
+        {
+            var secret = Path.Combine(outside, "id_rsa");
+            File.WriteAllText(secret, "PRIVATE KEY");
+            Git("init", "-q");
+            File.CreateSymbolicLink(Path.Combine(_repo, "AGENTS.md"), secret);
+            Git("add", "-A");
+            Git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+
+            await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+            var overridePath = Path.Combine(_repo, "AGENTS.override.md");
+            Assert.False(File.Exists(overridePath) && File.ReadAllText(overridePath).Contains("PRIVATE KEY"));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Versioned_agents_link_staying_inside_feeds_the_override()
+    {
+        Git("init", "-q");
+        File.WriteAllText(Path.Combine(_repo, "CLAUDE.md"), "# Shared rules\n");
+        File.CreateSymbolicLink(Path.Combine(_repo, "AGENTS.md"), "CLAUDE.md");
+        Git("add", "-A");
+        Git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+
+        await SkillInstaller.EnsureSkillFilesAsync(_repo, ApiUrl, "token", "ws", _logs.Add);
+
+        Assert.Equal("# Shared rules\n", File.ReadAllText(Path.Combine(_repo, "CLAUDE.md")));
+        Assert.Contains("# Shared rules", File.ReadAllText(Path.Combine(_repo, "AGENTS.override.md")));
+    }
+
     private string Git(params string[] args)
     {
         var psi = new ProcessStartInfo("git") { WorkingDirectory = _repo, RedirectStandardOutput = true, RedirectStandardError = true };

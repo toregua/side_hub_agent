@@ -155,4 +155,14 @@ public class PtyEnvironmentPolicyTests : IDisposable
             Directory.Delete(outside, recursive: true);
         }
     }
+
+    [Fact]
+    public void Working_directory_through_a_symlink_staying_inside_resolves_to_its_target()
+    {
+        var real = Directory.CreateDirectory(Path.Combine(_root, "real")).FullName;
+        Directory.CreateSymbolicLink(Path.Combine(_root, "alias"), real);
+
+        Assert.True(PtyEnvironmentPolicy.TryResolveWorkingDirectory(_root, "alias", out var cwd));
+        Assert.Equal(real, cwd);
+    }
 }

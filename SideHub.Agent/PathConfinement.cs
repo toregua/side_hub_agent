@@ -21,7 +21,9 @@ public static class PathConfinement
 
     /// <summary>Resolves symlinks segment by segment, the last one included and whether they point
     /// at a file or a folder (missing segments are kept as is), so a link inside the working
-    /// directory cannot lead outside it. Throws <see cref="IOException"/> on a link loop.</summary>
+    /// directory cannot lead outside it. Throws <see cref="IOException"/> on a link loop or when a
+    /// segment cannot be inspected (e.g. an unreadable folder): an unresolved link must not pass
+    /// for a plain path.</summary>
     public static string RealPath(string path) => RealPath(path, 0);
 
     private static string RealPath(string path, int depth)
@@ -35,12 +37,16 @@ public static class PathConfinement
         foreach (var segment in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
         {
             var next = Path.Combine(current, segment);
-            string? linkTarget = null;
+            string? linkTarget;
             try
             {
+                // Null for a missing path too: only real errors (EACCES, EIO…) throw.
                 linkTarget = new FileInfo(next).LinkTarget;
             }
-            catch { /* unreadable: keep the lexical path */ }
+            catch (Exception ex) when (ex is not IOException)
+            {
+                throw new IOException($"Cannot resolve '{next}': {ex.Message}", ex);
+            }
 
             // One hop at a time (a relative target is relative to the link's folder, already resolved)
             // so a loop ends in the depth check instead of passing as a plain path.
