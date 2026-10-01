@@ -1093,10 +1093,17 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
+        // The path is pasted into the PTY: a control character in it (e.g. a committed symlink to a
+        // directory named "x\e[201~\rcmd\r") would close the paste and type the rest as keystrokes.
+        if (!PtyPastePolicy.IsSafeToPaste(resolvedPath))
+        {
+            Log($"SECURITY: file write {message.CommandId} rejected — resolved path contains control characters");
+            await SendFileWriteFailedAsync(message.CommandId, "Path contains control characters", ct);
+            return;
+        }
+
         // Construct paste content: ask Claude CLI to read the image file
-        var ptyPaste = !string.IsNullOrEmpty(message.PtyPaste)
-            ? message.PtyPaste
-            : $"\x1b[200~Please look at this image I just uploaded: {resolvedPath}\x1b[201~";
+        var ptyPaste = PtyPastePolicy.BuildImagePaste(resolvedPath, message.PtyPaste);
 
         await ExpirePendingFileWritesAsync(ct);
         if (!_pendingFileWrites.TryStart(message.CommandId, resolvedPath, ptyPaste, message.PtySessionId))
