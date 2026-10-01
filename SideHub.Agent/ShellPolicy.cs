@@ -34,7 +34,7 @@ public static class ShellPolicy
     /// </summary>
     public static bool TryResolve(string? requested, out string resolved) =>
         RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? TryResolveWindows(requested, out resolved)
+            ? TryResolveWindows(requested, ExecutableResolver.Resolve, out resolved)
             : TryResolveUnix(requested, UnixShellDirectories, File.Exists, out resolved);
 
     public static bool TryResolveUnix(
@@ -70,14 +70,18 @@ public static class ShellPolicy
         return false;
     }
 
-    private static bool TryResolveWindows(string? requested, out string resolved)
+    /// <summary>A bare allowlisted name, resolved to an absolute path by <paramref name="resolve"/>:
+    /// node-pty would otherwise look a relative <c>cmd.exe</c> up in the working directory (the
+    /// repository) first. Anything carrying a path or an unknown name is refused.</summary>
+    public static bool TryResolveWindows(string? requested, Func<string, string?> resolve, out string resolved)
     {
-        // Windows resolves these fixed names from its system search path; anything carrying a
-        // path or an unknown name is refused.
+        resolved = string.Empty;
         var name = string.IsNullOrWhiteSpace(requested) ? SystemInfoProvider.GetDefaultShell() : requested.Trim();
         if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             name = name[..^4];
-        resolved = WindowsShells.Contains(name) ? name.ToLowerInvariant() : string.Empty;
-        return resolved.Length > 0;
+        if (!WindowsShells.Contains(name) || resolve(name.ToLowerInvariant() + ".exe") is not { } path)
+            return false;
+        resolved = path;
+        return true;
     }
 }

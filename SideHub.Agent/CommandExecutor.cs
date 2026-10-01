@@ -56,6 +56,8 @@ public class CommandExecutor
 
             foreach (var arg in args)
                 psi.ArgumentList.Add(arg);
+            if (OperatingSystem.IsWindows())
+                psi.Environment[ExecutableResolver.NoCurrentDirectoryLookupVariable] = "1";
 
             using var process = new Process { StartInfo = psi };
             _currentProcess = process;
@@ -117,8 +119,10 @@ public class CommandExecutor
             "bash" => ("/bin/bash", new[] { "-l", "-c", command }),
             "sh" => ("/bin/sh", new[] { "-l", "-c", command }),
             "zsh" => ("/bin/zsh", new[] { "-l", "-c", command }),
-            "powershell" or "pwsh" => ("pwsh", new[] { "-Command", command }),
-            "cmd" => ("cmd.exe", new[] { "/c", command }),
+            "powershell" or "pwsh" => (ExecutableResolver.Resolve("pwsh") ?? throw new ArgumentException("pwsh not found in PATH"),
+                new[] { "-Command", command }),
+            "cmd" => (ExecutableResolver.Resolve("cmd.exe") ?? throw new ArgumentException("cmd.exe not found"),
+                new[] { "/c", command }),
             _ => throw new ArgumentException($"Unsupported shell: {shell}")
         };
     }

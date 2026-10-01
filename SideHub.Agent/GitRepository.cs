@@ -70,9 +70,12 @@ public sealed class GitRepository
 
     private static async Task<(int ExitCode, string Output)?> RunGitAsync(string workingDirectory, params string[] args)
     {
+        // Never a bare "git": it would be looked up in the working directory (the repository) first.
+        if (ExecutableResolver.Resolve("git") is not { } gitPath)
+            return null;
         try
         {
-            var psi = new ProcessStartInfo("git")
+            var psi = new ProcessStartInfo(gitPath)
             {
                 WorkingDirectory = workingDirectory,
                 UseShellExecute = false,

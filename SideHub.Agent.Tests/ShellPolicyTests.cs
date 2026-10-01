@@ -42,6 +42,30 @@ public class ShellPolicyTests
         Assert.StartsWith("/bin/", resolved);
     }
 
+    [Theory]
+    [InlineData("cmd", @"C:\Windows\system32\cmd.exe")]
+    [InlineData("PowerShell.exe", @"C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe")]
+    public void Windows_shells_resolve_to_an_absolute_path(string requested, string expected)
+    {
+        Assert.True(ShellPolicy.TryResolveWindows(requested, WindowsResolve, out var resolved));
+        Assert.Equal(expected, resolved);
+    }
+
+    [Theory]
+    [InlineData("pwsh")] // allowlisted but not installed
+    [InlineData("python")]
+    [InlineData(@".\cmd.exe")]
+    [InlineData(@"C:\repo\cmd.exe")]
+    public void Windows_unknown_or_missing_shells_are_refused(string requested)
+    {
+        Assert.False(ShellPolicy.TryResolveWindows(requested, WindowsResolve, out var resolved));
+        Assert.Equal(string.Empty, resolved);
+    }
+
+    private static string? WindowsResolve(string name) => ExecutableResolver.ResolveWindows(
+        name, @"C:\Windows\system32;C:\Windows\system32\WindowsPowerShell\v1.0", [],
+        p => p is @"C:\Windows\system32\cmd.exe" or @"C:\Windows\system32\WindowsPowerShell\v1.0\powershell.exe");
+
     [Fact]
     public void Command_execute_and_file_write_are_allowed_by_default()
     {

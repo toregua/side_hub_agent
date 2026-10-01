@@ -120,11 +120,15 @@ public class NodePtyExecutor : IAsyncDisposable
             throw new FileNotFoundException($"PTY helper not found at: {_helperPath}");
         }
 
-        Console.WriteLine($"[NodePty] Starting helper: {_helperPath}");
+        // Never a bare "node": it would be looked up in the working directory (the repository) first.
+        var nodePath = ExecutableResolver.Resolve("node")
+            ?? throw new FileNotFoundException("node not found in PATH");
+
+        Console.WriteLine($"[NodePty] Starting helper: {_helperPath} with {nodePath}");
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = "node",
+            FileName = nodePath,
             Arguments = _helperPath,
             WorkingDirectory = _workingDirectory,
             UseShellExecute = false,

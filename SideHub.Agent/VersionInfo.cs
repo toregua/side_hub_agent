@@ -66,9 +66,20 @@ public static partial class VersionInfo
     private static async Task<string?> ProbeAsync(string cli, CancellationToken ct)
     {
         // Through a login shell so the user's PATH (nvm, ~/.local/bin, …) resolves the CLI like in a PTY.
-        var psi = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? new ProcessStartInfo("cmd.exe") { ArgumentList = { "/c", $"{cli} --version" } }
-            : new ProcessStartInfo(File.Exists("/bin/bash") ? "/bin/bash" : "/bin/sh") { ArgumentList = { "-l", "-c", $"{cli} --version" } };
+        // cmd.exe is resolved to its absolute path and told not to look the CLI up in the daemon's
+        // working directory (a repository) before the PATH.
+        ProcessStartInfo psi;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            if (ExecutableResolver.Resolve("cmd.exe") is not { } cmd)
+                return null;
+            psi = new ProcessStartInfo(cmd) { ArgumentList = { "/c", $"{cli} --version" } };
+            psi.Environment[ExecutableResolver.NoCurrentDirectoryLookupVariable] = "1";
+        }
+        else
+        {
+            psi = new ProcessStartInfo(File.Exists("/bin/bash") ? "/bin/bash" : "/bin/sh") { ArgumentList = { "-l", "-c", $"{cli} --version" } };
+        }
         psi.UseShellExecute = false;
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;

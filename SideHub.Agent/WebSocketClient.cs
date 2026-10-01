@@ -178,6 +178,11 @@ public class WebSocketClient : IAsyncDisposable
         foreach (var (key, value) in allowedEnv)
             env[key] = value;
 
+        // Windows: cmd.exe would run a claude.exe / codex.cmd committed in the repository before
+        // the one on the PATH.
+        if (OperatingSystem.IsWindows())
+            env[ExecutableResolver.NoCurrentDirectoryLookupVariable] = "1";
+
         return env;
     }
 
@@ -1269,7 +1274,7 @@ public class WebSocketClient : IAsyncDisposable
             shell = string.Empty;
             return false;
         }
-        shell = Path.GetFileName(shellPath);
+        shell = Path.GetFileNameWithoutExtension(shellPath);
         return true;
     }
 
