@@ -637,7 +637,9 @@ public class WebSocketClient : IAsyncDisposable
                 Log("Waiting for commands...");
                 await ReceiveLoopAsync(ct);
             }
-            catch (OperationCanceledException)
+            // Only a real shutdown request stops the loop: _ws.Abort() (heartbeat watchdog) makes the pending
+            // ReceiveAsync throw OperationCanceledException("Aborted") too, and that must reconnect, not exit.
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 Log("Shutting down...");
                 break;
