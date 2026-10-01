@@ -2,8 +2,6 @@ namespace SideHub.Agent.Tests;
 
 public class PtyEnvironmentPolicyTests : IDisposable
 {
-    private const string RunPty = "run-3f2b9c1a4d5e4f60a7b8c9d0e1f2a3b4";
-    private const string InteractivePty = "term-1";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"sidehub-policy-{Guid.NewGuid():N}");
 
     public PtyEnvironmentPolicyTests() => Directory.CreateDirectory(_root);
@@ -13,13 +11,13 @@ public class PtyEnvironmentPolicyTests : IDisposable
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
-    private static Dictionary<string, string> Filter(string ptySessionId, Dictionary<string, string> env, out IReadOnlyList<string> rejected) =>
-        PtyEnvironmentPolicy.FilterAdditionalEnv(ptySessionId, env, out rejected);
+    private static Dictionary<string, string> Filter(Dictionary<string, string> env, out IReadOnlyList<string> rejected) =>
+        PtyEnvironmentPolicy.FilterAdditionalEnv(env, out rejected);
 
     [Fact]
-    public void Run_pty_keeps_the_run_token()
+    public void Run_token_is_kept()
     {
-        var env = Filter(RunPty, new() { ["SIDEHUB_AGENT_TOKEN"] = "sh_run_abc", ["SIDEHUB_RUN_ID"] = "id" }, out var rejected);
+        var env = Filter(new() { ["SIDEHUB_AGENT_TOKEN"] = "sh_run_abc", ["SIDEHUB_RUN_ID"] = "id" }, out var rejected);
 
         Assert.Equal("sh_run_abc", env["SIDEHUB_AGENT_TOKEN"]);
         Assert.Equal("id", env["SIDEHUB_RUN_ID"]);
@@ -27,25 +25,29 @@ public class PtyEnvironmentPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Run_pty_without_run_token_does_not_override_the_workspace_token()
+    public void Terminal_session_token_is_kept()
     {
-        var env = Filter(RunPty, new() { ["SIDEHUB_RUN_ID"] = "id" }, out _);
+        var env = Filter(new() { ["SIDEHUB_AGENT_TOKEN"] = "sh_pty_abc", ["SIDEHUB_TASK_ID"] = "t" }, out var rejected);
+
+        Assert.Equal("sh_pty_abc", env["SIDEHUB_AGENT_TOKEN"]);
+        Assert.Empty(rejected);
+    }
+
+    [Fact]
+    public void Without_a_session_token_the_pty_gets_no_token()
+    {
+        var env = Filter(new() { ["SIDEHUB_RUN_ID"] = "id" }, out _);
 
         Assert.False(env.ContainsKey("SIDEHUB_AGENT_TOKEN"));
     }
 
-    [Fact]
-    public void Blank_run_token_is_ignored()
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("sh_agent_abc")]
+    [InlineData("some-other-secret")]
+    public void Anything_but_a_scoped_token_is_rejected(string token)
     {
-        var env = Filter(RunPty, new() { ["SIDEHUB_AGENT_TOKEN"] = " " }, out _);
-
-        Assert.False(env.ContainsKey("SIDEHUB_AGENT_TOKEN"));
-    }
-
-    [Fact]
-    public void Non_run_pty_cannot_replace_the_agent_token()
-    {
-        var env = Filter(InteractivePty, new() { ["SIDEHUB_AGENT_TOKEN"] = "sh_run_abc" }, out var rejected);
+        var env = Filter(new() { ["SIDEHUB_AGENT_TOKEN"] = token }, out var rejected);
 
         Assert.False(env.ContainsKey("SIDEHUB_AGENT_TOKEN"));
         Assert.Equal(["SIDEHUB_AGENT_TOKEN"], rejected);
@@ -67,7 +69,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [InlineData("SIDEHUB-BAD")]
     public void Sensitive_or_unknown_keys_are_rejected(string key)
     {
-        var env = Filter(RunPty, new() { [key] = "/evil", ["SIDEHUB_PTY_PROMPT"] = "do it" }, out var rejected);
+        var env = Filter(new() { [key] = "/evil", ["SIDEHUB_PTY_PROMPT"] = "do it" }, out var rejected);
 
         Assert.False(env.ContainsKey(key));
         Assert.Equal([key], rejected);
@@ -77,7 +79,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [Fact]
     public void Workflow_context_and_allow_listed_keys_pass()
     {
-        var env = Filter(RunPty, new()
+        var env = Filter(new()
         {
             ["SIDEHUB_WORKFLOW_EXECUTION_ID"] = "e",
             ["SIDEHUB_WORKFLOW_STEP_ID"] = "s",
@@ -92,7 +94,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [Fact]
     public void Null_env_is_empty()
     {
-        var env = PtyEnvironmentPolicy.FilterAdditionalEnv(RunPty, null, out var rejected);
+        var env = PtyEnvironmentPolicy.FilterAdditionalEnv(null, out var rejected);
 
         Assert.Empty(env);
         Assert.Empty(rejected);

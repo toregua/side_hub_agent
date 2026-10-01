@@ -4,15 +4,18 @@ namespace SideHub.Agent;
 
 /// <summary>
 /// What the backend may change in a PTY it asks the agent to start: which <c>additionalEnv</c>
-/// keys are merged into the shell environment, whether the workspace token is replaced by a
-/// run token, and which working directory is used. The backend is not trusted to override
+/// keys are merged into the shell environment, which scoped token (if any) the shell gets, and
+/// which working directory is used. The backend is not trusted to override
 /// the variables that decide what code the shell runs (PATH, LD_PRELOAD, rcfiles…).
 /// </summary>
 public static partial class PtyEnvironmentPolicy
 {
     public const string AgentTokenKey = "SIDEHUB_AGENT_TOKEN";
     private const string SideHubPrefix = "SIDEHUB_";
-    private const string RunPtyPrefix = "run-";
+
+    /// <summary>Tokens the backend scopes to one PTY: a run token (<c>run-*</c> PTYs) or an interactive
+    /// terminal session token. The agent's own token (<c>sh_agent_</c>) never enters a PTY.</summary>
+    private static readonly string[] ScopedTokenPrefixes = ["sh_run_", "sh_pty_"];
 
     /// <summary>Non-SIDEHUB_* keys the backend may set (run correlation for telemetry).</summary>
     private static readonly HashSet<string> AllowedExtraKeys = new(StringComparer.Ordinal)
@@ -37,17 +40,13 @@ public static partial class PtyEnvironmentPolicy
     [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
     private static partial Regex EnvKeyPattern();
 
-    public static bool IsRunPty(string ptySessionId) =>
-        ptySessionId.StartsWith(RunPtyPrefix, StringComparison.Ordinal);
-
     /// <summary>
     /// Keeps the <paramref name="additionalEnv"/> entries the backend may set for this PTY.
-    /// <c>SIDEHUB_AGENT_TOKEN</c> is accepted only for <c>run-*</c> PTYs, where it carries the
-    /// run token that replaces the workspace token. Rejected keys are returned for logging;
-    /// their values never leave this method.
+    /// <c>SIDEHUB_AGENT_TOKEN</c> is accepted only when it holds a scoped token (<c>sh_run_</c> or
+    /// <c>sh_pty_</c>): it is the only credential the shell gets, and without it <c>sidehub-cli</c>
+    /// is unavailable. Rejected keys are returned for logging; their values never leave this method.
     /// </summary>
     public static Dictionary<string, string> FilterAdditionalEnv(
-        string ptySessionId,
         IReadOnlyDictionary<string, string>? additionalEnv,
         out IReadOnlyList<string> rejectedKeys)
     {
@@ -59,28 +58,27 @@ public static partial class PtyEnvironmentPolicy
             return allowed;
         }
 
-        var isRun = IsRunPty(ptySessionId);
         foreach (var (key, value) in additionalEnv)
         {
             if (string.IsNullOrEmpty(key)) continue;
-            if (IsAllowedKey(key, isRun))
+            if (IsAllowedEntry(key, value))
                 allowed[key] = value ?? string.Empty;
             else
                 rejected.Add(key);
         }
 
-        // An empty run token would leave the CLI without credentials: fall back to the workspace token.
-        if (allowed.TryGetValue(AgentTokenKey, out var runToken) && string.IsNullOrWhiteSpace(runToken))
-            allowed.Remove(AgentTokenKey);
-
         rejectedKeys = rejected;
         return allowed;
     }
 
-    private static bool IsAllowedKey(string key, bool isRunPty)
+    public static bool IsScopedToken(string? token) =>
+        !string.IsNullOrWhiteSpace(token)
+        && ScopedTokenPrefixes.Any(prefix => token.StartsWith(prefix, StringComparison.Ordinal));
+
+    private static bool IsAllowedEntry(string key, string? value)
     {
         if (!EnvKeyPattern().IsMatch(key)) return false;
-        if (key == AgentTokenKey) return isRunPty;
+        if (key == AgentTokenKey) return IsScopedToken(value);
         if (AgentOwnedKeys.Contains(key)) return false;
         return key.StartsWith(SideHubPrefix, StringComparison.Ordinal) || AllowedExtraKeys.Contains(key);
     }

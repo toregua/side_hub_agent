@@ -37,6 +37,11 @@ silently do. They are not a security boundary against a compromised backend.
   credentials…), only an allowlist. The backend may only add `SIDEHUB_*` / telemetry
   variables and cannot override `PATH`, `LD_PRELOAD`, rcfiles or the agent-owned `SIDEHUB_*`
   variables (`PtyEnvironmentPolicy`).
+- **No agent token in terminals** — the agent token never enters a PTY environment. A terminal
+  only gets the token SideHub scoped to it in `SIDEHUB_AGENT_TOKEN`: a run token (`sh_run_…`)
+  for a SideHub-launched run, a session token (`sh_pty_…`) for an interactive terminal. Both
+  are short-lived, die with their run / terminal, are denied agent management and session
+  launches, and cannot open the agent WebSocket. Without one, `sidehub-cli` is unavailable.
 - **Working directory** — PTY working directories and `file.write` paths are confined to the
   agent's `workingDirectory`. This only limits where a terminal *starts*; the shell itself
   can still `cd` anywhere.
@@ -51,7 +56,8 @@ silently do. They are not a security boundary against a compromised backend.
   `workingDirectory`.
 - The agent token stored in `.sidehub/*.json`: anyone who can read it can impersonate the
   agent. Keep it out of version control (`.sidehub/` should be git-ignored) and readable by
-  the agent user only.
+  the agent user only. Terminals run as that same user, so a process in a terminal can still
+  read the file directly.
 - Network egress from the shells and CLIs the agent runs.
 
 ## Hardening options (`agent.json`)

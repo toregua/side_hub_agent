@@ -16,7 +16,7 @@ public static class AgentSetup
     public const string DefaultApi = "https://api.sidehub.io";
 
     /// <summary>Environment variable holding the token, so it stays out of argv (ps, shell history).
-    /// Not SIDEHUB_AGENT_TOKEN: that one is set inside every SideHub terminal.</summary>
+    /// Not SIDEHUB_AGENT_TOKEN: inside a SideHub terminal that one holds the terminal's scoped session token.</summary>
     public const string TokenEnvVar = "SIDEHUB_SETUP_TOKEN";
 
     public record SetupInfo(

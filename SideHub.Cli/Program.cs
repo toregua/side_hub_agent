@@ -8,6 +8,14 @@ var taskId = Environment.GetEnvironmentVariable("SIDEHUB_TASK_ID");
 var defaultAgentId = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_ID");
 var pipelineMode = Environment.GetEnvironmentVariable("SIDEHUB_PIPELINE_MODE");
 
+// Inside a SideHub terminal the token is the one the backend scoped to that PTY; the agent's own token is
+// never exposed there. No token means the terminal was opened without one (older backend).
+if (string.IsNullOrEmpty(agentToken) && !string.IsNullOrEmpty(apiUrl))
+{
+    Console.Error.WriteLine("sidehub-cli is unavailable in this terminal: it has no SideHub session token (SIDEHUB_AGENT_TOKEN). Open a new terminal from SideHub.");
+    return 1;
+}
+
 if (string.IsNullOrEmpty(apiUrl) || string.IsNullOrEmpty(agentToken) || string.IsNullOrEmpty(workspaceId))
 {
     Console.Error.WriteLine("Missing required environment variables: SIDEHUB_API_URL, SIDEHUB_AGENT_TOKEN, SIDEHUB_WORKSPACE_ID");
@@ -20,10 +28,11 @@ if (!apiUrl.StartsWith("https://") && !apiUrl.StartsWith("http://"))
     return 1;
 }
 
-// sh_agent_: workspace agent token; sh_run_: ephemeral token of a backend-launched run.
-if (!agentToken.StartsWith("sh_agent_") && !agentToken.StartsWith("sh_run_"))
+// sh_agent_: workspace agent token (manual use outside SideHub terminals); sh_run_: ephemeral token of a
+// backend-launched run; sh_pty_: session token of an interactive SideHub terminal.
+if (!agentToken.StartsWith("sh_agent_") && !agentToken.StartsWith("sh_run_") && !agentToken.StartsWith("sh_pty_"))
 {
-    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format — must start with 'sh_agent_' or 'sh_run_'.");
+    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format — must start with 'sh_agent_', 'sh_run_' or 'sh_pty_'.");
     return 1;
 }
 

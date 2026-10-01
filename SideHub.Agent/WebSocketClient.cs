@@ -155,7 +155,6 @@ public class WebSocketClient : IAsyncDisposable
             ["SIDEHUB_CLI_WRAPPERS"] = wrappersDir,
             ["PATH"] = fullPath,
             ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
-            ["SIDEHUB_AGENT_TOKEN"] = _config.AgentToken!,
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
         };
         // Point the pty-helper at our custom rcfile so it can pass `--rcfile`
@@ -167,13 +166,14 @@ public class WebSocketClient : IAsyncDisposable
             env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
 
         // Merge caller-supplied env (e.g. workflow execution context), restricted to SIDEHUB_* and an
-        // allow-list. A run-* PTY may carry a run token in SIDEHUB_AGENT_TOKEN that replaces the
-        // workspace token; without one (older backend) the workspace token stays.
-        var allowedEnv = PtyEnvironmentPolicy.FilterAdditionalEnv(ptySessionId, additionalEnv, out var rejectedKeys);
+        // allow-list. The agent's own token never enters a PTY: the shell only gets the token the
+        // backend scoped to it (run token or terminal session token) in SIDEHUB_AGENT_TOKEN. Without
+        // one (older backend), sidehub-cli is unavailable in this terminal.
+        var allowedEnv = PtyEnvironmentPolicy.FilterAdditionalEnv(additionalEnv, out var rejectedKeys);
         if (rejectedKeys.Count > 0)
             Log($"SECURITY: PTY {ptySessionId} ignored additionalEnv keys: {string.Join(", ", rejectedKeys)}");
-        if (allowedEnv.ContainsKey(PtyEnvironmentPolicy.AgentTokenKey))
-            Log($"PTY {ptySessionId} uses the run token instead of the workspace token");
+        if (!allowedEnv.ContainsKey(PtyEnvironmentPolicy.AgentTokenKey))
+            Log($"PTY {ptySessionId} has no session token: sidehub-cli is unavailable in it");
         foreach (var (key, value) in allowedEnv)
             env[key] = value;
 
