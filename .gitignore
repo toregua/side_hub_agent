@@ -3,6 +3,7 @@ bin/
 obj/
 out/
 publish/
+publish-single/
 
 # IDE
 .idea/

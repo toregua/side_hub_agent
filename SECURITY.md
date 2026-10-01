@@ -78,6 +78,45 @@ Recommended practice:
   the machine holds anything you would not hand to the backend.
 - Rotate the agent token (delete and recreate the agent in SideHub) if it may have leaked.
 
+## Verifying a release
+
+Releases are built by GitHub Actions from a tag (`.github/workflows/release.yml`); no binary
+is committed to the repository. Each release ships:
+
+- `sidehub-agent-<platform>.tar.gz` / `.zip` — the agent, `sidehub-cli`, `pty-helper` and
+  `cli-wrappers`;
+- `checksums.sha256` — SHA-256 of every archive;
+- a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
+  (Sigstore, signed with the workflow's OIDC identity) for each archive and for
+  `checksums.sha256`, proving it was built by this repository's release workflow from the
+  tagged commit.
+
+**Install scripts.** `install.sh` / `install.ps1` resolve the version to a tag, download the
+archive through the SideHub API, then download `checksums.sha256` **directly from GitHub
+Releases** and check the archive's SHA-256 before extracting it. A missing checksum file, a
+missing entry or a mismatch aborts the install. Because the checksum does not come from the
+SideHub proxy, a compromised proxy cannot serve a tampered archive with a matching checksum.
+
+**Manual verification.**
+
+```bash
+TAG=v1.0.53                          # the release to verify
+ASSET=sidehub-agent-linux-x64.tar.gz # your platform
+curl -fsSLO "https://github.com/toregua/side_hub_agent/releases/download/$TAG/$ASSET"
+curl -fsSLO "https://github.com/toregua/side_hub_agent/releases/download/$TAG/checksums.sha256"
+
+# 1. Checksum (macOS: shasum -a 256 -c --ignore-missing checksums.sha256)
+sha256sum -c --ignore-missing checksums.sha256
+
+# 2. Provenance: built by this repo's release workflow (GitHub CLI >= 2.49)
+gh attestation verify "$ASSET" --repo toregua/side_hub_agent
+gh attestation verify checksums.sha256 --repo toregua/side_hub_agent
+```
+
+`gh attestation verify` prints the workflow, commit and tag the file was built from; it fails
+if the file was not produced by `toregua/side_hub_agent`'s workflow. Releases published before
+the attestation was added (up to the first tag that includes it) only have `checksums.sha256`.
+
 ## Reporting a vulnerability
 
 Please **do not open a public issue** for security problems.

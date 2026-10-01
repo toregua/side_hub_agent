@@ -9,6 +9,9 @@ $ErrorActionPreference = "Stop"
 
 $SideHubApi = if ($env:SIDEHUB_API) { $env:SIDEHUB_API } else { "https://www.sidehub.io/api" }
 $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\sidehub-agent" }
+# Checksums come straight from GitHub Releases, not through the SideHub API proxy that serves the archive:
+# a compromised proxy cannot hand out both a tampered archive and a matching checksum.
+$GitHubRepo = if ($env:SIDEHUB_GITHUB_REPO) { $env:SIDEHUB_GITHUB_REPO } else { "toregua/side_hub_agent" }
 
 # Check Node.js
 function Test-NodeJs {
@@ -32,18 +35,73 @@ function Get-Platform {
     return "win-$arch"
 }
 
+function Get-LatestTag {
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest" -UseBasicParsing
+    } catch {
+        return $null
+    }
+    if ($release.tag_name -match '^v\d') { return $release.tag_name }
+    return $null
+}
+
+# Verify the archive against the release's checksums.sha256; any failure aborts the install
+function Test-ArchiveChecksum {
+    param([string]$ArchivePath, [string]$AssetName, [string]$Tag, [string]$TempDir)
+
+    $checksumsUrl = "https://github.com/$GitHubRepo/releases/download/$Tag/checksums.sha256"
+    $checksumsPath = Join-Path $TempDir "checksums.sha256"
+    try {
+        Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsPath -UseBasicParsing
+    } catch {
+        Write-Host "Unable to download checksums from $checksumsUrl" -ForegroundColor Red
+        return $false
+    }
+
+    # sha256sum format: "<hash>  <name>" (or "<hash> *<name>" in binary mode)
+    $expected = $null
+    foreach ($line in Get-Content $checksumsPath) {
+        $parts = $line.Trim() -split '\s+', 2
+        if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq $AssetName) {
+            $expected = $parts[0].ToLowerInvariant()
+            break
+        }
+    }
+    if (-not $expected) {
+        Write-Host "No checksum for $AssetName in checksums.sha256 ($Tag)" -ForegroundColor Red
+        return $false
+    }
+
+    $actual = (Get-FileHash -Path $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        Write-Host "Checksum mismatch for ${AssetName}: expected $expected, got $actual" -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host "SHA256 checksum verified ($AssetName, $Tag)" -ForegroundColor Green
+    return $true
+}
+
 function Install-SideHubAgent {
     Test-NodeJs
 
     $platform = Get-Platform
 
+    # Pin "latest" to a tag so the archive and its checksum come from the same release
     if ($Version -eq "latest") {
-        $url = "$SideHubApi/agent/download/$platform"
+        $tag = Get-LatestTag
+        if (-not $tag) {
+            Write-Error "Unable to resolve the latest version from https://github.com/$GitHubRepo/releases"
+            exit 1
+        }
     } else {
-        $url = "$SideHubApi/agent/download/$platform/$Version"
+        $tag = "v" + $Version.TrimStart('v')
     }
 
-    Write-Host "Downloading SideHub Agent ($platform)..."
+    $assetName = "sidehub-agent-$platform.zip"
+    $url = "$SideHubApi/agent/download/$platform/$tag"
+
+    Write-Host "Downloading SideHub Agent $tag ($platform)..."
 
     # Create temp directory
     $tempDir = Join-Path $env:TEMP "sidehub-agent-install"
@@ -62,11 +120,18 @@ function Install-SideHubAgent {
         exit 1
     }
 
+    if (-not (Test-ArchiveChecksum -ArchivePath $archivePath -AssetName $assetName -Tag $tag -TempDir $tempDir)) {
+        Remove-Item -Recurse -Force $tempDir
+        Write-Error "Installation aborted: the archive was not extracted."
+        exit 1
+    }
+
     Write-Host "Extracting..."
-    Expand-Archive -Path $archivePath -DestinationPath $tempDir -Force
+    $extractDir = Join-Path $tempDir "package"
+    Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
 
     Write-Host "Installing Node.js dependencies..."
-    $ptyHelperDir = Join-Path $tempDir "pty-helper"
+    $ptyHelperDir = Join-Path $extractDir "pty-helper"
     Push-Location $ptyHelperDir
     & npm install --silent
     Pop-Location
@@ -77,8 +142,7 @@ function Install-SideHubAgent {
     }
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-    # Copy all files except the archive
-    Get-ChildItem -Path $tempDir -Exclude "agent.zip" | Copy-Item -Destination $InstallDir -Recurse -Force
+    Get-ChildItem -Path $extractDir | Copy-Item -Destination $InstallDir -Recurse -Force
 
     # Cleanup
     Remove-Item -Recurse -Force $tempDir

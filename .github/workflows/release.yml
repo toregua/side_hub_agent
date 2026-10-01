@@ -91,6 +91,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Build provenance attestation (Sigstore, signed with the workflow's OIDC identity)
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@v4
@@ -110,6 +113,15 @@ jobs:
         run: |
           cd release
           sha256sum * > checksums.sha256
+
+      # Verify with: gh attestation verify <file> --repo toregua/side_hub_agent (see SECURITY.md)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/*.tar.gz
+            release/*.zip
+            release/checksums.sha256
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

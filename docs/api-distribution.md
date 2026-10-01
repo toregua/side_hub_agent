@@ -315,6 +315,7 @@ export default router;
 
 ## Sécurité
 
-1. **Vérification des checksums**: Les scripts d'installation peuvent vérifier le SHA256
-2. **HTTPS only**: Tous les téléchargements via HTTPS
-3. **Signature optionnelle**: Signer les binaires avec codesign (macOS) ou signtool (Windows)
+1. **Vérification des checksums**: `install.sh` / `install.ps1` téléchargent `checksums.sha256` directement depuis GitHub Releases (pas via ce proxy) et abandonnent l'installation si le SHA256 de l'archive ne correspond pas. Le proxy doit donc servir l'archive inchangée.
+2. **Attestation de provenance**: chaque archive et `checksums.sha256` sont attestés par `actions/attest-build-provenance` (vérification : `gh attestation verify <fichier> --repo toregua/side_hub_agent`, cf. `SECURITY.md`)
+3. **HTTPS only**: Tous les téléchargements via HTTPS
+4. **Signature optionnelle**: Signer les binaires avec codesign (macOS) ou signtool (Windows)
