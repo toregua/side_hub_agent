@@ -3,36 +3,38 @@ import * as readline from 'readline';
 
 let ptyProcess = null;
 
-// Patterns for environment variable names that should NOT be leaked to PTY sessions
-const SENSITIVE_ENV_PATTERNS = [
-  /^AGENT_TOKEN$/i,
-  /^SIDEHUB.*TOKEN$/i,
-  /^SIDEHUB.*SECRET$/i,
-  /^API_KEY$/i,
-  /^SECRET/i,
-  /^TOKEN$/i,
-  /^AWS_SECRET/i,
-  /^AWS_SESSION_TOKEN$/i,
-  /^ANTHROPIC_API_KEY$/i,
-  /^OPENAI_API_KEY$/i,
-  /^DATABASE_URL$/i,
-  /^DB_PASSWORD$/i,
-  /^REDIS_PASSWORD$/i,
-  /^PASSWORD/i,
-  /^PRIVATE_KEY$/i,
-  /KEY$/i,
-  /SECRET$/i,
-  /CREDENTIAL/i,
-  /^GH_TOKEN$/i,
-  /^GITHUB_TOKEN$/i,
-  /^NPM_TOKEN$/i,
-  /^NUGET_API_KEY$/i,
-];
+// Daemon environment variables passed through to PTY sessions. Everything else is dropped:
+// the daemon may have been started from a shell holding secrets (API keys, cloud credentials,
+// tokens) that the terminal must not inherit. What the shell needs beyond this list comes from
+// the user's own profile (login shell / rcfile) or from the agent (config.env).
+// Names are compared in upper case (Windows environment names are case-insensitive).
+const ALLOWED_ENV_NAMES = new Set([
+  // Identity, paths, locale
+  'HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'LANG', 'LANGUAGE', 'TZ', 'TMPDIR', 'EDITOR', 'VISUAL', 'PAGER',
+  // Session plumbing (sockets, not secrets)
+  'SSH_AUTH_SOCK', 'DBUS_SESSION_BUS_ADDRESS', 'WSL_DISTRO_NAME', 'WSL_INTEROP',
+  // Network proxies, needed by the CLIs behind a corporate proxy
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY',
+  // Toolchain locations
+  'NVM_DIR', 'NVM_BIN', 'NVM_INC', 'VOLTA_HOME', 'PNPM_HOME', 'BUN_INSTALL',
+  'DOTNET_ROOT', 'JAVA_HOME', 'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME',
+  'HOMEBREW_PREFIX', 'HOMEBREW_CELLAR', 'HOMEBREW_REPOSITORY',
+  // CLI configuration directories
+  'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
+  // Windows system variables
+  'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATHEXT', 'OS', 'TEMP', 'TMP',
+  'USERNAME', 'USERDOMAIN', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'COMPUTERNAME',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
+  'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)', 'PUBLIC',
+  'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+]);
+const ALLOWED_ENV_PREFIXES = ['LC_', 'XDG_'];
 
-function filterSensitiveEnv(env) {
+function filterDaemonEnv(env) {
   const filtered = {};
   for (const [key, value] of Object.entries(env)) {
-    if (!SENSITIVE_ENV_PATTERNS.some(pattern => pattern.test(key))) {
+    const name = key.toUpperCase();
+    if (ALLOWED_ENV_NAMES.has(name) || ALLOWED_ENV_PREFIXES.some(prefix => name.startsWith(prefix))) {
       filtered[key] = value;
     }
   }
@@ -92,7 +94,7 @@ function startPty(config) {
   const extraEnv = config.env || {};
 
   const env = {
-    ...filterSensitiveEnv(process.env),
+    ...filterDaemonEnv(process.env),
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
     COLUMNS: String(cols),

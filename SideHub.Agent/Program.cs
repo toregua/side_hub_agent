@@ -79,7 +79,8 @@ static async Task<int> HandleStart(string[] args, string baseDirectory, Cancella
     return await Commands.Start(baseDirectory, daemon, ct);
 }
 
-/// <summary>setup --token &lt;token&gt; [--api &lt;url&gt;] [--no-start]: write .sidehub config here, then start in the background.</summary>
+/// <summary>setup [--token &lt;token&gt; | --token-stdin] [--api &lt;url&gt;] [--no-start]: write .sidehub config here,
+/// then start in the background. Without a flag the token comes from SIDEHUB_SETUP_TOKEN.</summary>
 static async Task<int> HandleSetup(string[] args, string baseDirectory, CancellationToken ct)
 {
     string? Value(string flag)
@@ -88,7 +89,15 @@ static async Task<int> HandleSetup(string[] args, string baseDirectory, Cancella
         return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
     }
 
-    var code = await AgentSetup.Run(baseDirectory, Value("--token") ?? "", Value("--api"), ct);
+    var fromStdin = args.Contains("--token-stdin") || Value("--token") == "-";
+    if (fromStdin && !Console.IsInputRedirected)
+        Console.Write("[SideHub] Paste the agent token, then press Enter: ");
+    var token = AgentSetup.ResolveToken(
+        Value("--token"),
+        fromStdin,
+        Console.In,
+        Environment.GetEnvironmentVariable(AgentSetup.TokenEnvVar));
+    var code = await AgentSetup.Run(baseDirectory, token, Value("--api"), ct);
     if (code != 0 || args.Contains("--no-start")) return code;
     return await Commands.Start(baseDirectory, daemon: true, ct);
 }

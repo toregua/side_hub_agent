@@ -180,11 +180,14 @@ public class WebSocketClient : IAsyncDisposable
         return env;
     }
 
-    /// <summary>Truncate a shell command for safe logging (first 80 chars).</summary>
-    private static string TruncateCommand(string command)
+    /// <summary>The leading program name of a command line, for logs that must not carry its arguments
+    /// (prompts, paths, secrets). Returns "?" when the line doesn't start with a plain program name.</summary>
+    public static string ProgramNameForLog(string commandLine)
     {
-        if (command.Length <= 80) return command;
-        return command[..80] + "...";
+        var first = commandLine.TrimStart().Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        return first.Length is > 0 and <= 40 && first.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.')
+            ? first
+            : "?";
     }
 
     private static string GetFifoPath(string ptySessionId)
@@ -418,7 +421,7 @@ public class WebSocketClient : IAsyncDisposable
         }
         catch (JsonException)
         {
-            Log($"Malformed FIFO line on PTY {ptySessionId}: {line}");
+            Log($"Malformed FIFO line on PTY {ptySessionId} ({line.Length} chars)");
         }
         catch (Exception ex)
         {
@@ -987,16 +990,18 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        Log($"Executing: {TruncateCommand(message.Command)}");
+        // Only metadata: the command and its output may carry secrets or user data.
+        Log($"Executing command {message.CommandId} ({message.Command.Length} chars)");
 
         try
         {
+            long outputLines = 0;
             var exitCode = await _executor.ExecuteAsync(
                 message.Command,
                 message.Shell,
                 async (stream, data) =>
                 {
-                    Log($"[{stream}] {data}");
+                    Interlocked.Increment(ref outputLines);
                     await SendAsync(new CommandOutputMessage
                     {
                         CommandId = message.CommandId,
@@ -1007,7 +1012,7 @@ public class WebSocketClient : IAsyncDisposable
                 ct
             );
 
-            Log($"Completed (exit code {exitCode})");
+            Log($"Command {message.CommandId} completed (exit code {exitCode}, {Interlocked.Read(ref outputLines)} output lines)");
             await SendAsync(new CommandCompletedMessage
             {
                 CommandId = message.CommandId,
@@ -1016,7 +1021,7 @@ public class WebSocketClient : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Log($"Failed: {ex.Message}");
+            Log($"Command {message.CommandId} failed: {ex.Message}");
             await SendAsync(new CommandFailedMessage
             {
                 CommandId = message.CommandId,
@@ -1339,12 +1344,9 @@ public class WebSocketClient : IAsyncDisposable
             {
                 // Log backend-launched input lines (runs, legacy scheduler/workflow sessions) so we can
                 // diagnose "claude never started" issues. Interactive keystrokes are skipped to avoid spam.
+                // Only the program name and size: the rest of the line may hold a prompt or secrets.
                 if (IsBackendManagedPtySession(ptySessionId))
-                {
-                    var preview = message.Input!.Length > 200 ? message.Input.Substring(0, 200) + "..." : message.Input;
-                    var oneLine = preview.Replace('\n', '⏎');
-                    Log($"PTY {ptySessionId} input: {oneLine}");
-                }
+                    Log($"PTY {ptySessionId} input: {ProgramNameForLog(message.Input!)} ({message.Input!.Length} chars)");
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { await session.Executor.WriteAsync(message.Input, ct); }
                 catch (Exception ex) { Log($"Failed to write to PTY {ptySessionId}: {ex.Message}"); }

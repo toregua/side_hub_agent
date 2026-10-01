@@ -66,4 +66,15 @@ public class AgentSetupTests : IDisposable
     [InlineData("http://localhost:5000/api/", "http://localhost:5000/api")]
     public void Api_base_accepts_the_host_or_the_api_root(string? value, string expected) =>
         Assert.Equal(expected, AgentSetup.ApiBase(value));
+
+    [Theory]
+    [InlineData("sh_flag", false, "sh_stdin\n", "sh_env", "sh_flag")]
+    [InlineData(null, false, "sh_stdin\n", "sh_env", "sh_env")]
+    [InlineData(null, true, "  sh_stdin  \nrest", "sh_env", "sh_stdin")]
+    [InlineData("-", false, "sh_stdin\n", "sh_env", "sh_stdin")]
+    [InlineData(null, true, "", "sh_env", "")]
+    [InlineData(null, false, "", null, "")]
+    public void Token_comes_from_stdin_then_the_flag_then_the_environment(
+        string? flag, bool fromStdin, string stdin, string? env, string expected) =>
+        Assert.Equal(expected, AgentSetup.ResolveToken(flag, fromStdin, new StringReader(stdin), env));
 }

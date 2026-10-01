@@ -4,8 +4,9 @@ set -e
 # SideHub Agent Installer for macOS/Linux
 # Requires: Node.js (for PTY terminal support)
 #
-# Usage: curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s -- [--token <token>] [version]
-#   --token  run from the project folder: after installing, configure this folder for the agent and start it
+# Usage: curl -fsSL https://api.sidehub.io/agent/install.sh | SIDEHUB_SETUP_TOKEN=<token> bash -s -- [version]
+#   SIDEHUB_SETUP_TOKEN (or --token <token>, visible in ps)  run from the project folder: after installing,
+#   configure this folder for the agent and start it
 
 SIDEHUB_API="${SIDEHUB_API:-https://www.sidehub.io/api}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/sidehub-agent}"
@@ -49,7 +50,7 @@ install() {
 
     local platform=$(detect_platform)
     local version="latest"
-    local token=""
+    local token="${SIDEHUB_SETUP_TOKEN:-}"
     while [ $# -gt 0 ]; do
         case "$1" in
             --token) token="$2"; shift 2 ;;
@@ -115,12 +116,13 @@ install() {
         # Configure the folder the command was run from (the project), then start the agent in the background.
         cd "$PROJECT_DIR"
         echo "🔗 Configuration de l'agent dans ${PROJECT_DIR}..."
-        SIDEHUB_API="$SIDEHUB_API" "$BIN_LINK" setup --token "$token"
+        # Token through the environment, not argv: argv is visible to every user in ps.
+        SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup
         echo ""
         echo "Commandes utiles : sidehub-agent status · sidehub-agent logs · sidehub-agent stop"
     else
         echo "Pour commencer, depuis le dossier de votre projet :"
-        echo "  sidehub-agent setup --token <jeton copié depuis SideHub>"
+        echo "  sidehub-agent setup --token-stdin   (puis collez le jeton copié depuis SideHub)"
         echo ""
     fi
 }

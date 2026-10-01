@@ -95,7 +95,7 @@ function Install-SideHubAgent {
     Write-Host "SideHub Agent installed successfully!" -ForegroundColor Green
     Write-Host ""
     Write-Host "To get started, from your project folder:"
-    Write-Host "  sidehub-agent setup --token <token copied from SideHub>"
+    Write-Host "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"
     Write-Host ""
     Write-Host "Note: Restart your terminal to update the PATH."
 }

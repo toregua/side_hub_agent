@@ -15,6 +15,10 @@ public static class AgentSetup
     /// <summary>www.sidehub.io serves the web app, not the API.</summary>
     public const string DefaultApi = "https://api.sidehub.io";
 
+    /// <summary>Environment variable holding the token, so it stays out of argv (ps, shell history).
+    /// Not SIDEHUB_AGENT_TOKEN: that one is set inside every SideHub terminal.</summary>
+    public const string TokenEnvVar = "SIDEHUB_SETUP_TOKEN";
+
     public record SetupInfo(
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("sidehubUrl")] string SidehubUrl,
@@ -23,11 +27,25 @@ public static class AgentSetup
         [property: JsonPropertyName("repositoryId")] string? RepositoryId,
         [property: JsonPropertyName("capabilities")] string[]? Capabilities);
 
+    /// <summary>
+    /// The token to set up with: read from <paramref name="stdin"/> with <c>--token-stdin</c> or <c>--token -</c>,
+    /// else the <c>--token</c> value, else the <see cref="TokenEnvVar"/> environment variable.
+    /// </summary>
+    public static string ResolveToken(string? tokenFlag, bool fromStdin, TextReader stdin, string? envToken)
+    {
+        if (fromStdin || tokenFlag == "-")
+            return stdin.ReadLine()?.Trim() ?? "";
+        if (!string.IsNullOrWhiteSpace(tokenFlag))
+            return tokenFlag.Trim();
+        return envToken?.Trim() ?? "";
+    }
+
     public static async Task<int> Run(string baseDirectory, string token, string? api, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(token))
         {
-            Console.WriteLine("[SideHub] Error: a token is required: sidehub-agent setup --token <token>");
+            Console.WriteLine($"[SideHub] Error: a token is required: pipe it to `sidehub-agent setup --token-stdin`, " +
+                              $"set {TokenEnvVar}, or pass `--token <token>`");
             return 1;
         }
 
