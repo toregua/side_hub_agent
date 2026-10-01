@@ -1,5 +1,12 @@
 # SideHub Agent Installer for Windows
 # Requires: Node.js (for PTY terminal support)
+#
+#   SIDEHUB_INSTALL_DIR  install folder (default %LOCALAPPDATA%\Programs\sidehub-agent); an existing folder
+#   is only replaced if it holds a previous agent install
+#
+# The archive is checked against the release's checksums.sha256, downloaded from GitHub Releases, and
+# checksums.sha256 itself must carry a valid signature (checksums.sha256.sig) from the release key below:
+# write access to the GitHub release alone is not enough to ship a tampered archive.
 
 param(
     [string]$Version = "latest"
@@ -7,11 +14,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$SideHubApi = if ($env:SIDEHUB_API) { $env:SIDEHUB_API } else { "https://www.sidehub.io/api" }
-$InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\sidehub-agent" }
+# Downloads live under /agent at the API host root (REST routes are under /api): accept either form
+$SideHubApi = if ($env:SIDEHUB_API) { $env:SIDEHUB_API } else { "https://api.sidehub.io" }
+$SideHubApi = $SideHubApi.TrimEnd('/') -replace '/api$', ''
+$InstallDir = if ($env:SIDEHUB_INSTALL_DIR) { $env:SIDEHUB_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\sidehub-agent" }
+# Written in every install folder: proves a folder is ours before it is wiped on reinstall
+$InstallMarker = ".sidehub-agent-install"
 # Checksums come straight from GitHub Releases, not through the SideHub API proxy that serves the archive:
 # a compromised proxy cannot hand out both a tampered archive and a matching checksum.
 $GitHubRepo = if ($env:SIDEHUB_GITHUB_REPO) { $env:SIDEHUB_GITHUB_REPO } else { "toregua/side_hub_agent" }
+
+# Release signing key (RSA, PKCS#1 v1.5 / SHA-256 over checksums.sha256), the private half is the
+# RELEASE_SIGNING_KEY secret of the release workflow. Same key as install.sh (ReleaseSigningKeyTests).
+$ReleaseSigningKeyXml = '<RSAKeyValue><Modulus>t9EUPG9pOyOv9va4UK8vI4mJA4nPN7GUiE+Cj7aek6OI3WSl1ma5Bdp7rPYj/aYX+XiM4FMGbzqpLwiYauZzCr4Xlf4Nka/3AKzvl7PorFXCnj1Y5aSw5A5t7loAPEwC6SIQoCvSFmMnDUcbOKjet/jhe2aHFk8AoKIhtD1OPP1fYunv9+pmFNYV3RaoTW4KqIvKviJlPOYiJF+eFu1k2yXQt9js+hzOBztXIlm3FKR9Te/mzEEbdrZo0SCh4r51yxR/n2Gn4SDlHBqSGxrHNqGSMmXNdqsyQuzb6Pu6fYIweRD7gW4gd7bLRDe7bFXHEI2VGlT+5hUEaAfl8FbooLPHu2P7i+UkiPrDzcehNCQ0LQyyyNEZIxEL63zHWCEsmiXBoRXpaJg94i1Y1Zzmnh4Q2DlpTCeVzgUGqgLGUaR4CiJdJRnFQlB+9Rm9UsRIJV5RihAW4R/fEGvBX2Nv0WKMxs9stdwcYmYrk19LJGLlFfpL9c5t9TF0KDB2SiIV</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
+# Releases published before signing: installed on the checksum alone (with a warning). Any later release
+# without a signature is refused, so deleting checksums.sha256.sig does not downgrade the check.
+$LastUnsignedVersion = [version]"1.0.61"
+# First release whose archive bundles pty-helper's node_modules (npm ci from the lockfile, in the CI).
+# Older ones need `npm install` from the registry at install time, running package scripts: refused.
+$MinVersion = [version]"1.0.59"
 
 # Check Node.js
 function Test-NodeJs {
@@ -45,6 +66,67 @@ function Get-LatestTag {
     return $null
 }
 
+# Verify checksums.sha256 against its detached signature with the embedded release key
+function Test-ChecksumsSignature {
+    param([string]$ChecksumsPath, [string]$Tag, [string]$TempDir)
+
+    $sigUrl = "https://github.com/$GitHubRepo/releases/download/$Tag/checksums.sha256.sig"
+    $sigPath = Join-Path $TempDir "checksums.sha256.sig"
+    try {
+        Invoke-WebRequest -Uri $sigUrl -OutFile $sigPath -UseBasicParsing
+    } catch {
+        $status = $null
+        if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        if ($status -eq 404 -and [version]$Tag.TrimStart('v') -le $LastUnsignedVersion) {
+            Write-Host "$Tag predates signed releases: only the SHA256 checksum is verified." -ForegroundColor Yellow
+            return $true
+        }
+        Write-Host "Checksums signature not found ($sigUrl)" -ForegroundColor Red
+        return $false
+    }
+
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try {
+        $rsa.FromXmlString($ReleaseSigningKeyXml)
+        $valid = $rsa.VerifyData(
+            [System.IO.File]::ReadAllBytes($ChecksumsPath),
+            [System.IO.File]::ReadAllBytes($sigPath),
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    } finally {
+        $rsa.Dispose()
+    }
+    if (-not $valid) {
+        Write-Host "Invalid signature for checksums.sha256 ($Tag): release not published by SideHub" -ForegroundColor Red
+        return $false
+    }
+    Write-Host "Release signature verified ($Tag)" -ForegroundColor Green
+    return $true
+}
+
+# Refuse to wipe a folder that is not a previous agent install (a mistyped SIDEHUB_INSTALL_DIR, Program Files...)
+function Test-InstallDir {
+    if (-not [System.IO.Path]::IsPathRooted($InstallDir) -or $InstallDir -match '(^|[\\/])\.\.?([\\/]|$)') {
+        Write-Host "SIDEHUB_INSTALL_DIR must be an absolute path without . or ..: $InstallDir" -ForegroundColor Red
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $InstallDir)) { return $true }
+    $item = Get-Item -LiteralPath $InstallDir -Force
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        Write-Host "$InstallDir exists and is not a folder" -ForegroundColor Red
+        return $false
+    }
+    # Empty, ours (marker), or an install from before the marker (agent binary + pty-helper)
+    $isEmpty = -not (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1)
+    $hasMarker = Test-Path -LiteralPath (Join-Path $InstallDir $InstallMarker)
+    $isLegacyInstall = (Test-Path -LiteralPath (Join-Path $InstallDir "sidehub-agent.exe")) -and
+        (Test-Path -LiteralPath (Join-Path $InstallDir "pty-helper"))
+    if ($isEmpty -or $hasMarker -or $isLegacyInstall) { return $true }
+    Write-Host "$InstallDir is not empty and holds no SideHub Agent install: aborting." -ForegroundColor Red
+    Write-Host "Pick another folder (SIDEHUB_INSTALL_DIR) or empty it yourself." -ForegroundColor Red
+    return $false
+}
+
 # Verify the archive against the release's checksums.sha256; any failure aborts the install
 function Test-ArchiveChecksum {
     param([string]$ArchivePath, [string]$AssetName, [string]$Tag, [string]$TempDir)
@@ -55,6 +137,10 @@ function Test-ArchiveChecksum {
         Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsPath -UseBasicParsing
     } catch {
         Write-Host "Unable to download checksums from $checksumsUrl" -ForegroundColor Red
+        return $false
+    }
+
+    if (-not (Test-ChecksumsSignature -ChecksumsPath $checksumsPath -Tag $Tag -TempDir $TempDir)) {
         return $false
     }
 
@@ -97,66 +183,66 @@ function Install-SideHubAgent {
     } else {
         $tag = "v" + $Version.TrimStart('v')
     }
+    # The tag goes into URLs and messages: a plain version only
+    if ($tag -notmatch '^v\d+(\.\d+){1,3}$') {
+        Write-Error "Invalid version: $Version (expected 1.0.61 or v1.0.61)"
+        exit 1
+    }
+    if ([version]$tag.TrimStart('v') -lt $MinVersion) {
+        Write-Error ("$tag can no longer be installed: releases before v$MinVersion install their Node.js " +
+            "dependencies from the npm registry at install time. Install v$MinVersion or later.")
+        exit 1
+    }
+
+    if (-not (Test-InstallDir)) { exit 1 }
 
     $assetName = "sidehub-agent-$platform.zip"
     $url = "$SideHubApi/agent/download/$platform/$tag"
 
     Write-Host "Downloading SideHub Agent $tag ($platform)..."
 
-    # Create temp directory
-    $tempDir = Join-Path $env:TEMP "sidehub-agent-install"
-    if (Test-Path $tempDir) {
-        Remove-Item -Recurse -Force $tempDir
-    }
-    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-    $archivePath = Join-Path $tempDir "agent.zip"
+    # Unique temp directory: a fixed name could be pre-created (or swapped) by another process
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sidehub-agent-install-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempDir | Out-Null
 
     try {
-        Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
-    } catch {
-        Write-Error "Error: Unable to download from $url"
-        Remove-Item -Recurse -Force $tempDir
-        exit 1
-    }
+        $archivePath = Join-Path $tempDir "agent.zip"
 
-    if (-not (Test-ArchiveChecksum -ArchivePath $archivePath -AssetName $assetName -Tag $tag -TempDir $tempDir)) {
-        Remove-Item -Recurse -Force $tempDir
-        Write-Error "Installation aborted: the archive was not extracted."
-        exit 1
-    }
-
-    Write-Host "Extracting..."
-    $extractDir = Join-Path $tempDir "package"
-    Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
-
-    # node_modules ships prebuilt in the archive (npm ci from the lockfile, in the release CI).
-    # Archives built before that only carry package.json: install from the registry as before.
-    $ptyHelperDir = Join-Path $extractDir "pty-helper"
-    if (Test-Path (Join-Path $ptyHelperDir "node_modules\node-pty")) {
-        Write-Host "Node.js dependencies bundled in the archive"
-    } else {
-        Push-Location $ptyHelperDir
-        if (Test-Path (Join-Path $ptyHelperDir "package-lock.json")) {
-            Write-Host "Installing Node.js dependencies (lockfile)..."
-            & npm ci --omit=dev --ignore-scripts --silent
-        } else {
-            Write-Host "Installing Node.js dependencies (older release, no lockfile)..."
-            & npm install --omit=dev --silent
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
+        } catch {
+            Write-Error "Error: Unable to download from $url"
+            exit 1
         }
-        Pop-Location
+
+        if (-not (Test-ArchiveChecksum -ArchivePath $archivePath -AssetName $assetName -Tag $tag -TempDir $tempDir)) {
+            Write-Error "Installation aborted: the archive was not extracted."
+            exit 1
+        }
+
+        Write-Host "Extracting..."
+        $extractDir = Join-Path $tempDir "package"
+        Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+
+        # node_modules ships prebuilt in the verified archive (npm ci from the lockfile, in the release CI):
+        # the install never runs npm.
+        if (-not (Test-Path (Join-Path $extractDir "pty-helper\node_modules\node-pty"))) {
+            Write-Error "The $tag archive does not bundle pty-helper's Node.js dependencies: aborting."
+            exit 1
+        }
+        Write-Host "Node.js dependencies bundled in the archive"
+        New-Item -ItemType File -Path (Join-Path $extractDir $InstallMarker) | Out-Null
+
+        Write-Host "Installing to $InstallDir..."
+        if (Test-Path -LiteralPath $InstallDir) {
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+        Get-ChildItem -Path $extractDir -Force | Copy-Item -Destination $InstallDir -Recurse -Force
+    } finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
-
-    Write-Host "Installing to $InstallDir..."
-    if (Test-Path $InstallDir) {
-        Remove-Item -Recurse -Force $InstallDir
-    }
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-
-    Get-ChildItem -Path $extractDir | Copy-Item -Destination $InstallDir -Recurse -Force
-
-    # Cleanup
-    Remove-Item -Recurse -Force $tempDir
 
     # Add to PATH if not already present
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

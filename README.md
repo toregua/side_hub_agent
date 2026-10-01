@@ -26,9 +26,13 @@ The script downloads the latest release for your platform, installs it in
 curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.34
 ```
 
-The script checks the archive against the release's `checksums.sha256` (fetched from GitHub
-Releases) and aborts on a mismatch. Each release also carries a build provenance attestation —
-see [Verifying a release](SECURITY.md#verifying-a-release).
+Set `SIDEHUB_INSTALL_DIR` to install elsewhere (an existing folder that does not hold a previous
+agent install is refused). Versions before `v1.0.59` can no longer be installed with the script.
+
+The script checks the signature of the release's `checksums.sha256` (fetched from GitHub Releases)
+against the key embedded in the script, then the archive against it, and aborts on any mismatch.
+Each release also carries a build provenance attestation — see
+[Verifying a release](SECURITY.md#verifying-a-release).
 
 ### 2. Configure
 

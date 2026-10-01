@@ -166,6 +166,26 @@ jobs:
           cd release
           sha256sum * > checksums.sha256
 
+      # The install scripts only trust checksums.sha256 if it carries a valid signature from the key embedded in
+      # them: write access to the release alone cannot ship a tampered archive with a matching checksum.
+      # RELEASE_SIGNING_KEY is the PEM private key (RSA); a release without it fails rather than ship unsigned.
+      - name: Sign checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::RELEASE_SIGNING_KEY secret is not set: refusing to publish an unsigned release (see SECURITY.md)"
+            exit 1
+          fi
+          umask 077
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key_file"
+          openssl dgst -sha256 -sign "$key_file" -out release/checksums.sha256.sig release/checksums.sha256
+          # Check against the public key the install scripts ship, so a key mismatch never reaches users
+          sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' scripts/install.sh | tr -d "'" | sed 's/^RELEASE_SIGNING_PUBKEY=//' > pubkey.pem
+          openssl dgst -sha256 -verify pubkey.pem -signature release/checksums.sha256.sig release/checksums.sha256
+
       # Verify with: gh attestation verify <file> --repo toregua/side_hub_agent (see SECURITY.md)
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
@@ -175,9 +195,18 @@ jobs:
             release/*.zip
             release/checksums.sha256
 
+      # Created as a draft, then published once every asset is attached: with immutable releases enabled on
+      # the repository, assets can no longer be added, replaced or deleted after publication.
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          draft: true
           generate_release_notes: true
           files: |
             release/*
+
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

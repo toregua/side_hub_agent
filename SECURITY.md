@@ -104,18 +104,54 @@ is committed to the repository. Each release ships:
   `node_modules`, installed by the CI with `npm ci --omit=dev --ignore-scripts` from the committed
   lockfile, `node-pty` pinned to an exact version) and `cli-wrappers`;
 - `checksums.sha256` — SHA-256 of every archive;
+- `checksums.sha256.sig` — RSA signature (PKCS#1 v1.5, SHA-256) of `checksums.sha256` by the
+  release signing key, whose public half is embedded in `install.sh` / `install.ps1`;
 - a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
   (Sigstore, signed with the workflow's OIDC identity) for each archive and for
   `checksums.sha256`, proving it was built by this repository's release workflow from the
   tagged commit.
 
 **Install scripts.** `install.sh` / `install.ps1` resolve the version to a tag, download the
-archive through the SideHub API, then download `checksums.sha256` **directly from GitHub
-Releases** and check the archive's SHA-256 before extracting it. A missing checksum file, a
-missing entry or a mismatch aborts the install. Because the checksum does not come from the
-SideHub proxy, a compromised proxy cannot serve a tampered archive with a matching checksum. The
-Node.js dependencies come inside the verified archive: the install does not run `npm` (only
-releases built before they were bundled fall back to installing them from the registry).
+archive through the SideHub API, then download `checksums.sha256` and `checksums.sha256.sig`
+**directly from GitHub Releases**. The signature is checked against the embedded public key
+(`openssl` on macOS/Linux, .NET on Windows), then the archive's SHA-256 against
+`checksums.sha256`, before anything is extracted. A missing or invalid signature, a missing
+checksum entry or a mismatch aborts the install. Because the checksum does not come from the
+SideHub proxy, a compromised proxy cannot serve a tampered archive with a matching checksum; because
+it is signed with a key that lives outside GitHub Releases, write access to the release
+(`contents: write`) cannot replace both the archive and its checksum either.
+
+- Releases up to `v1.0.61` predate the signature: they are installed on the checksum alone, with a
+  warning. A later release without `checksums.sha256.sig` is refused, so deleting the signature
+  does not downgrade the check.
+- Releases before `v1.0.59` are refused: their archive does not bundle the Node.js dependencies,
+  which would have to be installed from the registry with package scripts. The install never runs
+  `npm`.
+- The install folder is `SIDEHUB_INSTALL_DIR` (default `/usr/local/lib/sidehub-agent`,
+  `%LOCALAPPDATA%\Programs\sidehub-agent` on Windows). It is wiped on reinstall only if it is empty or
+  holds a previous agent install (`.sidehub-agent-install` marker, or the agent binary and
+  `pty-helper/`); any other existing folder aborts the install. The legacy `INSTALL_DIR` variable is
+  ignored.
+
+**Release signing key.** The private key is the `RELEASE_SIGNING_KEY` secret of the release
+workflow, which refuses to publish a release without it and checks the signature against the key
+embedded in `install.sh` before publishing. To rotate it (on a trusted machine, never on an
+agent host):
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out release-signing-key.pem
+openssl pkey -in release-signing-key.pem -pubout   # → RELEASE_SIGNING_PUBKEY in install.sh
+# → $ReleaseSigningKeyXml in install.ps1 (ReleaseSigningKeyTests checks both match)
+python3 -c "import base64,subprocess as s;h=s.check_output(['openssl','rsa','-in','release-signing-key.pem','-noout','-modulus']).decode().strip().split('=')[1];print('<RSAKeyValue><Modulus>'+base64.b64encode(bytes.fromhex(h)).decode()+'</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>')"
+```
+
+then store `release-signing-key.pem` as the `RELEASE_SIGNING_KEY` secret and keep it offline. Releases
+signed with the previous key stay installable only with scripts that still embed it.
+
+**Immutable releases.** Enable *Settings → General → Releases → Enable release immutability* on the
+repository: once published, a release's assets can no longer be replaced or deleted. The release
+workflow creates the release as a draft, attaches every asset, then publishes it, as immutable
+releases require.
 
 The release workflow pins every action by commit SHA (updated by Dependabot) and runs with
 `contents: read` except for the job that publishes the release. Release tags are never moved:
