@@ -929,6 +929,12 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
+        if (!_config.AllowFileWrite)
+        {
+            Log($"SECURITY: terminal attachment for PTY {message.PtySessionId} refused — file writes are disabled (allowFileWrite: false)");
+            return;
+        }
+
         // Save image to file and paste [Image #N: path] into PTY.
         // The CLI running in the PTY (claude/codex/gemini) can then read the file.
         try
@@ -980,6 +986,18 @@ public class WebSocketClient : IAsyncDisposable
             string.IsNullOrEmpty(message.Shell))
         {
             Log("Invalid command message received");
+            return;
+        }
+
+        if (!_config.AllowCommandExecute)
+        {
+            Log($"SECURITY: command {message.CommandId} refused — command.execute is disabled (allowCommandExecute: false)");
+            await SendAsync(new CommandFailedMessage
+            {
+                CommandId = message.CommandId,
+                ExitCode = -1,
+                Error = "command.execute is disabled on this agent (allowCommandExecute: false)"
+            }, ct);
             return;
         }
 
@@ -1046,6 +1064,18 @@ public class WebSocketClient : IAsyncDisposable
         if (string.IsNullOrEmpty(message.CommandId) || string.IsNullOrEmpty(message.Path))
         {
             Log("Invalid file.write.start message");
+            return;
+        }
+
+        if (!_config.AllowFileWrite)
+        {
+            Log($"SECURITY: file write {message.CommandId} refused — file.write is disabled (allowFileWrite: false)");
+            await SendAsync(new CommandFailedMessage
+            {
+                CommandId = message.CommandId,
+                ExitCode = -1,
+                Error = "file.write is disabled on this agent (allowFileWrite: false)"
+            }, ct);
             return;
         }
 
@@ -1201,6 +1231,21 @@ public class WebSocketClient : IAsyncDisposable
         return cwd;
     }
 
+    /// <summary>The shell a pty.start asked for, checked against <see cref="ShellPolicy"/>:
+    /// <paramref name="shell"/> is the name reported back, <paramref name="shellPath"/> the binary
+    /// actually spawned. A refused shell starts nothing (the backend sees no pty.started).</summary>
+    private bool TryResolvePtyShell(string? requested, string ptySessionId, out string shell, out string shellPath)
+    {
+        if (!ShellPolicy.TryResolve(requested, out shellPath))
+        {
+            Log($"SECURITY: PTY {ptySessionId} refused — shell '{requested}' is not an allowed shell");
+            shell = string.Empty;
+            return false;
+        }
+        shell = Path.GetFileName(shellPath);
+        return true;
+    }
+
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
         var ptySessionId = message.PtySessionId;
@@ -1222,7 +1267,8 @@ public class WebSocketClient : IAsyncDisposable
                 _ptySessions.TryRemove(ptySessionId, out _);
             }
 
-            var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
+            if (!TryResolvePtyShell(message.Shell, ptySessionId, out var shell, out var shellPath))
+                return;
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
             var cwd = ResolvePtyWorkingDirectory(message.WorkingDirectory, ptySessionId);
@@ -1245,7 +1291,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 var executor = new NodePtyExecutor(cwd);
                 await executor.StartAsync(
-                    shell,
+                    shellPath,
                     async output => await SendAsync(new PtyOutputMessage { Data = output, PtySessionId = ptySessionId }, ct),
                     async exitCode =>
                     {
@@ -1298,7 +1344,8 @@ public class WebSocketClient : IAsyncDisposable
         }
 
         {
-            var shell = message.Shell ?? SystemInfoProvider.GetDefaultShell();
+            if (!TryResolvePtyShell(message.Shell, "legacy", out var shell, out var shellPath))
+                return;
             var columns = message.Columns ?? 120;
             var rows = message.Rows ?? 30;
             var effectiveWorkingDirectory = ResolvePtyWorkingDirectory(message.WorkingDirectory, "legacy");
@@ -1309,7 +1356,7 @@ public class WebSocketClient : IAsyncDisposable
             {
                 _ptyExecutor = new NodePtyExecutor(effectiveWorkingDirectory);
                 await _ptyExecutor.StartAsync(
-                    shell,
+                    shellPath,
                     async output => await SendAsync(new PtyOutputMessage { Data = output }, ct),
                     async exitCode =>
                     {

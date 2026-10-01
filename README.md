@@ -95,6 +95,8 @@ my-project/
 | `agentToken` | Yes | Authentication token (prefix `sh_agent_`) |
 | `workingDirectory` | Yes | Working directory for command execution (`.` for current, or absolute path) |
 | `capabilities` | Yes | Agent capabilities: `"shell"`, `"claude-code"` |
+| `allowCommandExecute` | No | Allow one-shot `command.execute` from the backend (default `true`) |
+| `allowFileWrite` | No | Allow the backend to write files under `workingDirectory` — terminal image uploads (default `true`) |
 
 ### Capabilities
 
@@ -115,6 +117,25 @@ my-project/
   "capabilities": ["shell", "claude-code"]
 }
 ```
+
+## Security
+
+**The agent runs whatever the SideHub backend asks for**: it opens terminals and types into
+them, runs commands and writes files as the OS user that started it. A compromised backend
+means code execution on the agent's machine — the agent is not a sandbox.
+
+What the agent enforces:
+
+- `wss://` only (except `localhost`), token sent in a header
+- `pty.start` only spawns allowlisted shells (`bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`; `cmd`, `powershell`, `pwsh` on Windows), resolved from fixed system directories — any other binary is refused
+- PTYs get an allowlisted environment; the backend cannot override `PATH`, `LD_PRELOAD`, rcfiles or agent-owned variables
+- PTY working directories and file writes are confined to `workingDirectory`
+- `command.execute` and file writes can be disabled with `"allowCommandExecute": false` / `"allowFileWrite": false`
+
+Run the agent as a dedicated unprivileged user (never `root`), keep `.sidehub/*.json` out of
+version control, and use a container or VM if the machine holds anything you would not hand
+to the backend. See [SECURITY.md](SECURITY.md) for the full threat model and how to report a
+vulnerability.
 
 ## Commands
 
@@ -298,6 +319,7 @@ side_hub_agent/
 ├── .github/workflows/
 │   └── release.yml                # Release builds on tags
 ├── CONTRIBUTING.md
+├── SECURITY.md
 ├── LICENSE
 └── README.md
 ```

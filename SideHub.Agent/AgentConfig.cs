@@ -31,6 +31,18 @@ public class AgentConfig
     [JsonPropertyName("name")]
     public string? Name { get; init; }
 
+    /// <summary>Whether the backend may run one-shot commands (<c>command.execute</c>).
+    /// Defaults to true. Turning it off does not sandbox the agent: PTYs still run what the
+    /// backend types (see SECURITY.md).</summary>
+    [JsonPropertyName("allowCommandExecute")]
+    public bool AllowCommandExecute { get; init; } = true;
+
+    /// <summary>Whether the backend may write files into the working directory
+    /// (<c>file.write.*</c> and <c>terminal.attachment.enqueue</c>, used for terminal image
+    /// uploads). Defaults to true.</summary>
+    [JsonPropertyName("allowFileWrite")]
+    public bool AllowFileWrite { get; init; } = true;
+
     [JsonIgnore]
     public string? ConfigFilePath { get; private set; }
 
