@@ -15,6 +15,16 @@ public class ClaudeTranscriptHarvesterTests : IDisposable
     private static RunUsageContext Run(params string[] sessionIds) => new(Guid.NewGuid(), Cwd, sessionIds, [], []);
 
     [Fact]
+    public void Harvest_IgnoresSessionIdsThatAreNotUuids()
+    {
+        _claude.AddSession("-work-side-hub", SessionId);
+
+        // Would resolve to the session file above if it reached Path.Combine.
+        Assert.Null(Harvester.Harvest(Run($"../-work-side-hub/{SessionId}")));
+        Assert.Null(Harvester.Harvest(Run($"{_claude.Root}/-work-side-hub/{SessionId}")));
+    }
+
+    [Fact]
     public void EncodeCwd_ReplacesEveryNonAlphanumericCharacter()
     {
         Assert.Equal("-root-Github-side-hub-agent", ClaudeProjectPaths.EncodeCwd("/root/Github/side_hub_agent"));

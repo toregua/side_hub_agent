@@ -32,6 +32,7 @@ public class WebSocketClient : IAsyncDisposable
     // "<ptySessionId>:<cliSessionId>" so multiple Claude runs in the same PTY
     // don't collide.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _claudeTitleWatchers = new();
+    private const int MaxClaudeTitleWatchersPerPty = 16;
     // Last CLI session (and its title) seen in each PTY, re-reported after a backend reconnect
     // so every device can show the terminal as that conversation.
     private readonly ConcurrentDictionary<string, PtyCliSession> _ptyCliSessions = new();
@@ -298,11 +299,13 @@ public class WebSocketClient : IAsyncDisposable
             {
                 // O_RDWR keeps the FIFO open even when wrappers come and go.
                 using var stream = new FileStream(fifoPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-                using var reader = new StreamReader(stream, Encoding.UTF8);
+                using var streamReader = new StreamReader(stream, Encoding.UTF8);
+                // Anything in the terminal can write here: never buffer an unbounded line.
+                var reader = new BoundedLineReader(streamReader, FifoNotification.MaxLineLength);
 
                 while (!token.IsCancellationRequested)
                 {
-                    string? line;
+                    BoundedLine? line;
                     try
                     {
                         line = await reader.ReadLineAsync(token);
@@ -312,16 +315,22 @@ public class WebSocketClient : IAsyncDisposable
                         break;
                     }
 
-                    if (line is null)
+                    if (line is not { } read)
                     {
                         // FIFO closed; small backoff before retry to avoid spinning.
                         await Task.Delay(200, token);
                         continue;
                     }
 
-                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    if (read.TooLong)
+                    {
+                        Log($"SECURITY: FIFO line over {FifoNotification.MaxLineLength} chars ignored on PTY {ptySessionId}");
+                        continue;
+                    }
 
-                    await HandleFifoLineAsync(ptySessionId, line, token);
+                    if (string.IsNullOrWhiteSpace(read.Text)) continue;
+
+                    await HandleFifoLineAsync(ptySessionId, read.Text, token);
                 }
             }
             catch (Exception ex) when (!token.IsCancellationRequested)
@@ -333,78 +342,87 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandleFifoLineAsync(string ptySessionId, string line, CancellationToken ct)
     {
+        var notification = FifoNotification.Parse(line, out var rejection);
+        if (notification is null)
+        {
+            // Never log the line itself: it is whatever a process of the terminal wrote.
+            Log($"SECURITY: FIFO line rejected on PTY {ptySessionId} ({rejection}, {line.Length} chars)");
+            return;
+        }
+
         try
         {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-            var ev = root.TryGetProperty("event", out var eP) ? eP.GetString() : null;
-
-            // Written by `sidehub-cli workflow step-complete|step-fail`: the step is over but the
-            // CLI may stay open, so report the run's usage now (exit will report it again).
-            if (ev == "run-step-ended")
+            switch (notification)
             {
-                if (_usageCollector.IsTracked(ptySessionId))
-                    RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
-                return;
+                // Written by `sidehub-cli workflow step-complete|step-fail`: the step is over but the
+                // CLI may stay open, so report the run's usage now (exit will report it again).
+                case FifoNotification.RunStepEnded:
+                    if (_usageCollector.IsTracked(ptySessionId))
+                        RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
+                    return;
+
+                // Written by the codex wrapper: codex has no session id to announce, so the harvester
+                // needs the rollout its process holds open, or matches it by cwd and launch time.
+                // Not forwarded to the backend.
+                case FifoNotification.CliLaunched launched:
+                    RecordCliLaunch(ptySessionId, launched);
+                    return;
+
+                case FifoNotification.CliSessionStarted started:
+                    await RecordCliSessionAsync(ptySessionId, started, ct);
+                    return;
             }
-
-            // Written by the codex wrapper: codex has no session id to announce, so the harvester
-            // needs the rollout its process holds open, or matches it by cwd and launch time.
-            // Not forwarded to the backend.
-            if (ev == "cli-launched")
-            {
-                var launchedProvider = root.TryGetProperty("provider", out var lpP) ? lpP.GetString() : null;
-                var launchedCwd = root.TryGetProperty("cwd", out var lcP) ? lcP.GetString() : null;
-                if (string.IsNullOrEmpty(launchedProvider) || string.IsNullOrEmpty(launchedCwd)) return;
-                var pid = root.TryGetProperty("pid", out var pidP) && pidP.TryGetInt32(out var p) ? p : (int?)null;
-                Log($"CLI launched in PTY {ptySessionId}: provider={launchedProvider} cwd={launchedCwd} pid={pid}");
-
-                LaunchObservation? observation = null;
-                if (pid is { } launchedPid
-                    && string.Equals(launchedProvider, "codex", StringComparison.OrdinalIgnoreCase)
-                    && ProcessOpenFiles.IsSupported())
-                {
-                    observation = new LaunchObservation();
-                    // Until the process exits, whatever happens to the PTY.
-                    RunInBackground("codex rollout watch", () => observation.WatchAsync(
-                        () => ProcessOpenFiles.Find(launchedPid, CodexRolloutHarvester.IsRolloutPath),
-                        CancellationToken.None));
-                }
-                _usageCollector.RecordCliLaunch(ptySessionId, launchedProvider!, launchedCwd!, DateTimeOffset.UtcNow, observation);
-                return;
-            }
-
-            if (ev != "cli-session-started") return;
-
-            var provider = root.TryGetProperty("provider", out var pP) ? pP.GetString() : null;
-            var cliSessionId = root.TryGetProperty("cliSessionId", out var sP) ? sP.GetString() : null;
-            if (string.IsNullOrEmpty(provider) || string.IsNullOrEmpty(cliSessionId)) return;
-
-            Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
-            _usageCollector.RecordCliSession(ptySessionId, provider!, cliSessionId!);
-            _ptyCliSessions[ptySessionId] = new PtyCliSession(provider!, cliSessionId!);
-            await SendAsync(new PtyCliSessionStartedMessage
-            {
-                PtySessionId = ptySessionId,
-                Provider = provider!,
-                CliSessionId = cliSessionId!,
-            }, ct);
-
-            // For Claude, watch the project JSONL for an ai-title line and
-            // forward it as a tab-label suggestion.
-            if (string.Equals(provider, "claude", StringComparison.OrdinalIgnoreCase))
-            {
-                StartClaudeTitleWatcher(ptySessionId, cliSessionId!, ct);
-            }
-        }
-        catch (JsonException)
-        {
-            Log($"Malformed FIFO line on PTY {ptySessionId} ({line.Length} chars)");
         }
         catch (Exception ex)
         {
             Log($"FIFO line handling failed on PTY {ptySessionId}: {ex.Message}");
         }
+    }
+
+    private void RecordCliLaunch(string ptySessionId, FifoNotification.CliLaunched launched)
+    {
+        Log($"CLI launched in PTY {ptySessionId}: provider={launched.Provider} cwd={launched.Cwd} pid={launched.Pid}");
+
+        LaunchObservation? observation = null;
+        if (launched.Pid is { } launchedPid
+            && launched.Provider == "codex"
+            && ProcessOpenFiles.IsSupported())
+        {
+            // Only watch a process of this very PTY: a forged pid could otherwise attribute another
+            // PTY's rollout to this run. Without proof, the harvester falls back to cwd + launch time.
+            if (ProcessEnvironment.Has(launchedPid, "SIDEHUB_PTY_SESSION_ID", ptySessionId))
+            {
+                observation = new LaunchObservation();
+                // Until the process exits, whatever happens to the PTY.
+                RunInBackground("codex rollout watch", () => observation.WatchAsync(
+                    () => ProcessOpenFiles.Find(launchedPid, CodexRolloutHarvester.IsRolloutPath),
+                    CancellationToken.None));
+            }
+            else
+            {
+                Log($"SECURITY: pid {launchedPid} announced on PTY {ptySessionId} is not a process of that PTY; not watched");
+            }
+        }
+        _usageCollector.RecordCliLaunch(ptySessionId, launched.Provider, launched.Cwd, DateTimeOffset.UtcNow, observation);
+    }
+
+    private async Task RecordCliSessionAsync(string ptySessionId, FifoNotification.CliSessionStarted started, CancellationToken ct)
+    {
+        var (provider, cliSessionId) = (started.Provider, started.CliSessionId);
+        Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
+        _usageCollector.RecordCliSession(ptySessionId, provider, cliSessionId);
+        _ptyCliSessions[ptySessionId] = new PtyCliSession(provider, cliSessionId);
+        await SendAsync(new PtyCliSessionStartedMessage
+        {
+            PtySessionId = ptySessionId,
+            Provider = provider,
+            CliSessionId = cliSessionId,
+        }, ct);
+
+        // For Claude, watch the project JSONL for an ai-title line and
+        // forward it as a tab-label suggestion.
+        if (provider == "claude")
+            StartClaudeTitleWatcher(ptySessionId, cliSessionId, ct);
     }
 
     /// <summary>
@@ -417,6 +435,17 @@ public class WebSocketClient : IAsyncDisposable
     /// </summary>
     private void StartClaudeTitleWatcher(string ptySessionId, string cliSessionId, CancellationToken ct)
     {
+        // The id names the watched file: only a UUID (see FifoNotification) may reach Path.Combine.
+        if (!FifoNotification.IsValidCliSessionId(cliSessionId))
+            return;
+        // Each watcher is a task and a FileSystemWatcher: a terminal flooding the FIFO with ids must not pile them up.
+        var prefix = ptySessionId + ":";
+        if (_claudeTitleWatchers.Keys.Count(k => k.StartsWith(prefix, StringComparison.Ordinal)) >= MaxClaudeTitleWatchersPerPty)
+        {
+            Log($"SECURITY: PTY {ptySessionId} already has {MaxClaudeTitleWatchersPerPty} ai-title watchers; none added for {cliSessionId}");
+            return;
+        }
+
         if (!_ptyCwd.TryGetValue(ptySessionId, out var cwd) || string.IsNullOrEmpty(cwd))
         {
             Log($"No cwd recorded for PTY {ptySessionId}; skipping ai-title watcher for {cliSessionId}");

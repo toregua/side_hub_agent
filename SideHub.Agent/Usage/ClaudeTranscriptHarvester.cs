@@ -33,7 +33,8 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
         var summedMessages = new Dictionary<string, MessageUsage>();
         var found = false;
 
-        foreach (var sessionId in run.CliSessionIds.Distinct())
+        // The ids come from the notification FIFO and name files: only UUIDs, whatever the caller checked.
+        foreach (var sessionId in run.CliSessionIds.Distinct().Where(FifoNotification.IsValidCliSessionId))
         {
             var sessionFile = FindSessionFile(run.Cwd, sessionId);
             if (sessionFile is null)

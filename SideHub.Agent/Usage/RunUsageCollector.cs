@@ -14,6 +14,9 @@ public sealed class RunUsageCollector
     private const string RunPtyPrefix = "run-";
     // A launch outside any tracked run only matters to disambiguate runs started around the same time.
     private static readonly TimeSpan LaunchRetention = TimeSpan.FromHours(24);
+    // What the FIFO announces is untrusted: a terminal flooding it must not grow these lists without bound.
+    private const int MaxCliSessionsPerRun = 64;
+    private const int MaxLaunchesPerPty = 64;
 
     private readonly IReadOnlyDictionary<string, IUsageHarvester> _harvestersByProvider;
     private readonly IUsageHarvester _unavailable = new NullHarvester();
@@ -62,8 +65,14 @@ public sealed class RunUsageCollector
 
     public void RecordCliSession(string ptySessionId, string provider, string cliSessionId)
     {
-        if (_runs.TryGetValue(ptySessionId, out var run))
-            run.CliSessions[cliSessionId] = provider;
+        if (!_runs.TryGetValue(ptySessionId, out var run))
+            return;
+        if (run.CliSessions.Count >= MaxCliSessionsPerRun && !run.CliSessions.ContainsKey(cliSessionId))
+        {
+            _log($"Run {run.RunId} already has {MaxCliSessionsPerRun} CLI sessions; {cliSessionId} ignored");
+            return;
+        }
+        run.CliSessions[cliSessionId] = provider;
     }
 
     /// <summary>
@@ -76,6 +85,11 @@ public sealed class RunUsageCollector
         lock (_launches)
         {
             _launches.RemoveAll(l => l.At < at - LaunchRetention && !_runs.ContainsKey(l.PtySessionId));
+            if (_launches.Count(l => l.PtySessionId == ptySessionId) >= MaxLaunchesPerPty)
+            {
+                _log($"PTY {ptySessionId} already has {MaxLaunchesPerPty} CLI launches; one more ignored");
+                return;
+            }
             _launches.Add(new CliLaunch(ptySessionId, provider, cwd, at, observation));
         }
     }
