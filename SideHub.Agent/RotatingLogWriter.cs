@@ -6,6 +6,7 @@ namespace SideHub.Agent;
 /// A TextWriter that writes to a log file with automatic rotation.
 /// When the log file exceeds <see cref="MaxFileSizeBytes"/>, it is rotated:
 ///   .log -> .log.1 -> .log.2 -> ... -> .log.{MaxArchiveCount} (deleted)
+/// The log and its archives are kept 0600 (see <see cref="PrivateFiles"/>).
 /// </summary>
 public sealed class RotatingLogWriter : TextWriter
 {
@@ -37,6 +38,7 @@ public sealed class RotatingLogWriter : TextWriter
         _maxArchiveCount = maxArchiveCount;
 
         EnsureDirectory();
+        RestrictArchives();
         _writer = OpenWriter();
     }
 
@@ -158,6 +160,7 @@ public sealed class RotatingLogWriter : TextWriter
 
             // Current log becomes .log.1
             File.Move(_logFilePath, $"{_logFilePath}.1");
+            RestrictArchives();
 
             // Open fresh log file
             _writer = OpenWriter();
@@ -180,14 +183,23 @@ public sealed class RotatingLogWriter : TextWriter
 
     private StreamWriter OpenWriter()
     {
-        return new StreamWriter(_logFilePath, append: true) { AutoFlush = true };
+        var writer = PrivateFiles.AppendText(_logFilePath);
+        writer.AutoFlush = true;
+        return writer;
+    }
+
+    /// <summary>Archives keep the mode of the log they were (0600), but older versions wrote them 0644.</summary>
+    private void RestrictArchives()
+    {
+        foreach (var file in GetAllLogFiles(_logFilePath, _maxArchiveCount))
+            PrivateFiles.RestrictFile(file);
     }
 
     private void EnsureDirectory()
     {
         var dir = Path.GetDirectoryName(_logFilePath);
-        if (dir != null && !Directory.Exists(dir))
-            Directory.CreateDirectory(dir);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            PrivateFiles.CreateDirectory(dir);
     }
 
     protected override void Dispose(bool disposing)

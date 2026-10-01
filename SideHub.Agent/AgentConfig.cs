@@ -77,6 +77,41 @@ public class AgentConfig
         return configs;
     }
 
+    /// <summary>
+    /// Tightens .sidehub/ to 0700 and every config holding a token to 0600, so other users of the machine can't read
+    /// the token (older versions wrote them with the umask, usually 0644). Returns one warning per file corrected.
+    /// </summary>
+    public static List<string> RestrictPermissions(string baseDirectory, IEnumerable<AgentConfig> configs)
+    {
+        var warnings = new List<string>();
+        var configDir = Path.Combine(baseDirectory, ConfigFolder);
+        try
+        {
+            if (PrivateFiles.IsExposed(configDir))
+                warnings.Add($"{configDir} was accessible to other users, restricted to its owner (0700)");
+            PrivateFiles.CreateDirectory(configDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            warnings.Add($"couldn't restrict {configDir} to its owner: {ex.Message}");
+        }
+
+        foreach (var path in configs.Where(c => !string.IsNullOrEmpty(c.AgentToken)).Select(c => c.ConfigFilePath))
+        {
+            if (path is null || !PrivateFiles.IsExposed(path)) continue;
+            try
+            {
+                PrivateFiles.RestrictFile(path);
+                warnings.Add($"{path} holds the agent token and was readable by other users, restricted to its owner (0600)");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                warnings.Add($"{path} holds the agent token and is readable by other users (chmod 600 it): {ex.Message}");
+            }
+        }
+        return warnings;
+    }
+
     public static AgentConfig Load(string path)
     {
         if (!File.Exists(path))

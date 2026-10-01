@@ -13,10 +13,10 @@ public sealed class PendingUsageStore(string directory)
 
     public void Save(RunUsageMessage report)
     {
-        System.IO.Directory.CreateDirectory(directory);
+        PrivateFiles.CreateDirectory(directory);
         var path = PathFor(report.RunId);
         var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(report));
+        PrivateFiles.WriteAllText(tmp, JsonSerializer.Serialize(report));
         File.Move(tmp, path, overwrite: true);
     }
 

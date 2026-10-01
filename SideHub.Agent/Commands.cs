@@ -101,6 +101,8 @@ public static class Commands
     public static async Task<int> RunForeground(string baseDirectory, CancellationToken ct)
     {
         var configs = AgentConfig.LoadAll(baseDirectory);
+        foreach (var warning in AgentConfig.RestrictPermissions(baseDirectory, configs))
+            Console.WriteLine($"[SideHub] Warning: {warning}");
 
         Console.WriteLine($"[SideHub] Found {configs.Count} agent(s) in .sidehub/");
 
@@ -118,8 +120,11 @@ public static class Commands
 
     public static async Task<int> RunForegroundDaemon(string baseDirectory, string logFile, string pidFile, CancellationToken ct)
     {
+        // Started by hand too (see CLAUDE.md): tighten .sidehub/ and .sidehub/run/ left by older versions
+        new DaemonManager(baseDirectory).EnsureRunDirectory();
+
         // Write our PID to the file
-        File.WriteAllText(pidFile, Environment.ProcessId.ToString());
+        PrivateFiles.WriteAllText(pidFile, Environment.ProcessId.ToString());
 
         // Redirect console output to log file with automatic rotation
         using var logWriter = new RotatingLogWriter(logFile);

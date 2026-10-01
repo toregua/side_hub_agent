@@ -101,7 +101,7 @@ public static class AgentSetup
     public static string WriteConfig(string baseDirectory, SetupInfo info, string token)
     {
         var dir = Path.Combine(baseDirectory, ".sidehub");
-        Directory.CreateDirectory(dir);
+        PrivateFiles.CreateDirectory(dir);
 
         var defaultPath = Path.Combine(dir, "agent.json");
         var path = ExistingFileFor(dir, info.AgentId)
@@ -119,7 +119,7 @@ public static class AgentSetup
         };
         if (!string.IsNullOrEmpty(info.RepositoryId)) json["repositoryId"] = info.RepositoryId;
 
-        File.WriteAllText(path, json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
+        PrivateFiles.WriteAllText(path, json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
         return path;
     }
 

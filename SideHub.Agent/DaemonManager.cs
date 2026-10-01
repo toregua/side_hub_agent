@@ -8,6 +8,7 @@ namespace SideHub.Agent;
 /// </summary>
 public class DaemonManager
 {
+    private readonly string _configDirectory;
     private readonly string _runDirectory;
     private readonly string _pidFile;
     private readonly string _logFile;
@@ -17,23 +18,23 @@ public class DaemonManager
 
     public DaemonManager(string baseDirectory)
     {
-        _runDirectory = Path.Combine(baseDirectory, ".sidehub", "run");
+        _configDirectory = Path.Combine(baseDirectory, ".sidehub");
+        _runDirectory = Path.Combine(_configDirectory, "run");
         _pidFile = Path.Combine(_runDirectory, "sidehub-agent.pid");
         _logFile = Path.Combine(_runDirectory, "sidehub-agent.log");
     }
 
+    /// <summary>Creates .sidehub/run/, and tightens it and .sidehub/ to 0700 (they hold the token, logs and PID).</summary>
     public void EnsureRunDirectory()
     {
-        if (!Directory.Exists(_runDirectory))
-        {
-            Directory.CreateDirectory(_runDirectory);
-        }
+        PrivateFiles.CreateDirectory(_configDirectory);
+        PrivateFiles.CreateDirectory(_runDirectory);
     }
 
     public void WritePidFile(int pid)
     {
         EnsureRunDirectory();
-        File.WriteAllText(_pidFile, pid.ToString());
+        PrivateFiles.WriteAllText(_pidFile, pid.ToString());
     }
 
     public void RemovePidFile()
