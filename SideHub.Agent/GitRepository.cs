@@ -12,6 +12,17 @@ public sealed class GitRepository
     private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(5);
     private static readonly SemaphoreSlim ExcludeLock = new(1, 1);
 
+    /// <summary>Overrides for settings a repository's own config could use to run a command. The
+    /// directory is untrusted (a commit can ship an embedded bare repository whose config sets
+    /// <c>core.fsmonitor</c>, run by plain read-only queries); <c>-c</c> wins over every config file,
+    /// and <c>safe.bareRepository</c> is only honored from there (not from the repository).</summary>
+    private static readonly string[] SafeConfig =
+    [
+        "-c", "core.fsmonitor=false",
+        "-c", "safe.bareRepository=explicit",
+        "-c", "core.hooksPath=/dev/null",
+    ];
+
     public string TopLevel { get; }
     public string ExcludeFile { get; }
 
@@ -82,10 +93,15 @@ public sealed class GitRepository
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
-            foreach (var arg in args)
+            foreach (var arg in SafeConfig.Concat(args))
                 psi.ArgumentList.Add(arg);
+            // The daemon's environment must not steer git either (GIT_DIR, GIT_CONFIG_PARAMETERS,
+            // GIT_CONFIG_COUNT/KEY/VALUE could point it elsewhere or undo the overrides above).
+            foreach (var name in psi.Environment.Keys.Where(k => k.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList())
+                psi.Environment.Remove(name);
             // Read-only queries: never take the index lock away from the user's own git commands.
             psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
+            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
 
             using var process = Process.Start(psi);
             if (process is null)
