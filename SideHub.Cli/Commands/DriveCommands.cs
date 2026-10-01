@@ -317,6 +317,36 @@ public static class DriveCommands
         return false;
     }
 
+    /// <summary>
+    /// Builds the path a download is saved to from a file name sent by the server. The name is
+    /// untrusted: only its last segment is kept (both '/' and '\' count as separators), and
+    /// empty names, '.', '..' and control or invalid characters are refused. The result is
+    /// guaranteed to sit directly inside <paramref name="targetDirectory"/>.
+    /// </summary>
+    public static string ResolveDownloadPath(string targetDirectory, string? serverFileName)
+    {
+        var raw = serverFileName ?? "";
+        var name = raw[(raw.LastIndexOfAny(['/', '\\']) + 1)..];
+
+        if (string.IsNullOrWhiteSpace(name) || name is "." or ".."
+            || name.Any(char.IsControl) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to save download: unsafe file name {JsonSerializer.Serialize(raw)} from server. Use --output <file> to choose the name.");
+        }
+
+        var directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(targetDirectory));
+        var fullPath = Path.GetFullPath(Path.Combine(directory, name));
+        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        if (!string.Equals(Path.GetDirectoryName(fullPath), directory, comparison))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to save download: file name {JsonSerializer.Serialize(raw)} resolves outside {directory}.");
+        }
+
+        return fullPath;
+    }
+
     public static async Task<int> DownloadAsync(SideHubApiClient client, string[] args, bool json)
     {
         var pageId = args.FirstOrDefault(a => !a.StartsWith("--") && !a.StartsWith("-"));
@@ -375,11 +405,11 @@ public static class DriveCommands
         string targetPath;
         if (output is null)
         {
-            targetPath = Path.Combine(Directory.GetCurrentDirectory(), info.FileName);
+            targetPath = ResolveDownloadPath(Directory.GetCurrentDirectory(), info.FileName);
         }
         else if (Directory.Exists(output))
         {
-            targetPath = Path.Combine(output, info.FileName);
+            targetPath = ResolveDownloadPath(output, info.FileName);
         }
         else
         {

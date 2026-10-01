@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SideHub.Agent\SideHub.Agent.csproj" />
+    <ProjectReference Include="..\SideHub.Cli\SideHub.Cli.csproj" />
   </ItemGroup>
 
   <ItemGroup>
