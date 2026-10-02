@@ -24,6 +24,8 @@
   <ItemGroup>
     <None Include="cli-wrappers\claude" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\claude" />
     <None Include="cli-wrappers\codex" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\codex" />
+    <None Include="cli-wrappers\gemini" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\gemini" />
+    <None Include="cli-wrappers\copilot" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\copilot" />
     <None Include="cli-wrappers\sidehub.bashrc" CopyToOutputDirectory="PreserveNewest" Link="cli-wrappers\sidehub.bashrc" />
   </ItemGroup>
 

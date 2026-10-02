@@ -1,30 +1,36 @@
 #!/usr/bin/env bash
-# SideHub wrapper around `codex`.
+# SideHub wrapper around a coding CLI. The same file is installed as `claude`, `codex`, `gemini` and
+# `copilot`; it acts for the name it was called by.
 #
-# Why this exists: SideHub reads a run's token usage from the CLI's own session
-# files. Unlike claude (see ./claude), codex doesn't accept a pre-set session id,
-# so SideHub cannot know which ~/.codex/sessions/**/rollout-*.jsonl belongs to a
-# run. This wrapper tells the agent when, in which directory and as which
-# process codex starts (through the FIFO at $SIDEHUB_PTY_NOTIFY_FIFO); the
-# agent then finds the rollout the process holds open (or, failing that,
-# matches it by cwd + start time).
+# Why this exists: when a user types `claude` (or codex, gemini, copilot) in a SideHub shell, SideHub
+# must know which CLI session runs in the terminal, to resume it later and read its token usage.
+# `sidehub-cli launch`, shipped next to the agent, does that on every OS: it pre-sets the session id
+# when the CLI accepts one (`--session-id`), tells the agent through the FIFO at
+# $SIDEHUB_PTY_NOTIFY_FIFO, then runs the real CLI. This wrapper only hands over to it.
 #
-# Failure modes: the notification is best-effort. If the FIFO write fails we
-# still launch codex; if the real codex can't be found we exit like a shell would.
+# Failure modes: without the launcher (older install), the real CLI runs directly, as if there were
+# no wrapper; if it can't be found either, we exit like a shell would.
 
-# Locate the real `codex` binary, skipping our own wrapper dir.
+cli="$(basename "$0")"
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+
+launcher="$(dirname "$self_dir")/sidehub-cli"
+if [ -x "$launcher" ]; then
+  exec "$launcher" launch "$cli" "$@"
+fi
+
+# Locate the real binary, skipping our own wrapper dir.
 self="$self_dir/$(basename "$0")"
 real=""
 IFS=':' read -ra _paths <<< "$PATH"
 for _p in "${_paths[@]}"; do
   # Only absolute entries: empty and relative ones resolve against the current
-  # directory (a repository), where a committed ./codex would run instead.
+  # directory (a repository), where a committed ./claude would run instead.
   case "$_p" in /*) ;; *) continue ;; esac
   # Compared by file identity, not text: a link to this folder, a trailing
   # slash or another path to this wrapper would otherwise make it exec itself.
   if [ "$_p" -ef "$self_dir" ]; then continue; fi
-  candidate="$_p/codex"
+  candidate="$_p/$cli"
   if [ "$candidate" -ef "$self" ]; then continue; fi
   if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
     real="$candidate"
@@ -33,17 +39,8 @@ for _p in "${_paths[@]}"; do
 done
 
 if [ -z "$real" ]; then
-  echo "sidehub: real 'codex' not found in PATH" >&2
+  echo "sidehub: real '$cli' not found in PATH" >&2
   exit 127
-fi
-
-# Physical path, as codex records it in the rollout's session_meta.cwd.
-# $$ is codex's own pid once we exec it below.
-if [ -n "$SIDEHUB_PTY_NOTIFY_FIFO" ] && [ -p "$SIDEHUB_PTY_NOTIFY_FIFO" ]; then
-  _cwd="$(pwd -P 2>/dev/null)"
-  _cwd="${_cwd//\\/\\\\}"
-  _cwd="${_cwd//\"/\\\"}"
-  ( printf '{"event":"cli-launched","provider":"codex","cwd":"%s","pid":%d}\n' "$_cwd" "$$" > "$SIDEHUB_PTY_NOTIFY_FIFO" ) >/dev/null 2>&1 &
 fi
 
 exec "$real" "$@"

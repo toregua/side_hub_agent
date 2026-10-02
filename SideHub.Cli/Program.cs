@@ -1,5 +1,10 @@
 using SideHub.Cli;
 using SideHub.Cli.Commands;
+using SideHub.Cli.Launch;
+
+// Starting a coding CLI talks to the agent only, never to the API: no SideHub session is needed.
+if (args.Length > 0 && args[0] == "launch")
+    return LaunchCommand.Run(args[1..]);
 
 var apiUrl = Environment.GetEnvironmentVariable("SIDEHUB_API_URL");
 var agentToken = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_TOKEN");
@@ -39,6 +44,7 @@ if (!agentToken.StartsWith("sh_agent_") && !agentToken.StartsWith("sh_run_") && 
 if (args.Length < 2)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
+    Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|gemini|copilot> [args...]");
     Console.Error.WriteLine("Domains: drive, sqlite, table, task, repository, scheduler, workflow");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");

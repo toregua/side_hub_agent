@@ -158,8 +158,26 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
         && session.StartedAt >= launch.At - ClockSkew
         && session.StartedAt <= launch.At + StartupWindow;
 
+    // Windows paths are case-insensitive and may end with a backslash.
     private static bool SameDirectory(string a, string b) =>
-        string.Equals(a.TrimEnd('/'), b.TrimEnd('/'), StringComparison.Ordinal);
+        string.Equals(a.TrimEnd('/', '\\'), b.TrimEnd('/', '\\'),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    /// <summary>The session id at the end of a rollout's file name (<c>rollout-&lt;time&gt;-&lt;uuid&gt;.jsonl</c>), or null.</summary>
+    public static string? SessionIdOf(string rolloutPath)
+    {
+        var name = Path.GetFileNameWithoutExtension(rolloutPath);
+        return IsRolloutPath(rolloutPath) && name.Length > 36 && Guid.TryParseExact(name[^36..], "D", out _)
+            ? name[^36..]
+            : null;
+    }
+
+    /// <summary>Rollouts of the top-level sessions started in <paramref name="cwd"/> since <paramref name="since"/>.</summary>
+    public IReadOnlyList<string> SessionsStartedIn(string cwd, DateTimeOffset since) =>
+        FindSessions(since - ClockSkew, DateTimeOffset.UtcNow + ClockSkew)
+            .Where(s => SameDirectory(s.Cwd, cwd))
+            .Select(s => s.Path)
+            .ToList();
 
     /// <summary>Top-level sessions that started between <paramref name="from"/> and <paramref name="to"/>.</summary>
     private List<SessionMeta> FindSessions(DateTimeOffset from, DateTimeOffset to)

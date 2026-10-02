@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO.Pipes;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -38,6 +39,10 @@ public class WebSocketClient : IAsyncDisposable
     // Last CLI session (and its title) seen in each PTY, re-reported after a backend reconnect
     // so every device can show the terminal as that conversation.
     private readonly ConcurrentDictionary<string, PtyCliSession> _ptyCliSessions = new();
+    // Codex launches still looking for their rollout (→ cwd), and the rollouts already tied to a launch.
+    private readonly ConcurrentDictionary<object, string> _pendingCodexLaunches = new();
+    private readonly ConcurrentDictionary<string, byte> _announcedCodexRollouts = new();
+    private readonly CodexRolloutHarvester? _codexRollouts;
     private sealed record PtyCliSession(string Provider, string CliSessionId, string? Title = null);
     private const int PtyIdleTimeoutMinutes = 30;
 
@@ -60,6 +65,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly RunUsageCollector _usageCollector;
     // Agent-owned 0700 folder holding the notification FIFOs (see NotifyFifo).
     private readonly string _fifoDirectory;
+    private readonly string _fifoAgentKey;
 
     private const int MinReconnectDelayMs = 1000;
     private const int MaxReconnectDelayMs = 30000;
@@ -90,12 +96,13 @@ public class WebSocketClient : IAsyncDisposable
         if (ClaudeProjectPaths.ProjectsRoot() is { } claudeProjects)
             harvesters["claude"] = new ClaudeTranscriptHarvester(claudeProjects);
         if (CodexRolloutHarvester.SessionsRoot() is { } codexSessions)
-            harvesters["codex"] = new CodexRolloutHarvester(codexSessions);
+            harvesters["codex"] = _codexRollouts = new CodexRolloutHarvester(codexSessions);
         // Several agents can share a run directory: keep each agent's pending reports apart,
         // the backend only accepts a run's usage from the agent it was launched on.
         var runDir = runDirectory ?? Path.Combine(workingDirectory, ".sidehub", "run");
         var pendingDirectory = Path.Combine(runDir, "pending-usage", config.AgentId ?? "default");
-        _fifoDirectory = Path.Combine(runDir, "fifo", config.AgentId ?? "default");
+        _fifoAgentKey = config.AgentId ?? "default";
+        _fifoDirectory = Path.Combine(runDir, "fifo", _fifoAgentKey);
         _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync, Log);
     }
 
@@ -214,7 +221,11 @@ public class WebSocketClient : IAsyncDisposable
         return false;
     }
 
-    private string GetFifoPath(string ptySessionId) => NotifyFifo.PathFor(_fifoDirectory, ptySessionId);
+    /// <summary>Where the terminal's processes reach the agent (<c>$SIDEHUB_PTY_NOTIFY_FIFO</c>): a FIFO, or on
+    /// Windows, which has none, a named pipe.</summary>
+    private string GetFifoPath(string ptySessionId) => OperatingSystem.IsWindows()
+        ? NotifyFifo.PipePrefix + NotifyFifo.PipeNameFor(_fifoAgentKey, ptySessionId)
+        : NotifyFifo.PathFor(_fifoDirectory, ptySessionId);
 
     private static bool _cliWrappersChecked;
     private static readonly object _cliWrappersLock = new();
@@ -270,6 +281,8 @@ public class WebSocketClient : IAsyncDisposable
     /// no-op its notification and the existing session behavior is preserved.</summary>
     private void EnsureNotifyFifo(string ptySessionId)
     {
+        if (OperatingSystem.IsWindows())
+            return; // The named pipe is created by its reader (StartFifoReader).
         if (!NotifyFifo.TryCreate(_fifoDirectory, ptySessionId, out var fifoPath, out var error))
             Log($"mkfifo failed for {fifoPath} ({error}); CLI session notifications disabled for this PTY");
     }
@@ -286,7 +299,8 @@ public class WebSocketClient : IAsyncDisposable
         _ptyCwd.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
         StopClaudeTitleWatchers(ptySessionId);
-        NotifyFifo.Delete(_fifoDirectory, ptySessionId);
+        if (!OperatingSystem.IsWindows())
+            NotifyFifo.Delete(_fifoDirectory, ptySessionId);
     }
 
     /// <summary>Cancel any pending Claude ai-title watchers bound to this PTY.
@@ -306,14 +320,11 @@ public class WebSocketClient : IAsyncDisposable
     }
 
     /// <summary>Spawn a background reader that pulls JSON lines from the
-    /// notification FIFO and forwards CLI-session events to the backend. We open
-    /// the FIFO in read+write mode (O_RDWR) so the reader doesn't block when no
-    /// writer is connected and doesn't see EOF when a writer disconnects between
-    /// CLI invocations.</summary>
+    /// notification FIFO (named pipe on Windows) and forwards CLI-session events to the backend.</summary>
     private void StartFifoReader(string ptySessionId, CancellationToken ct)
     {
-        var fifoPath = GetFifoPath(ptySessionId);
-        if (!File.Exists(fifoPath)) return; // mkfifo failed; nothing to read
+        if (!OperatingSystem.IsWindows() && !File.Exists(GetFifoPath(ptySessionId)))
+            return; // mkfifo failed; nothing to read
 
         var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _ptyFifoReaders[ptySessionId] = cts;
@@ -323,47 +334,66 @@ public class WebSocketClient : IAsyncDisposable
         {
             try
             {
-                // O_RDWR keeps the FIFO open even when wrappers come and go.
-                using var stream = new FileStream(fifoPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-                using var streamReader = new StreamReader(stream, Encoding.UTF8);
-                // Anything in the terminal can write here: never buffer an unbounded line.
-                var reader = new BoundedLineReader(streamReader, FifoNotification.MaxLineLength);
-
-                while (!token.IsCancellationRequested)
-                {
-                    BoundedLine? line;
-                    try
-                    {
-                        line = await reader.ReadLineAsync(token);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
-
-                    if (line is not { } read)
-                    {
-                        // FIFO closed; small backoff before retry to avoid spinning.
-                        await Task.Delay(200, token);
-                        continue;
-                    }
-
-                    if (read.TooLong)
-                    {
-                        Log($"SECURITY: FIFO line over {FifoNotification.MaxLineLength} chars ignored on PTY {ptySessionId}");
-                        continue;
-                    }
-
-                    if (string.IsNullOrWhiteSpace(read.Text)) continue;
-
-                    await HandleFifoLineAsync(ptySessionId, read.Text, token);
-                }
+                if (OperatingSystem.IsWindows())
+                    await ReadNotifyPipeAsync(ptySessionId, token);
+                else
+                    await ReadNotifyFifoAsync(ptySessionId, token);
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception ex) when (!token.IsCancellationRequested)
             {
                 Log($"FIFO reader for {ptySessionId} crashed: {ex.Message}");
             }
         }, token);
+    }
+
+    /// <summary>We open the FIFO in read+write mode (O_RDWR) so the reader doesn't block when no
+    /// writer is connected and doesn't see EOF when a writer disconnects between CLI invocations.</summary>
+    private async Task ReadNotifyFifoAsync(string ptySessionId, CancellationToken token)
+    {
+        using var stream = new FileStream(GetFifoPath(ptySessionId), FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        using var streamReader = new StreamReader(stream, Encoding.UTF8);
+        while (!token.IsCancellationRequested)
+        {
+            await ReadNotificationsAsync(ptySessionId, streamReader, token);
+            // FIFO closed; small backoff before retry to avoid spinning.
+            await Task.Delay(200, token);
+        }
+    }
+
+    /// <summary>One writer at a time (each line is a short-lived connection, writers wait up to a second).
+    /// CurrentUserOnly: the pipe refuses clients of another user, and the agent never reads a pipe another
+    /// user created first under the same name.</summary>
+    private async Task ReadNotifyPipeAsync(string ptySessionId, CancellationToken token)
+    {
+        var name = NotifyFifo.PipeNameFor(_fifoAgentKey, ptySessionId);
+        while (!token.IsCancellationRequested)
+        {
+            using var pipe = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            await pipe.WaitForConnectionAsync(token);
+            using var streamReader = new StreamReader(pipe, Encoding.UTF8);
+            await ReadNotificationsAsync(ptySessionId, streamReader, token);
+        }
+    }
+
+    /// <summary>Handles each line until the writer side closes.</summary>
+    private async Task ReadNotificationsAsync(string ptySessionId, StreamReader streamReader, CancellationToken token)
+    {
+        // Anything in the terminal can write here: never buffer an unbounded line.
+        var reader = new BoundedLineReader(streamReader, FifoNotification.MaxLineLength);
+        while (await reader.ReadLineAsync(token) is { } read)
+        {
+            if (read.TooLong)
+            {
+                Log($"SECURITY: FIFO line over {FifoNotification.MaxLineLength} chars ignored on PTY {ptySessionId}");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(read.Text)) continue;
+
+            await HandleFifoLineAsync(ptySessionId, read.Text, token);
+        }
     }
 
     private async Task HandleFifoLineAsync(string ptySessionId, string line, CancellationToken ct)
@@ -387,9 +417,9 @@ public class WebSocketClient : IAsyncDisposable
                         RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
                     return;
 
-                // Written by the codex wrapper: codex has no session id to announce, so the harvester
-                // needs the rollout its process holds open, or matches it by cwd and launch time.
-                // Not forwarded to the backend.
+                // Written by `sidehub-cli launch codex`: codex has no session id to announce, so the harvester
+                // needs the rollout its process holds open, or matches it by cwd and launch time. The same
+                // match gives the session id announced to the backend (RecordCliLaunch).
                 case FifoNotification.CliLaunched launched:
                     RecordCliLaunch(ptySessionId, launched);
                     return;
@@ -429,7 +459,56 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"SECURITY: pid {launchedPid} announced on PTY {ptySessionId} is not a process of that PTY; not watched");
             }
         }
-        _usageCollector.RecordCliLaunch(ptySessionId, launched.Provider, launched.Cwd, DateTimeOffset.UtcNow, observation);
+        var at = DateTimeOffset.UtcNow;
+        _usageCollector.RecordCliLaunch(ptySessionId, launched.Provider, launched.Cwd, at, observation);
+
+        if (launched.Provider == "codex" && _codexRollouts is not null
+            && _ptyFifoReaders.TryGetValue(ptySessionId, out var reader))
+            RunInBackground("codex session id", () => AnnounceCodexSessionAsync(ptySessionId, launched.Cwd, at, observation, reader.Token));
+    }
+
+    /// <summary>How long a codex launch is matched to its rollout: codex only writes one once the conversation starts.</summary>
+    private static readonly TimeSpan CodexSessionSearch = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Codex takes no pre-set session id: tie the launch to its rollout so the PTY can resume it later
+    /// (<c>codex resume &lt;id&gt;</c>). The rollout its process holds open is proof; failing that (Windows, or a pid
+    /// that cannot be watched), the one new rollout of that directory, when no other codex launch there is still
+    /// waiting for its own.
+    /// </summary>
+    private async Task AnnounceCodexSessionAsync(
+        string ptySessionId, string cwd, DateTimeOffset at, LaunchObservation? observation, CancellationToken ct)
+    {
+        var launch = new object();
+        _pendingCodexLaunches[launch] = cwd;
+        try
+        {
+            while (DateTimeOffset.UtcNow < at + CodexSessionSearch)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), ct);
+                var rollout = observation?.Files.FirstOrDefault(f => CodexRolloutHarvester.SessionIdOf(f) is not null);
+                if (rollout is null && observation?.IsComplete == true)
+                    return; // codex exited without starting a session
+                if (rollout is null && _pendingCodexLaunches.Values.Count(c => c == cwd) == 1)
+                {
+                    var fresh = _codexRollouts!.SessionsStartedIn(cwd, at)
+                        .Where(p => !_announcedCodexRollouts.ContainsKey(Path.GetFileName(p)))
+                        .ToList();
+                    if (fresh.Count == 1)
+                        rollout = fresh[0];
+                }
+                if (rollout is null || CodexRolloutHarvester.SessionIdOf(rollout) is not { } cliSessionId)
+                    continue;
+
+                _announcedCodexRollouts[Path.GetFileName(rollout)] = 0;
+                await RecordCliSessionAsync(ptySessionId, new FifoNotification.CliSessionStarted("codex", cliSessionId), ct);
+                return;
+            }
+        }
+        finally
+        {
+            _pendingCodexLaunches.TryRemove(launch, out _);
+        }
     }
 
     private async Task RecordCliSessionAsync(string ptySessionId, FifoNotification.CliSessionStarted started, CancellationToken ct)

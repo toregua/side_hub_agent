@@ -21,6 +21,20 @@ public static partial class NotifyFifo
     public static bool IsValidPtySessionId(string? ptySessionId) =>
         ptySessionId is not null && PtySessionIdPattern().IsMatch(ptySessionId);
 
+    /// <summary>Prefix of a Windows named pipe path.</summary>
+    public const string PipePrefix = @"\\.\pipe\";
+
+    /// <summary>The Windows named pipe that stands in for the FIFO. Pipe names are machine-wide: the agent's key
+    /// keeps agents apart.</summary>
+    public static string PipeNameFor(string agentKey, string ptySessionId)
+    {
+        if (!IsValidPtySessionId(agentKey))
+            throw new ArgumentException("Invalid agent key.", nameof(agentKey));
+        if (!IsValidPtySessionId(ptySessionId))
+            throw new ArgumentException("Invalid PTY session id.", nameof(ptySessionId));
+        return $"sidehub-{agentKey}-{ptySessionId}";
+    }
+
     public static string PathFor(string directory, string ptySessionId)
     {
         if (!IsValidPtySessionId(ptySessionId))
