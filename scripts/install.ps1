@@ -122,6 +122,8 @@ function Test-InstallDir {
         (Test-Path -LiteralPath (Join-Path $InstallDir "pty-helper"))
     if ($isEmpty -or $hasMarker -or $isLegacyInstall) { return $true }
     Write-Host "$InstallDir is not empty and holds no SideHub Agent install: aborting." -ForegroundColor Red
+    $entries = Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 10 -ExpandProperty Name
+    Write-Host "Found: $($entries -join ', ')" -ForegroundColor Red
     Write-Host "Pick another folder (SIDEHUB_INSTALL_DIR) or empty it yourself." -ForegroundColor Red
     return $false
 }
@@ -168,7 +170,7 @@ function Test-ArchiveChecksum {
 }
 
 function Install-SideHubAgent {
-    Test-NodeJs
+    Test-NodeJs | Out-Null
 
     $platform = Get-Platform
 
@@ -232,6 +234,18 @@ function Install-SideHubAgent {
 
         Write-Host "Installing to $InstallDir..."
         if (Test-Path -LiteralPath $InstallDir) {
+            # A running agent locks its .exe: Remove-Item would fail halfway through the folder
+            $installRoot = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
+            $running = Get-Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -and $_.Path.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase) }
+            if ($running) {
+                throw ("SideHub Agent is running from $InstallDir (PID $(($running.Id) -join ', ')): " +
+                    "stop it first (sidehub-agent stop --all), then run the installer again.")
+            }
+            # Marker last: if a file is still locked, the folder stays recognisable as ours for the next run
+            Get-ChildItem -LiteralPath $InstallDir -Force |
+                Where-Object { $_.Name -ne $InstallMarker } |
+                Remove-Item -Recurse -Force
             Remove-Item -LiteralPath $InstallDir -Recurse -Force
         }
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
