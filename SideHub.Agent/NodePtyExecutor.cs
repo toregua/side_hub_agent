@@ -19,6 +19,7 @@ public class NodePtyExecutor : IAsyncDisposable
     private int _columns;
     private int _rows;
     private readonly PtyOutputBuffer _outputBuffer = new();
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingPings = new();
 
     private const int MaxStderrLineLength = 8192;
@@ -138,6 +139,12 @@ public class NodePtyExecutor : IAsyncDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // The helper speaks UTF-8 JSON lines both ways. Left unset, .NET uses the console code page
+            // on Windows (437, 850…) and turns every non-ASCII character of the PTY output (box drawing,
+            // spinners, accents) into "Γöé", and garbles accents typed into the terminal.
+            StandardInputEncoding = Utf8NoBom,
+            StandardOutputEncoding = Utf8NoBom,
+            StandardErrorEncoding = Utf8NoBom,
             CreateNoWindow = true
         };
 

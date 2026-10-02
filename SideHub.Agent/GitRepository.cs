@@ -99,6 +99,10 @@ public sealed class GitRepository
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // git writes UTF-8 (commit messages, branch names); .NET would decode it with the
+                // console code page on Windows.
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
             };
             foreach (var arg in SafeConfig.Concat(args))
                 psi.ArgumentList.Add(arg);
