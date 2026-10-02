@@ -12,8 +12,6 @@ param(
     [string]$Version = "latest"
 )
 
-$ErrorActionPreference = "Stop"
-
 # Downloads live under /agent at the API host root (REST routes are under /api): accept either form
 $SideHubApi = if ($env:SIDEHUB_API) { $env:SIDEHUB_API } else { "https://api.sidehub.io" }
 $SideHubApi = $SideHubApi.TrimEnd('/') -replace '/api$', ''
@@ -231,6 +229,13 @@ function Stop-RunningAgents {
 }
 
 function Install-SideHubAgent {
+    # Set here, not at script level: under irm | iex the script runs in the caller's scope, and these
+    # would stay changed in the user's session. Called functions inherit them.
+    $ErrorActionPreference = "Stop"
+    # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar on every chunk, which makes the
+    # 70 MB archive download many times slower
+    $ProgressPreference = "SilentlyContinue"
+
     Test-NodeJs | Out-Null
 
     $platform = Get-Platform
