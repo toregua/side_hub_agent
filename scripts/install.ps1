@@ -41,8 +41,7 @@ function Test-NodeJs {
         Write-Host "Node.js $nodeVersion found" -ForegroundColor Green
         return $true
     } catch {
-        Write-Error "Node.js is required but not installed. Install it from https://nodejs.org"
-        exit 1
+        throw "Node.js is required but not installed. Install it from https://nodejs.org"
     }
 }
 
@@ -50,8 +49,7 @@ function Get-Platform {
     $arch = if ([Environment]::Is64BitOperatingSystem) {
         if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
     } else {
-        Write-Error "32-bit architecture not supported"
-        exit 1
+        throw "32-bit architecture not supported"
     }
     return "win-$arch"
 }
@@ -60,6 +58,7 @@ function Get-LatestTag {
     try {
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest" -UseBasicParsing
     } catch {
+        Write-Host "GitHub API call failed: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
     if ($release.tag_name -match '^v\d') { return $release.tag_name }
@@ -136,7 +135,7 @@ function Test-ArchiveChecksum {
     try {
         Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsPath -UseBasicParsing
     } catch {
-        Write-Host "Unable to download checksums from $checksumsUrl" -ForegroundColor Red
+        Write-Host "Unable to download checksums from ${checksumsUrl}: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 
@@ -177,24 +176,21 @@ function Install-SideHubAgent {
     if ($Version -eq "latest") {
         $tag = Get-LatestTag
         if (-not $tag) {
-            Write-Error "Unable to resolve the latest version from https://github.com/$GitHubRepo/releases"
-            exit 1
+            throw "Unable to resolve the latest version from https://github.com/$GitHubRepo/releases"
         }
     } else {
         $tag = "v" + $Version.TrimStart('v')
     }
     # The tag goes into URLs and messages: a plain version only
     if ($tag -notmatch '^v\d+(\.\d+){1,3}$') {
-        Write-Error "Invalid version: $Version (expected 1.0.61 or v1.0.61)"
-        exit 1
+        throw "Invalid version: $Version (expected 1.0.61 or v1.0.61)"
     }
     if ([version]$tag.TrimStart('v') -lt $MinVersion) {
-        Write-Error ("$tag can no longer be installed: releases before v$MinVersion install their Node.js " +
+        throw ("$tag can no longer be installed: releases before v$MinVersion install their Node.js " +
             "dependencies from the npm registry at install time. Install v$MinVersion or later.")
-        exit 1
     }
 
-    if (-not (Test-InstallDir)) { exit 1 }
+    if (-not (Test-InstallDir)) { throw "Installation aborted: unusable install folder ($InstallDir)." }
 
     $assetName = "sidehub-agent-$platform.zip"
     $url = "$SideHubApi/agent/download/$platform/$tag"
@@ -215,13 +211,11 @@ function Install-SideHubAgent {
         try {
             Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
         } catch {
-            Write-Error "Error: Unable to download from $url"
-            exit 1
+            throw "Unable to download from ${url}: $($_.Exception.Message)"
         }
 
         if (-not (Test-ArchiveChecksum -ArchivePath $archivePath -AssetName $assetName -Tag $tag -TempDir $tempDir)) {
-            Write-Error "Installation aborted: the archive was not extracted."
-            exit 1
+            throw "Installation aborted: the archive was not extracted."
         }
 
         Write-Host "Extracting..."
@@ -231,8 +225,7 @@ function Install-SideHubAgent {
         # node_modules ships prebuilt in the verified archive (npm ci from the lockfile, in the release CI):
         # the install never runs npm.
         if (-not (Test-Path (Join-Path $extractDir "pty-helper\node_modules\node-pty"))) {
-            Write-Error "The $tag archive does not bundle pty-helper's Node.js dependencies: aborting."
-            exit 1
+            throw "The $tag archive does not bundle pty-helper's Node.js dependencies: aborting."
         }
         Write-Host "Node.js dependencies bundled in the archive"
         New-Item -ItemType File -Path (Join-Path $extractDir $InstallMarker) | Out-Null
