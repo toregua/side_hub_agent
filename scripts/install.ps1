@@ -169,6 +169,67 @@ function Test-ArchiveChecksum {
     return $true
 }
 
+# Processes running from the install folder: the agent, and pty-helper (node.exe loading its native modules
+# from there). Windows locks their files, so the folder cannot be replaced while they run.
+function Get-InstallDirProcesses {
+    $root = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessId -ne $PID -and (
+            ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) -or
+            ($_.CommandLine -and $_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0))
+    }
+}
+
+# Project folders (from ~\.sidehub\instances.json) whose agent is running, to restart them after the update
+function Get-RunningAgentDirs {
+    $registry = Join-Path $env:USERPROFILE ".sidehub\instances.json"
+    if (-not (Test-Path -LiteralPath $registry)) { return @() }
+    try {
+        $entries = @(Get-Content -LiteralPath $registry -Raw | ConvertFrom-Json)
+    } catch {
+        return @()
+    }
+    foreach ($entry in $entries) {
+        if (-not $entry.directory) { continue }
+        $pidFile = Join-Path $entry.directory ".sidehub\run\sidehub-agent.pid"
+        if (-not (Test-Path -LiteralPath $pidFile)) { continue }
+        $agentPid = 0
+        if ([int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$agentPid) -and
+            (Get-Process -Id $agentPid -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "sidehub-agent*" })) {
+            $entry.directory
+        }
+    }
+}
+
+# Stop the agents running from the install folder; returns the project folders to restart afterwards
+function Stop-RunningAgents {
+    if (-not @(Get-InstallDirProcesses)) { return @() }
+    $dirs = @(Get-RunningAgentDirs)
+    if (-not $dirs) {
+        Write-Host "No registered project found for the running agent: restart it yourself afterwards (sidehub-agent start -d)." -ForegroundColor Yellow
+    }
+
+    Write-Host "Stopping the running SideHub Agent for the update (its terminal sessions will end)..."
+    $agentExe = Join-Path $InstallDir "sidehub-agent.exe"
+    if (Test-Path -LiteralPath $agentExe) {
+        & $agentExe stop --all | Out-Host
+    }
+
+    # Agents started by hand (not registered) or a stop that didn't finish: wait, then force
+    for ($i = 0; $i -lt 20 -and @(Get-InstallDirProcesses); $i++) { Start-Sleep -Milliseconds 500 }
+    foreach ($process in @(Get-InstallDirProcesses)) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    for ($i = 0; $i -lt 10 -and @(Get-InstallDirProcesses); $i++) { Start-Sleep -Milliseconds 500 }
+
+    $remaining = @(Get-InstallDirProcesses)
+    if ($remaining) {
+        throw ("Processes still running from ${InstallDir} (PID $(($remaining.ProcessId) -join ', ')): " +
+            "stop them (sidehub-agent stop --all), then run the installer again.")
+    }
+    return $dirs
+}
+
 function Install-SideHubAgent {
     Test-NodeJs | Out-Null
 
@@ -206,6 +267,7 @@ function Install-SideHubAgent {
     # Unique temp directory: a fixed name could be pre-created (or swapped) by another process
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sidehub-agent-install-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempDir | Out-Null
+    $restartDirs = @()
 
     try {
         $archivePath = Join-Path $tempDir "agent.zip"
@@ -234,14 +296,8 @@ function Install-SideHubAgent {
 
         Write-Host "Installing to $InstallDir..."
         if (Test-Path -LiteralPath $InstallDir) {
-            # A running agent locks its .exe: Remove-Item would fail halfway through the folder
-            $installRoot = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
-            $running = Get-Process -ErrorAction SilentlyContinue |
-                Where-Object { $_.Path -and $_.Path.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase) }
-            if ($running) {
-                throw ("SideHub Agent is running from $InstallDir (PID $(($running.Id) -join ', ')): " +
-                    "stop it first (sidehub-agent stop --all), then run the installer again.")
-            }
+            # A running agent locks its files: Remove-Item would fail halfway through the folder
+            $restartDirs = @(Stop-RunningAgents)
             # Marker last: if a file is still locked, the folder stays recognisable as ours for the next run
             Get-ChildItem -LiteralPath $InstallDir -Force |
                 Where-Object { $_.Name -ne $InstallMarker } |
@@ -253,6 +309,16 @@ function Install-SideHubAgent {
         Get-ChildItem -Path $extractDir -Force | Copy-Item -Destination $InstallDir -Recurse -Force
     } finally {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($dir in $restartDirs) {
+        Write-Host "Restarting the agent in $dir..."
+        Push-Location -LiteralPath $dir
+        try {
+            & (Join-Path $InstallDir "sidehub-agent.exe") start -d | Out-Host
+        } finally {
+            Pop-Location
+        }
     }
 
     # Add to PATH if not already present
