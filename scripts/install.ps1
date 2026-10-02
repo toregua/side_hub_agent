@@ -318,12 +318,12 @@ function Install-SideHubAgent {
 
     foreach ($dir in $restartDirs) {
         Write-Host "Restarting the agent in $dir..."
-        Push-Location -LiteralPath $dir
-        try {
-            & (Join-Path $InstallDir "sidehub-agent.exe") start -d | Out-Host
-        } finally {
-            Pop-Location
-        }
+        # Not "& ... | Out-Host": the daemon inherits the pipe's write end and never closes it, so
+        # the pipeline (and the install) would wait forever. Start-Process -Wait would wait for the
+        # daemon too (it waits for the whole process tree): wait for "start -d" alone.
+        $starter = Start-Process -FilePath (Join-Path $InstallDir "sidehub-agent.exe") -ArgumentList "start", "-d" `
+            -WorkingDirectory $dir -NoNewWindow -PassThru
+        $starter.WaitForExit()
     }
 
     # Add to PATH if not already present
