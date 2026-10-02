@@ -231,6 +231,34 @@ public class PtyCliSessionStartedMessage
 }
 
 /// <summary>
+/// What the CLI in a PTY is doing (<c>working</c>, <c>waiting-input</c> or <c>idle</c>, see <see cref="CliStates"/>),
+/// reported by its hooks through <c>sidehub-cli cli-state</c>. Sent on each change and replayed after a backend
+/// reconnect; nothing is sent when the CLI ends (the backend clears the state itself).
+/// </summary>
+public class PtyCliStateMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.cli-state";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    /// <summary>The session the hook reported; null when it gave none.</summary>
+    [JsonPropertyName("cliSessionId")]
+    public string? CliSessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+
+    [JsonPropertyName("state")]
+    public required string State { get; init; }
+
+    /// <summary>When the agent received the report (UTC).</summary>
+    [JsonPropertyName("at")]
+    public required DateTime At { get; init; }
+}
+
+/// <summary>
 /// Emitted when the agent observes that Claude has generated a conversation
 /// title for a running CLI session (the "ai-title" line Claude writes to its
 /// project JSONL). The backend forwards this over SSE so the UI can suggest it

@@ -5,6 +5,9 @@ using SideHub.Cli.Launch;
 // Starting a coding CLI talks to the agent only, never to the API: no SideHub session is needed.
 if (args.Length > 0 && args[0] == "launch")
     return LaunchCommand.Run(args[1..]);
+// Run by a coding CLI's hooks to report its state to the agent: same, and it must never fail the CLI.
+if (args.Length > 0 && args[0] == CliStateCommand.Name)
+    return CliStateCommand.Run(args[1..]);
 
 var apiUrl = Environment.GetEnvironmentVariable("SIDEHUB_API_URL");
 var agentToken = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_TOKEN");

@@ -40,6 +40,8 @@ public class WebSocketClient : IAsyncDisposable
     // Last CLI session (and its title) seen in each PTY, re-reported after a backend reconnect
     // so every device can show the terminal as that conversation.
     private readonly ConcurrentDictionary<string, PtyCliSession> _ptyCliSessions = new();
+    // What the CLI of each PTY is doing (working / waiting-input / idle), reported as pty.cli-state.
+    private readonly CliStateTracker _cliStates = new();
     // Codex launches still looking for their rollout (→ cwd), and the rollouts already tied to a launch.
     private readonly ConcurrentDictionary<object, string> _pendingCodexLaunches = new();
     private readonly ConcurrentDictionary<string, byte> _announcedCodexRollouts = new();
@@ -312,6 +314,7 @@ public class WebSocketClient : IAsyncDisposable
         }
         _ptyCwd.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
+        _cliStates.Clear(ptySessionId);
         StopClaudeTitleWatchers(ptySessionId);
         if (!OperatingSystem.IsWindows())
             NotifyFifo.Delete(_fifoDirectory, ptySessionId);
@@ -445,8 +448,15 @@ public class WebSocketClient : IAsyncDisposable
                 // Written by `sidehub-cli launch` once the CLI has exited: its session's usage is final.
                 case FifoNotification.CliExited exited:
                     Log($"CLI exited in PTY {ptySessionId}: provider={exited.Provider} cliSessionId={exited.CliSessionId ?? "(unknown)"}");
+                    // The backend clears the state itself when the CLI ends: only forget it here.
+                    _cliStates.Clear(ptySessionId);
                     RunInBackground("cli-session.usage", () => _cliSessionUsage.CliExitedAsync(
                         ptySessionId, exited.Provider, exited.CliSessionId, CancellationToken.None));
+                    return;
+
+                // Written by the CLI's hooks through `sidehub-cli cli-state` (see CliStateHooks).
+                case FifoNotification.CliStateChanged changed:
+                    await ReportCliStateAsync(ptySessionId, changed, ct);
                     return;
             }
         }
@@ -454,6 +464,17 @@ public class WebSocketClient : IAsyncDisposable
         {
             Log($"FIFO line handling failed on PTY {ptySessionId}: {ex.Message}");
         }
+    }
+
+    private async Task ReportCliStateAsync(string ptySessionId, FifoNotification.CliStateChanged changed, CancellationToken ct)
+    {
+        // The PTY may have closed while the line was in flight: a state is never reported for an unknown PTY.
+        if (!_ptySessions.ContainsKey(ptySessionId)) return;
+        if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow) is not { } message)
+            return;
+        Log($"CLI state in PTY {ptySessionId}: {changed.State} (provider={changed.Provider} cliSessionId={changed.CliSessionId ?? "(unknown)"})");
+        // Even when the send fails (backend away), the state stays cached and is replayed at the next connection.
+        await TrySendAsync(message, ct);
     }
 
     private void RecordCliLaunch(string ptySessionId, FifoNotification.CliLaunched launched)
@@ -1740,6 +1761,8 @@ public class WebSocketClient : IAsyncDisposable
                 // frontend must not auto-type `<provider> --resume` into it.
                 await SendAsync(session.StartedMessage(ptySessionId, reattached: true), ct);
                 await ReportCliSessionAsync(ptySessionId, ct);
+                if (_cliStates.Current(ptySessionId) is { } cliState)
+                    await SendAsync(cliState, ct);
             }
         }
 
@@ -1800,6 +1823,7 @@ public class WebSocketClient : IAsyncDisposable
         _ptyLastActivity.Clear();
         _ptyCwd.Clear();
         _ptyCliSessions.Clear();
+        _cliStates.ClearAll();
         foreach (var cts in _ptyFifoReaders.Values)
         {
             try { cts.Cancel(); cts.Dispose(); } catch { }

@@ -40,7 +40,7 @@ public static class LaunchCommand
         }
 
         var geminiVersion = cli == "gemini" ? RealCli.PackageVersion(target.ScriptPath, "@google/gemini-cli") : null;
-        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid);
+        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli));
 
         if (plan.SessionId is { } sessionId)
             AgentNotifier.SessionStarted(cli, sessionId);
@@ -74,6 +74,19 @@ public static class LaunchCommand
         if (plan.SessionId is not null || plan.ReportLaunch)
             AgentNotifier.Exited(cli, plan.SessionId);
         return process.ExitCode;
+    }
+
+    /// <summary>The CLI's hooks call this program back (<c>sidehub-cli cli-state</c>) from inside the terminal, to
+    /// tell the agent what the CLI is doing. Only in a SideHub terminal: elsewhere there is no agent to tell.</summary>
+    private static CliLaunchPlan.StateReporting? StateReporting(string cli)
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(AgentNotifier.ChannelVariable))
+            || Environment.ProcessPath is not { } program || !Path.IsPathFullyQualified(program)
+            // Run through `dotnet sidehub-cli.dll` (development), the process is dotnet itself.
+            || !Path.GetFileNameWithoutExtension(program).Equals("sidehub-cli", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var codexNotifyTaken = cli == "codex" && CliStateHooks.CodexConfigDefinesNotify(CliStateHooks.CodexConfigPath());
+        return new CliLaunchPlan.StateReporting(program, codexNotifyTaken);
     }
 
     /// <summary>

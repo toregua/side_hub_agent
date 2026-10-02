@@ -35,7 +35,10 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// <param name="prompt">Appended as the last argument when set.</param>
     /// <param name="geminiVersion">The installed gemini's version, null when unknown.</param>
     /// <param name="newSessionId">Mints a session UUID.</param>
-    public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion, Func<Guid> newSessionId)
+    /// <param name="stateReporting">How the CLI's state is reported to the agent (see <see cref="CliStateHooks"/>),
+    /// null to add no hooks.</param>
+    public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion,
+        Func<Guid> newSessionId, StateReporting? stateReporting = null)
     {
         if (!KnownClis.Contains(cli))
             throw new ArgumentException($"Unknown CLI '{cli}'.", nameof(cli));
@@ -61,10 +64,50 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
             args.InsertRange(0, ["--session-id", sessionId]);
         }
 
+        if (startsConversation && stateReporting is not null)
+            AddStateHooks(cli, args, stateReporting);
+
         if (prompt is not null)
             args.Add(prompt);
 
         return new CliLaunchPlan(cli, args, sessionId, ReportLaunch: cli == "codex" && startsConversation);
+    }
+
+    /// <param name="Program">The <c>sidehub-cli</c> the hooks run (absolute path).</param>
+    /// <param name="CodexNotifyTaken">The user's codex config sets its own <c>notify</c>, which ours would replace.</param>
+    public sealed record StateReporting(string Program, bool CodexNotifyTaken);
+
+    /// <summary>
+    /// Adds the hooks in front of the caller's arguments. Not when the caller already passes the same option:
+    /// claude keeps only the last <c>--settings</c>, codex's <c>notify</c> is a single program.
+    /// </summary>
+    private static void AddStateHooks(string cli, List<string> args, StateReporting reporting)
+    {
+        switch (cli)
+        {
+            case "claude" when !args.Any(a => SplitOption(a).Name == "--settings"):
+                args.InsertRange(0, ["--settings", CliStateHooks.ClaudeSettings(reporting.Program)]);
+                break;
+            case "codex" when !reporting.CodexNotifyTaken && !SetsCodexNotify(args):
+                args.InsertRange(0, ["-c", CliStateHooks.CodexNotify(reporting.Program)]);
+                break;
+        }
+    }
+
+    /// <summary>A <c>-c notify=…</c> / <c>--config notify=…</c> (or <c>--config=notify=…</c>) among the arguments.</summary>
+    private static bool SetsCodexNotify(List<string> args)
+    {
+        for (var i = 0; i < args.Count; i++)
+        {
+            string? value = args[i] is "-c" or "--config" ? (i + 1 < args.Count ? args[i + 1] : null)
+                : args[i].StartsWith("--config=", StringComparison.Ordinal) ? args[i]["--config=".Length..]
+                : args[i].StartsWith("-c", StringComparison.Ordinal) && args[i].Length > 2 ? args[i][2..]
+                : null;
+            if (value is not null && value.TrimStart().StartsWith("notify", StringComparison.Ordinal)
+                && value.TrimStart()["notify".Length..].TrimStart().StartsWith('='))
+                return true;
+        }
+        return false;
     }
 
     private static bool AcceptsSessionId(string cli, Version? geminiVersion) =>

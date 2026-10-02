@@ -35,6 +35,10 @@ public abstract record FifoNotification
     /// it announced, null when it knew none (a new codex session, found by the agent from the launch).</summary>
     public sealed record CliExited(string Provider, string? CliSessionId) : FifoNotification;
 
+    /// <summary><c>sidehub-cli cli-state</c>, run by the CLI's own hooks: the CLI is now <paramref name="State"/> (one of
+    /// <see cref="CliStates.All"/>). <paramref name="CliSessionId"/> is the session the hook reported, null when it gave none.</summary>
+    public sealed record CliStateChanged(string Provider, string State, string? CliSessionId) : FifoNotification;
+
     /// <summary>
     /// A CLI session id is accepted only as a canonical UUID (<c>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</c>): hex digits
     /// and dashes, so it is safe in a file name.
@@ -126,17 +130,30 @@ public abstract record FifoNotification
                 {
                     var provider = String(root, "provider");
                     if (!IsKnownProvider(provider, out rejection)) return null;
-                    string? cliSessionId = null;
-                    if (root.TryGetProperty("cliSessionId", out var idProperty) && idProperty.ValueKind != JsonValueKind.Null)
+                    if (!TryOptionalCliSessionId(root, out var cliSessionId))
                     {
-                        cliSessionId = idProperty.ValueKind == JsonValueKind.String ? idProperty.GetString() : null;
-                        if (!IsValidCliSessionId(cliSessionId))
-                        {
-                            rejection = "invalid cliSessionId";
-                            return null;
-                        }
+                        rejection = "invalid cliSessionId";
+                        return null;
                     }
                     return new CliExited(provider!, cliSessionId);
+                }
+
+                case "cli-state":
+                {
+                    var provider = String(root, "provider");
+                    if (!IsKnownProvider(provider, out rejection)) return null;
+                    var state = String(root, "state");
+                    if (state is null || !CliStates.All.Contains(state))
+                    {
+                        rejection = "unknown state";
+                        return null;
+                    }
+                    if (!TryOptionalCliSessionId(root, out var cliSessionId))
+                    {
+                        rejection = "invalid cliSessionId";
+                        return null;
+                    }
+                    return new CliStateChanged(provider!, state, cliSessionId);
                 }
 
                 default:
@@ -149,6 +166,16 @@ public abstract record FifoNotification
             rejection = "malformed JSON";
             return null;
         }
+    }
+
+    /// <summary>An optional <c>cliSessionId</c>: absent or null is accepted (null), anything else must be a valid id.</summary>
+    private static bool TryOptionalCliSessionId(JsonElement root, out string? cliSessionId)
+    {
+        cliSessionId = null;
+        if (!root.TryGetProperty("cliSessionId", out var idProperty) || idProperty.ValueKind == JsonValueKind.Null)
+            return true;
+        cliSessionId = idProperty.ValueKind == JsonValueKind.String ? idProperty.GetString() : null;
+        return IsValidCliSessionId(cliSessionId);
     }
 
     private static bool IsKnownProvider(string? provider, out string? rejection)

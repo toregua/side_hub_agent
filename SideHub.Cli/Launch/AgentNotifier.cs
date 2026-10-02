@@ -26,6 +26,11 @@ public static class AgentNotifier
     public static void Exited(string provider, string? cliSessionId) =>
         Send(JsonSerializer.Serialize(new { @event = "cli-exited", provider, cliSessionId }));
 
+    /// <param name="state">working, waiting-input or idle (see <see cref="CliStateCommand"/>).</param>
+    /// <param name="cliSessionId">The session the CLI's hook reported, null when it gave none.</param>
+    public static void State(string provider, string state, string? cliSessionId) =>
+        Send(JsonSerializer.Serialize(new { @event = "cli-state", provider, state, cliSessionId }));
+
     public static void StepEnded() => Send("{\"event\":\"run-step-ended\"}");
 
     private static void Send(string json)

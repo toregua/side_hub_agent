@@ -40,6 +40,31 @@ public class FifoNotificationTests
         Assert.Equal("unknown provider", Rejection("""{"event":"cli-exited","provider":"bash"}"""));
     }
 
+    [Theory]
+    [InlineData("working")]
+    [InlineData("waiting-input")]
+    [InlineData("idle")]
+    public void A_cli_state_is_accepted_with_or_without_its_session_id(string state)
+    {
+        Assert.Equal(new FifoNotification.CliStateChanged("claude", state, SessionId),
+            Parse($$"""{"event":"cli-state","provider":"claude","state":"{{state}}","cliSessionId":"{{SessionId}}"}"""));
+        Assert.Equal(new FifoNotification.CliStateChanged("codex", state, null),
+            Parse($$"""{"event":"cli-state","provider":"codex","state":"{{state}}","cliSessionId":null}"""));
+        Assert.Equal(new FifoNotification.CliStateChanged("codex", state, null),
+            Parse($$"""{"event":"cli-state","provider":"codex","state":"{{state}}"}"""));
+    }
+
+    [Theory]
+    [InlineData("""{"event":"cli-state","provider":"claude","state":"busy"}""", "unknown state")]
+    [InlineData("""{"event":"cli-state","provider":"claude","state":"Working"}""", "unknown state")]
+    [InlineData("""{"event":"cli-state","provider":"claude"}""", "unknown state")]
+    [InlineData("""{"event":"cli-state","provider":"claude","state":1}""", "unknown state")]
+    [InlineData("""{"event":"cli-state","provider":"bash","state":"idle"}""", "unknown provider")]
+    [InlineData("""{"event":"cli-state","provider":"claude","state":"idle","cliSessionId":"../../etc"}""", "invalid cliSessionId")]
+    [InlineData("""{"event":"cli-state","provider":"claude","state":"idle","cliSessionId":42}""", "invalid cliSessionId")]
+    public void A_cli_state_is_rejected_unless_every_field_is_valid(string line, string expected) =>
+        Assert.Equal(expected, Rejection(line));
+
     [Fact]
     public void A_launch_without_pid_is_accepted_without_one() =>
         Assert.Equal(new FifoNotification.CliLaunched("codex", "/work", null),
