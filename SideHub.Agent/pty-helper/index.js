@@ -113,6 +113,9 @@ function startPty(config) {
   if (isBash && sidehubBashrc) {
     shellArgs = ['--rcfile', sidehubBashrc, '-i'];
   }
+  if (process.platform === 'win32') {
+    shellArgs = windowsShellArgs(shell);
+  }
 
   try {
     ptyProcess = pty.spawn(shell, shellArgs, {
@@ -136,6 +139,21 @@ function startPty(config) {
   } catch (e) {
     send({ type: 'error', message: e.message });
   }
+}
+
+// ConPTY consoles start on the OEM code page (437, 850…): a CLI writing UTF-8 bytes to the
+// console (Copilot's box drawing, spinners) comes out as "Γöé". The shell switches its console
+// to UTF-8 (65001) first; the CLIs launched in it share that console.
+function windowsShellArgs(shell) {
+  const name = shell.split(/[\\/]/).pop().toLowerCase();
+  if (name === 'cmd.exe' || name === 'cmd') {
+    return ['/K', 'chcp 65001 >nul'];
+  }
+  if (['powershell.exe', 'powershell', 'pwsh.exe', 'pwsh'].includes(name)) {
+    return ['-NoLogo', '-NoExit', '-Command',
+      '[Console]::InputEncoding = [Console]::OutputEncoding = $OutputEncoding = New-Object System.Text.UTF8Encoding $false'];
+  }
+  return [];
 }
 
 function stopPty() {
