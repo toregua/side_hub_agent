@@ -247,7 +247,11 @@ install() {
     local asset_name="sidehub-agent-${platform}.tar.gz"
     local url="${SIDEHUB_API}/agent/download/${platform}/${tag}"
 
-    echo "📦 Téléchargement de SideHub Agent ${tag} (${platform})..."
+    if [ "$version" = "latest" ]; then
+        echo "📦 Téléchargement de SideHub Agent ${tag} (dernière version, ${platform})..."
+    else
+        echo "📦 Téléchargement de SideHub Agent ${tag} (${platform})..."
+    fi
 
     # Global (not local) so the EXIT trap still sees it once install() has returned
     TMP_DIR=$(mktemp -d)
@@ -302,7 +306,7 @@ install() {
     fi
 
     echo ""
-    echo "✅ SideHub Agent installé avec succès!"
+    echo "✅ SideHub Agent ${tag} installé avec succès!"
     echo ""
 
     if [ -n "$token" ] && [ "$(id -u)" -eq 0 ] && [ -z "$allow_root" ]; then

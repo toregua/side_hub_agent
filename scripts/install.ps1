@@ -199,7 +199,11 @@ function Install-SideHubAgent {
     $assetName = "sidehub-agent-$platform.zip"
     $url = "$SideHubApi/agent/download/$platform/$tag"
 
-    Write-Host "Downloading SideHub Agent $tag ($platform)..."
+    if ($Version -eq "latest") {
+        Write-Host "Downloading SideHub Agent $tag (latest, $platform)..."
+    } else {
+        Write-Host "Downloading SideHub Agent $tag ($platform)..."
+    }
 
     # Unique temp directory: a fixed name could be pre-created (or swapped) by another process
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sidehub-agent-install-" + [guid]::NewGuid().ToString("N"))
@@ -253,7 +257,7 @@ function Install-SideHubAgent {
     }
 
     Write-Host ""
-    Write-Host "SideHub Agent installed successfully!" -ForegroundColor Green
+    Write-Host "SideHub Agent $tag installed successfully!" -ForegroundColor Green
     Write-Host ""
     Write-Host "To get started, from your project folder:"
     Write-Host "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"
