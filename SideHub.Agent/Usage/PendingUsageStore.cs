@@ -7,38 +7,62 @@ namespace SideHub.Agent.Usage;
 /// <c>run.usage</c> reports that could not be sent (backend disconnected), one file per run
 /// (<c>{runId}.json</c>), replayed at the next connection. A newer report for the same run overwrites the older one.
 /// </summary>
-public sealed class PendingUsageStore(string directory)
+public sealed class PendingUsageStore(string directory) : PendingReportStore<RunUsageMessage>(directory)
+{
+    public void Delete(Guid runId) => Delete(runId.ToString());
+
+    protected override string KeyOf(RunUsageMessage report) => report.RunId.ToString();
+}
+
+/// <summary>
+/// <c>cli-session.usage</c> snapshots that could not be sent, one file per CLI session (<c>{cliSessionId}.json</c>):
+/// a newer snapshot of the session replaces the queued one.
+/// </summary>
+public sealed class PendingCliSessionUsageStore(string directory) : PendingReportStore<CliSessionUsageMessage>(directory)
+{
+    // The id names the file: only UUIDs (the collector tracks no other), checked again here.
+    protected override string KeyOf(CliSessionUsageMessage report) =>
+        FifoNotification.IsValidCliSessionId(report.CliSessionId)
+            ? report.CliSessionId
+            : throw new ArgumentException("Invalid CLI session id.", nameof(report));
+}
+
+/// <summary>Reports kept on disk while the backend is unreachable, one file per key, replayed at the next connection.</summary>
+public abstract class PendingReportStore<TReport>(string directory) where TReport : class
 {
     public string Directory => directory;
 
-    public void Save(RunUsageMessage report)
+    /// <summary>Names the report's file: a newer report with the same key overwrites the older one.</summary>
+    protected abstract string KeyOf(TReport report);
+
+    public void Save(TReport report)
     {
         PrivateFiles.CreateDirectory(directory);
-        var path = PathFor(report.RunId);
+        var path = PathFor(KeyOf(report));
         var tmp = path + ".tmp";
         PrivateFiles.WriteAllText(tmp, JsonSerializer.Serialize(report));
         File.Move(tmp, path, overwrite: true);
     }
 
-    public void Delete(Guid runId)
+    public void Delete(string key)
     {
-        try { File.Delete(PathFor(runId)); }
+        try { File.Delete(PathFor(key)); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>Pending reports, oldest first. Unreadable files are skipped (and left for inspection).</summary>
-    public IReadOnlyList<RunUsageMessage> LoadAll(Action<string>? log = null)
+    public IReadOnlyList<TReport> LoadAll(Action<string>? log = null)
     {
         if (!System.IO.Directory.Exists(directory))
             return [];
 
-        var reports = new List<RunUsageMessage>();
+        var reports = new List<TReport>();
         foreach (var file in new DirectoryInfo(directory).EnumerateFiles("*.json").OrderBy(f => f.LastWriteTimeUtc))
         {
             try
             {
-                var report = JsonSerializer.Deserialize<RunUsageMessage>(File.ReadAllText(file.FullName));
+                var report = JsonSerializer.Deserialize<TReport>(File.ReadAllText(file.FullName));
                 if (report is not null)
                     reports.Add(report);
             }
@@ -50,5 +74,5 @@ public sealed class PendingUsageStore(string directory)
         return reports;
     }
 
-    private string PathFor(Guid runId) => Path.Combine(directory, $"{runId}.json");
+    private string PathFor(string key) => Path.Combine(directory, $"{key}.json");
 }

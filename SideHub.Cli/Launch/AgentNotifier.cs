@@ -22,6 +22,10 @@ public static class AgentNotifier
     public static void Launched(string provider, string cwd, int pid) =>
         Send(JsonSerializer.Serialize(new { @event = "cli-launched", provider, cwd, pid }));
 
+    /// <param name="cliSessionId">The session announced at launch, null when none was (a new codex session).</param>
+    public static void Exited(string provider, string? cliSessionId) =>
+        Send(JsonSerializer.Serialize(new { @event = "cli-exited", provider, cliSessionId }));
+
     public static void StepEnded() => Send("{\"event\":\"run-step-ended\"}");
 
     private static void Send(string json)

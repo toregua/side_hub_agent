@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using SideHub.Agent.Models;
@@ -25,7 +26,7 @@ namespace SideHub.Agent.Usage;
 /// the cached part (as Claude does), reasoning as a subset of output.
 /// </para>
 /// </summary>
-public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
+public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester, ICliSessionUsageHarvester
 {
     public const string SourceName = "codex-rollout";
 
@@ -124,7 +125,53 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
         foreach (var (path, since) in owned.Values)
             ReadRollout(path, since, perModel);
 
-        return perModel
+        return Reports(perModel);
+    }
+
+    // Session id → its rollout: found by walking the day directories, which a periodic report must not redo.
+    private readonly ConcurrentDictionary<string, string> _rolloutsById = new();
+
+    /// <summary>
+    /// An interactive session, resumed ones included: all of it (every launch that resumed it). The rollout is the
+    /// top-level one named after the session id.
+    /// </summary>
+    public IReadOnlyList<ModelUsageReport>? HarvestSession(string cwd, string cliSessionId)
+    {
+        if (FindRollout(cliSessionId) is not { } path)
+            return null;
+        var perModel = new Dictionary<string, TokenTotals>(StringComparer.Ordinal);
+        ReadRollout(path, DateTimeOffset.MinValue, perModel);
+        return Reports(perModel);
+    }
+
+    public IReadOnlyList<string> SessionFiles(string cwd, string cliSessionId) =>
+        FindRollout(cliSessionId) is { } path ? [path] : [];
+
+    /// <summary>The top-level rollout of a session (<c>rollout-&lt;time&gt;-&lt;id&gt;.jsonl</c>), or null.</summary>
+    private string? FindRollout(string cliSessionId)
+    {
+        // The id comes from the notification FIFO and ends up in a file pattern: only UUIDs.
+        if (!FifoNotification.IsValidCliSessionId(cliSessionId))
+            return null;
+        if (_rolloutsById.TryGetValue(cliSessionId, out var known) && File.Exists(known))
+            return known;
+        if (!Directory.Exists(sessionsRoot))
+            return null;
+
+        try
+        {
+            var found = Directory.EnumerateFiles(sessionsRoot, $"rollout-*-{cliSessionId}.jsonl", SearchOption.AllDirectories)
+                .FirstOrDefault(f => ReadSessionMeta(f) is not null);
+            if (found is not null)
+                _rolloutsById[cliSessionId] = found;
+            return found;
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    private static List<ModelUsageReport> Reports(Dictionary<string, TokenTotals> perModel) =>
+        perModel
             .Select(kv => new ModelUsageReport
             {
                 Model = kv.Key,
@@ -137,7 +184,6 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
             })
             .OrderBy(r => r.Model, StringComparer.Ordinal)
             .ToList();
-    }
 
     /// <summary>
     /// Its rollouts are known: its process was seen holding one, or was watched from start to exit

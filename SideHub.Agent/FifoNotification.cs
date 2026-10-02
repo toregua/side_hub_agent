@@ -31,6 +31,10 @@ public abstract record FifoNotification
     /// <summary>The claude wrapper: the session id it passed (or minted) with <c>--session-id</c> / <c>--resume</c>.</summary>
     public sealed record CliSessionStarted(string Provider, string CliSessionId) : FifoNotification;
 
+    /// <summary><c>sidehub-cli launch</c>, once the CLI it started has exited: <paramref name="CliSessionId"/> is the session
+    /// it announced, null when it knew none (a new codex session, found by the agent from the launch).</summary>
+    public sealed record CliExited(string Provider, string? CliSessionId) : FifoNotification;
+
     /// <summary>
     /// A CLI session id is accepted only as a canonical UUID (<c>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</c>): hex digits
     /// and dashes, so it is safe in a file name.
@@ -116,6 +120,23 @@ public abstract record FifoNotification
                         return null;
                     }
                     return new CliSessionStarted(provider!, cliSessionId!);
+                }
+
+                case "cli-exited":
+                {
+                    var provider = String(root, "provider");
+                    if (!IsKnownProvider(provider, out rejection)) return null;
+                    string? cliSessionId = null;
+                    if (root.TryGetProperty("cliSessionId", out var idProperty) && idProperty.ValueKind != JsonValueKind.Null)
+                    {
+                        cliSessionId = idProperty.ValueKind == JsonValueKind.String ? idProperty.GetString() : null;
+                        if (!IsValidCliSessionId(cliSessionId))
+                        {
+                            rejection = "invalid cliSessionId";
+                            return null;
+                        }
+                    }
+                    return new CliExited(provider!, cliSessionId);
                 }
 
                 default:

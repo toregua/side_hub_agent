@@ -164,6 +164,14 @@ public class PtyStartedMessage
     /// </summary>
     [JsonPropertyName("reattached")]
     public bool Reattached { get; init; }
+
+    /// <summary>
+    /// When the PTY was spawned (UTC), the same on every report of it: a reattach or the replay after a
+    /// backend reconnect sends the original time, so the backend does not show the session as just started.
+    /// Ignored by older backends.
+    /// </summary>
+    [JsonPropertyName("startedAt")]
+    public DateTime? StartedAt { get; init; }
 }
 
 public class PtyExitedMessage
@@ -290,4 +298,37 @@ public class ModelUsageReport
 
     [JsonPropertyName("requests")]
     public int Requests { get; init; }
+}
+
+/// <summary>
+/// Raw token usage of a CLI session started in a terminal (not a <c>run-*</c> PTY: those report
+/// <c>run.usage</c>), per model. A cumulative snapshot of the whole session: the backend replaces the
+/// previous one for the same <c>cliSessionId</c>, never adds. <c>final</c> once the CLI has exited.
+/// </summary>
+public class CliSessionUsageMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "cli-session.usage";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("cliSessionId")]
+    public required string CliSessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+
+    /// <summary>Harvesting source, as in <c>run.usage</c> (e.g. "claude-transcript").</summary>
+    [JsonPropertyName("source")]
+    public required string Source { get; init; }
+
+    [JsonPropertyName("collectedAt")]
+    public required DateTimeOffset CollectedAt { get; init; }
+
+    [JsonPropertyName("final")]
+    public required bool Final { get; init; }
+
+    [JsonPropertyName("models")]
+    public required IReadOnlyList<ModelUsageReport> Models { get; init; }
 }

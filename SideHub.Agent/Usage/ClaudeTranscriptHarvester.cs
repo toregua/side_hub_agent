@@ -16,7 +16,7 @@ namespace SideHub.Agent.Usage;
 /// with its largest counters. Slightly below <c>/cost</c>, which the exit report then replaces.</item>
 /// </list>
 /// </summary>
-public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarvester
+public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarvester, ICliSessionUsageHarvester
 {
     public const string SourceName = "claude-transcript";
 
@@ -25,21 +25,41 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
 
     public string Source => SourceName;
 
-    public IReadOnlyList<ModelUsageReport>? Harvest(RunUsageContext run)
+    public IReadOnlyList<ModelUsageReport>? Harvest(RunUsageContext run) =>
+        // The ids come from the notification FIFO and name files: only UUIDs, whatever the caller checked.
+        Summarize(run.CliSessionIds.Distinct().Where(FifoNotification.IsValidCliSessionId)
+            .Select(id => (File: FindSessionFile(run.Cwd, id), Id: id))
+            .Where(s => s.File is not null && BelongsToRun(s.File, run))
+            .Select(s => (s.File!, s.Id))
+            .ToList());
+
+    /// <summary>
+    /// An interactive session, resumed ones included: all of it, wherever it was started. Its id names the
+    /// file, so the backend can only be told the usage of that very session.
+    /// </summary>
+    public IReadOnlyList<ModelUsageReport>? HarvestSession(string cwd, string cliSessionId) =>
+        FifoNotification.IsValidCliSessionId(cliSessionId) && FindSessionFile(cwd, cliSessionId) is { } file
+            ? Summarize([(file, cliSessionId)])
+            : null;
+
+    /// <summary>The session file and its sub-agent files: Claude appends to them while the session goes on.</summary>
+    public IReadOnlyList<string> SessionFiles(string cwd, string cliSessionId) =>
+        FifoNotification.IsValidCliSessionId(cliSessionId) && FindSessionFile(cwd, cliSessionId) is { } file
+            ? [file, .. FindSubagentFiles(file, cliSessionId)]
+            : [];
+
+    /// <summary>Usage per model of the given sessions (file, session id); null when there is none.</summary>
+    private static List<ModelUsageReport>? Summarize(IReadOnlyList<(string File, string SessionId)> sessions)
     {
+        if (sessions.Count == 0)
+            return null;
+
         var reports = new List<ModelUsageReport>();
         // Shared across sessions: a forked session repeats its parent's messages under the same ids.
         var summedMessages = new Dictionary<string, MessageUsage>();
-        var found = false;
 
-        // The ids come from the notification FIFO and name files: only UUIDs, whatever the caller checked.
-        foreach (var sessionId in run.CliSessionIds.Distinct().Where(FifoNotification.IsValidCliSessionId))
+        foreach (var (sessionFile, sessionId) in sessions)
         {
-            var sessionFile = FindSessionFile(run.Cwd, sessionId);
-            if (sessionFile is null || !BelongsToRun(sessionFile, run))
-                continue;
-            found = true;
-
             var messages = new Dictionary<string, MessageUsage>();
             var finalCost = ReadFile(sessionFile, messages);
             foreach (var subagentFile in FindSubagentFiles(sessionFile, sessionId))
@@ -55,9 +75,6 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
                     summedMessages[id] = summedMessages.TryGetValue(id, out var seen) ? seen.Max(usage) : usage;
             }
         }
-
-        if (!found)
-            return null;
 
         reports.AddRange(summedMessages.Values
             .GroupBy(m => m.Model)

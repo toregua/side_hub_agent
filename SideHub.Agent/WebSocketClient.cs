@@ -19,9 +19,10 @@ public class WebSocketClient : IAsyncDisposable
     private Timer? _heartbeatTimer;
     private Timer? _ptyReaperTimer;
     private string? _currentPtyShell;
+    private DateTime _currentPtyStartedAt;
     private NodePtyExecutor? _ptyExecutor;
     // Multi-PTY: keyed by ptySessionId
-    private readonly ConcurrentDictionary<string, (NodePtyExecutor Executor, string Shell)> _ptySessions = new();
+    private readonly ConcurrentDictionary<string, PtySession> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     // Background tasks reading the CLI-session notification FIFO for each PTY.
@@ -63,6 +64,9 @@ public class WebSocketClient : IAsyncDisposable
     private readonly PendingFileWrites _pendingFileWrites = new();
     // Token usage of backend-launched runs (run-* PTYs), reported as run.usage.
     private readonly RunUsageCollector _usageCollector;
+    // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
+    private readonly CliSessionUsageCollector _cliSessionUsage;
+    private Timer? _cliSessionUsageTimer;
     // Agent-owned 0700 folder holding the notification FIFOs (see NotifyFifo).
     private readonly string _fifoDirectory;
     private readonly string _fifoAgentKey;
@@ -93,10 +97,18 @@ public class WebSocketClient : IAsyncDisposable
         EnsureCliWrappersExecutable();
 
         var harvesters = new Dictionary<string, IUsageHarvester>();
+        var sessionHarvesters = new Dictionary<string, ICliSessionUsageHarvester>();
         if (ClaudeProjectPaths.ProjectsRoot() is { } claudeProjects)
-            harvesters["claude"] = new ClaudeTranscriptHarvester(claudeProjects);
+        {
+            var claude = new ClaudeTranscriptHarvester(claudeProjects);
+            harvesters["claude"] = claude;
+            sessionHarvesters["claude"] = claude;
+        }
         if (CodexRolloutHarvester.SessionsRoot() is { } codexSessions)
+        {
             harvesters["codex"] = _codexRollouts = new CodexRolloutHarvester(codexSessions);
+            sessionHarvesters["codex"] = _codexRollouts;
+        }
         // Several agents can share a run directory: keep each agent's pending reports apart,
         // the backend only accepts a run's usage from the agent it was launched on.
         var runDir = runDirectory ?? Path.Combine(workingDirectory, ".sidehub", "run");
@@ -104,6 +116,8 @@ public class WebSocketClient : IAsyncDisposable
         _fifoAgentKey = config.AgentId ?? "default";
         _fifoDirectory = Path.Combine(runDir, "fifo", _fifoAgentKey);
         _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync, Log);
+        _cliSessionUsage = new CliSessionUsageCollector(
+            sessionHarvesters, new PendingCliSessionUsageStore(Path.Combine(pendingDirectory, "cli-sessions")), TrySendAsync, Log);
     }
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
@@ -427,6 +441,13 @@ public class WebSocketClient : IAsyncDisposable
                 case FifoNotification.CliSessionStarted started:
                     await RecordCliSessionAsync(ptySessionId, started, ct);
                     return;
+
+                // Written by `sidehub-cli launch` once the CLI has exited: its session's usage is final.
+                case FifoNotification.CliExited exited:
+                    Log($"CLI exited in PTY {ptySessionId}: provider={exited.Provider} cliSessionId={exited.CliSessionId ?? "(unknown)"}");
+                    RunInBackground("cli-session.usage", () => _cliSessionUsage.CliExitedAsync(
+                        ptySessionId, exited.Provider, exited.CliSessionId, CancellationToken.None));
+                    return;
             }
         }
         catch (Exception ex)
@@ -516,6 +537,8 @@ public class WebSocketClient : IAsyncDisposable
         var (provider, cliSessionId) = (started.Provider, started.CliSessionId);
         Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
         _usageCollector.RecordCliSession(ptySessionId, provider, cliSessionId);
+        _cliSessionUsage.SessionStarted(ptySessionId, provider, cliSessionId,
+            _ptyCwd.TryGetValue(ptySessionId, out var cwd) ? cwd : _workingDirectory);
         _ptyCliSessions[ptySessionId] = new PtyCliSession(provider, cliSessionId);
         await SendAsync(new PtyCliSessionStartedMessage
         {
@@ -689,6 +712,10 @@ public class WebSocketClient : IAsyncDisposable
     public async Task RunAsync(CancellationToken ct)
     {
         var reconnectAttempts = 0;
+        // Connected or not: a snapshot taken while disconnected is queued and replayed at the next connection.
+        _cliSessionUsageTimer ??= new Timer(
+            _ => RunInBackground("periodic cli-session.usage", () => _cliSessionUsage.ReportChangedAsync(ct)),
+            null, CliSessionUsageCollector.ReportInterval, CliSessionUsageCollector.ReportInterval);
 
         while (!ct.IsCancellationRequested)
         {
@@ -710,6 +737,7 @@ public class WebSocketClient : IAsyncDisposable
                 await SendConnectedMessageAsync(ct);
                 await ReportAlivePtySessionsAsync(ct);
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
+                RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
                 StartHeartbeat(ct);
                 StartPtyReaper();
 
@@ -867,6 +895,7 @@ public class WebSocketClient : IAsyncDisposable
                             // backend explicitly — otherwise it keeps reporting the session as
                             // running and frontends reattach to a dead PTY (blank terminal).
                             try { await SendAsync(new PtyExitedMessage { ExitCode = 0, PtySessionId = sid }, CancellationToken.None); } catch { }
+                            HarvestFinalUsage(sid, "reaped", TimeSpan.FromSeconds(2));
                         }
                     }
                 }
@@ -1415,7 +1444,7 @@ public class WebSocketClient : IAsyncDisposable
                 if (isHealthy)
                 {
                     Log($"PTY session {ptySessionId} already running, sending started event for reconnection");
-                    await SendAsync(new PtyStartedMessage { Shell = existing.Shell, PtySessionId = ptySessionId, Reattached = true }, ct);
+                    await SendAsync(existing.StartedMessage(ptySessionId, reattached: true), ct);
                     return;
                 }
                 Log($"PTY session {ptySessionId} unhealthy, recreating");
@@ -1451,6 +1480,7 @@ public class WebSocketClient : IAsyncDisposable
             try
             {
                 var executor = new NodePtyExecutor(cwd);
+                var startedAt = DateTime.UtcNow;
                 await executor.StartAsync(
                     shellPath,
                     async output => await SendAsync(new PtyOutputMessage { Data = output, PtySessionId = ptySessionId }, ct),
@@ -1461,7 +1491,7 @@ public class WebSocketClient : IAsyncDisposable
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
                         CleanupNotifyFifo(ptySessionId);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
-                        HarvestFinalRunUsage(ptySessionId, "exit");
+                        HarvestFinalUsage(ptySessionId, "exit");
                     },
                     columns,
                     rows,
@@ -1469,14 +1499,15 @@ public class WebSocketClient : IAsyncDisposable
                     ct
                 );
 
-                _ptySessions[ptySessionId] = (executor, shell);
+                var session = new PtySession(executor, shell, startedAt);
+                _ptySessions[ptySessionId] = session;
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }
                 if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is { } runId)
                     _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId]);
                 StartFifoReader(ptySessionId, ct);
-                await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId }, ct);
+                await SendAsync(session.StartedMessage(ptySessionId, reattached: false), ct);
                 Log($"PTY session {ptySessionId} started");
             }
             catch (Exception ex)
@@ -1494,7 +1525,11 @@ public class WebSocketClient : IAsyncDisposable
             if (isHealthy)
             {
                 Log("PTY session already running and healthy, sending started event for reconnection");
-                await SendAsync(new PtyStartedMessage { Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell() }, ct);
+                await SendAsync(new PtyStartedMessage
+                {
+                    Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell(),
+                    StartedAt = _currentPtyStartedAt,
+                }, ct);
                 return;
             }
 
@@ -1532,7 +1567,8 @@ public class WebSocketClient : IAsyncDisposable
                 );
 
                 _currentPtyShell = shell;
-                await SendAsync(new PtyStartedMessage { Shell = shell }, ct);
+                _currentPtyStartedAt = DateTime.UtcNow;
+                await SendAsync(new PtyStartedMessage { Shell = shell, StartedAt = _currentPtyStartedAt }, ct);
                 Log("PTY session started");
             }
             catch (Exception ex)
@@ -1618,7 +1654,7 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"PTY session {ptySessionId} stopped");
                 // DisposeAsync doesn't fire the exit callback, so the run's last report is sent here,
                 // once the killed CLI has had a moment to write its final cost-state.
-                HarvestFinalRunUsage(ptySessionId, "stop", TimeSpan.FromSeconds(2));
+                HarvestFinalUsage(ptySessionId, "stop", TimeSpan.FromSeconds(2));
             }
             return;
         }
@@ -1643,13 +1679,15 @@ public class WebSocketClient : IAsyncDisposable
         Log("PTY session stopped");
     }
 
-    private void HarvestFinalRunUsage(string ptySessionId, string trigger, TimeSpan delay = default)
+    /// <summary>The PTY is gone: last report of its run (<c>run.usage</c>) or of its CLI sessions (<c>cli-session.usage</c>).</summary>
+    private void HarvestFinalUsage(string ptySessionId, string trigger, TimeSpan delay = default)
     {
-        if (!_usageCollector.IsTracked(ptySessionId)) return;
-        RunInBackground("run.usage", async () =>
+        RunInBackground("final usage", async () =>
         {
             if (delay > TimeSpan.Zero) await Task.Delay(delay);
-            await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
+            if (_usageCollector.IsTracked(ptySessionId))
+                await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
+            await _cliSessionUsage.PtyClosedAsync(ptySessionId, trigger, CancellationToken.None);
         });
     }
 
@@ -1693,14 +1731,14 @@ public class WebSocketClient : IAsyncDisposable
     /// </summary>
     private async Task ReportAlivePtySessionsAsync(CancellationToken ct)
     {
-        foreach (var (ptySessionId, (executor, shell)) in _ptySessions)
+        foreach (var (ptySessionId, session) in _ptySessions)
         {
-            if (executor.IsRunning)
+            if (session.Executor.IsRunning)
             {
-                Log($"Reporting alive PTY session {ptySessionId} (shell: {shell})");
+                Log($"Reporting alive PTY session {ptySessionId} (shell: {session.Shell})");
                 // Reattached: the process (and any CLI inside it) survived, so the
                 // frontend must not auto-type `<provider> --resume` into it.
-                await SendAsync(new PtyStartedMessage { Shell = shell, PtySessionId = ptySessionId, Reattached = true }, ct);
+                await SendAsync(session.StartedMessage(ptySessionId, reattached: true), ct);
                 await ReportCliSessionAsync(ptySessionId, ct);
             }
         }
@@ -1711,7 +1749,8 @@ public class WebSocketClient : IAsyncDisposable
             await SendAsync(new PtyStartedMessage
             {
                 Shell = _currentPtyShell ?? SystemInfoProvider.GetDefaultShell(),
-                Reattached = true
+                Reattached = true,
+                StartedAt = _currentPtyStartedAt,
             }, ct);
         }
     }
@@ -1748,6 +1787,8 @@ public class WebSocketClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopHeartbeat();
+        _cliSessionUsageTimer?.Dispose();
+        _cliSessionUsageTimer = null;
 
         // Dispose multi-PTY sessions
         foreach (var (sid, session) in _ptySessions)

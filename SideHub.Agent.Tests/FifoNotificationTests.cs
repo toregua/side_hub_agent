@@ -25,6 +25,22 @@ public class FifoNotificationTests
     }
 
     [Fact]
+    public void A_cli_exit_is_accepted_with_or_without_its_session_id()
+    {
+        Assert.Equal(new FifoNotification.CliExited("claude", SessionId),
+            Parse($$"""{"event":"cli-exited","provider":"claude","cliSessionId":"{{SessionId}}"}"""));
+        Assert.Equal(new FifoNotification.CliExited("codex", null),
+            Parse("""{"event":"cli-exited","provider":"codex","cliSessionId":null}"""));
+        Assert.Equal(new FifoNotification.CliExited("codex", null),
+            Parse("""{"event":"cli-exited","provider":"codex"}"""));
+        Assert.Equal("invalid cliSessionId",
+            Rejection("""{"event":"cli-exited","provider":"claude","cliSessionId":"../x"}"""));
+        Assert.Equal("invalid cliSessionId",
+            Rejection("""{"event":"cli-exited","provider":"claude","cliSessionId":42}"""));
+        Assert.Equal("unknown provider", Rejection("""{"event":"cli-exited","provider":"bash"}"""));
+    }
+
+    [Fact]
     public void A_launch_without_pid_is_accepted_without_one() =>
         Assert.Equal(new FifoNotification.CliLaunched("codex", "/work", null),
             Parse("""{"event":"cli-launched","provider":"codex","cwd":"/work"}"""));

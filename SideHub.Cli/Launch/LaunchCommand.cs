@@ -70,6 +70,9 @@ public static class LaunchCommand
         if (plan.ReportLaunch)
             AgentNotifier.Launched(cli, Directory.GetCurrentDirectory(), process.Id);
         process.WaitForExit();
+        // The session's files are complete: the agent reports its final usage.
+        if (plan.SessionId is not null || plan.ReportLaunch)
+            AgentNotifier.Exited(cli, plan.SessionId);
         return process.ExitCode;
     }
 

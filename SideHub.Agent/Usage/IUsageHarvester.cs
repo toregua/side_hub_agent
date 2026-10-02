@@ -16,6 +16,23 @@ public interface IUsageHarvester
     IReadOnlyList<ModelUsageReport>? Harvest(RunUsageContext run);
 }
 
+/// <summary>
+/// Reads the usage of one CLI session, whoever started it (an interactive terminal): the whole session,
+/// cumulative, located by its id alone.
+/// </summary>
+public interface ICliSessionUsageHarvester
+{
+    /// <summary>Value sent as <c>source</c> in <c>cli-session.usage</c>, the same as in <c>run.usage</c>.</summary>
+    string Source { get; }
+
+    /// <summary>The files the session's usage is read from (to tell whether it changed); empty when none is found.</summary>
+    /// <param name="cwd">Where the session most likely started (its PTY's directory): a hint, not a filter.</param>
+    IReadOnlyList<string> SessionFiles(string cwd, string cliSessionId);
+
+    /// <summary>Usage per model of the whole session, or null when its files cannot be found.</summary>
+    IReadOnlyList<ModelUsageReport>? HarvestSession(string cwd, string cliSessionId);
+}
+
 /// <param name="Cwd">Real path of the run's working directory.</param>
 /// <param name="CliSessionIds">CLI sessions started in the run's PTY for this harvester's provider.</param>
 /// <param name="Launches">Launches of this harvester's CLI in the run's PTY, for CLIs whose session id
