@@ -12,7 +12,7 @@ namespace SideHub.Agent;
 public static partial class VersionInfo
 {
     /// <summary>Runtimes probed with <c>&lt;cli&gt; --version</c>; keys match the backend runtime names.</summary>
-    private static readonly string[] Clis = ["claude", "codex", "gemini", "copilot"];
+    public static IReadOnlyList<string> ProbedClis { get; } = ["claude", "codex", "gemini", "copilot"];
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
@@ -48,7 +48,7 @@ public static partial class VersionInfo
             if (CachedCliVersions is { } cached)
                 return cached;
 
-            var probes = Clis.Select(async cli => (cli, version: await ProbeAsync(cli, ct)));
+            var probes = ProbedClis.Select(async cli => (cli, version: await ProbeAsync(cli, ct)));
             var results = await Task.WhenAll(probes);
 
             _cliVersions = results

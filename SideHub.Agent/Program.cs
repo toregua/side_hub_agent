@@ -46,6 +46,7 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
         if (refusal != null)
         {
             Console.WriteLine($"[SideHub] Error: {refusal}");
+            await DiagnosticReporter.ReportRootRefusalAsync(command, args, baseDirectory);
             return 1;
         }
         if (command != "--foreground-daemon") // its stdout is discarded: it logs the warning itself

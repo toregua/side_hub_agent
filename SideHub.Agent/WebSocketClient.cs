@@ -83,6 +83,9 @@ public class WebSocketClient : IAsyncDisposable
 
     private int _missedHeartbeatAcks;
     private DateTime _connectedAt;
+    /// <summary>Connected at least once since the process started: later failures are outages, not a broken install.</summary>
+    private bool _everConnected;
+    private readonly DiagnosticReporter? _diagnostics;
 
     /// <param name="runDirectory">The agent's .sidehub/run directory; defaults to the working directory's.</param>
     public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null, string? runDirectory = null)
@@ -120,6 +123,7 @@ public class WebSocketClient : IAsyncDisposable
         _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync, Log);
         _cliSessionUsage = new CliSessionUsageCollector(
             sessionHarvesters, new PendingCliSessionUsageStore(Path.Combine(pendingDirectory, "cli-sessions")), TrySendAsync, Log);
+        _diagnostics = DiagnosticReporter.ForConfig(config, Log);
     }
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
@@ -151,7 +155,7 @@ public class WebSocketClient : IAsyncDisposable
     }
 
     /// <summary>Derive HTTP API URL from WebSocket URL (wss://host/ws/agent → https://host).</summary>
-    private static string DeriveApiUrl(string wsUrl)
+    internal static string DeriveApiUrl(string wsUrl)
     {
         var uri = new Uri(wsUrl);
         var scheme = uri.Scheme == "wss" ? "https" : "http";
@@ -737,6 +741,7 @@ public class WebSocketClient : IAsyncDisposable
         _cliSessionUsageTimer ??= new Timer(
             _ => RunInBackground("periodic cli-session.usage", () => _cliSessionUsage.ReportChangedAsync(ct)),
             null, CliSessionUsageCollector.ReportInterval, CliSessionUsageCollector.ReportInterval);
+        RunInBackground("startup checks", () => ReportStartupProblemsAsync(ct));
 
         while (!ct.IsCancellationRequested)
         {
@@ -748,12 +753,15 @@ public class WebSocketClient : IAsyncDisposable
                 _ws = new ClientWebSocket();
                 _ws.Options.SetRequestHeader("Authorization", $"Bearer {_config.AgentToken}");
                 _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+                // Keeps the handshake's HTTP status: a 401 is a rejected token, not an unreachable backend
+                _ws.Options.CollectHttpResponseDetails = true;
 
                 Log($"Connecting to {MaskUrl(_config.SidehubUrl!)}...");
                 await _ws.ConnectAsync(new Uri(_config.SidehubUrl!), ct);
                 Log("Connected");
 
                 _connectedAt = DateTime.UtcNow;
+                _everConnected = true;
 
                 await SendConnectedMessageAsync(ct);
                 await ReportAlivePtySessionsAsync(ct);
@@ -777,6 +785,13 @@ public class WebSocketClient : IAsyncDisposable
                 Log($"Error: {ex.Message}");
                 StopHeartbeat();
                 StopPtyReaper();
+
+                // The handshake failed and the agent never got through since it started: likely a broken install
+                if (_connectedAt == default && !_everConnected && _diagnostics is not null)
+                {
+                    var (reason, detail) = DiagnosticReporter.ClassifyConnectFailure(ex, _ws?.HttpStatusCode ?? 0);
+                    _diagnostics.Report(reason, detail);
+                }
 
                 // Only reset backoff if connection was stable for at least 60 seconds
                 var connectionDuration = _connectedAt == default ? 0 : (DateTime.UtcNow - _connectedAt).TotalMilliseconds;
@@ -819,6 +834,17 @@ public class WebSocketClient : IAsyncDisposable
                     _ws = null;
                 }
             }
+        }
+    }
+
+    /// <summary>Logs and reports what <see cref="StartupChecks"/> found wrong on this machine (once per process).</summary>
+    private async Task ReportStartupProblemsAsync(CancellationToken ct)
+    {
+        foreach (var problem in await StartupChecks.RunOnceAsync(ct))
+        {
+            Log($"Startup check failed ({problem.Reason}): {problem.Detail}");
+            if (_diagnostics is not null)
+                await _diagnostics.ReportAsync(problem.Reason, problem.Detail);
         }
     }
 

@@ -118,6 +118,7 @@ workflow callbacks, drive…). Disable file writes (`"allowFileWrite": false`) t
 | The output of the terminals SideHub opens (cockpit terminals and runs) | The agent token (sent only to SideHub, as an authentication header) |
 | Output of one-shot `command.execute` commands, if enabled | |
 | Whatever a CLI explicitly sends with `sidehub-cli` (task updates, step results, drive notes) | |
+| Failure reports when the agent can't install, start or connect (see below) | |
 
 ¹ The agent never reads or uploads your files on its own. But a terminal's output is whatever is
 printed in it: if a CLI or a command prints a file, that output reaches SideHub like any terminal
@@ -125,6 +126,39 @@ output.
 
 All traffic goes through the agent's outbound `wss://` connection and the `sidehub-cli` HTTPS calls to
 the same API. **No inbound port, no VPN, no reverse tunnel.**
+
+### Failure reports
+
+A failed install happens on your machine, out of SideHub's sight. So when the agent or its install
+script fails, it tells SideHub why with one anonymous HTTPS call (`POST /api/agent/diagnostics`), and
+SideHub shows the cause next to the account whose agent never connected.
+
+What a report holds, and nothing else:
+
+| Field | Example |
+|---|---|
+| `tokenPrefix` — the first 16 characters of the agent token (`sh_agent_` + 7), never the token: it ties the report to the agent, and SideHub drops reports matching no agent | `sh_agent_Ab3xQ9z` |
+| `reason` | `handshake-rejected` |
+| `detail` — one line, at most 300 characters: tokens masked, your home folder shown as `~`, your user name in paths as `<user>` | `HTTP 401: the token matches no agent…` |
+| `agentVersion` | `1.0.80`, `install.sh v1.0.80` |
+| `os` | `linux-x64` |
+
+| `reason` | Sent by | When |
+|---|---|---|
+| `handshake-rejected` | agent | The WebSocket handshake is refused (401/403): the token matches no agent (deleted, or copied incompletely) |
+| `backend-unreachable` | agent | The handshake fails otherwise before the first connection: DNS, socket, proxy, TLS, HTTP error |
+| `pty-helper-failed` | agent | `pty-helper` doesn't start: Node.js missing from the agent's `PATH`, `node-pty` built for another Node version… |
+| `root-refused` | agent, `install.sh` | Run as root without `--allow-root` |
+| `cli-missing` | agent | None of `claude`, `codex`, `gemini`, `copilot` answers `--version` |
+| `install-node-missing`, `install-download-failed`, `install-verification-failed`, `install-permission-denied`, `install-setup-failed`, `install-failed` | `install.sh`, `install.ps1` | The install stage that failed |
+
+Each cause is sent at most once per agent start (a send that fails for lack of network is retried at
+most 3 times), with a 5-second timeout: reporting never delays or blocks the agent. Connection
+failures are only reported until the agent first connects: a later outage is not a broken install.
+`pty-helper` and the CLIs are checked once, in the background, after each start.
+
+The install scripts only report when they have a token: `install.sh --token` / `SIDEHUB_SETUP_TOKEN`,
+or `SIDEHUB_SETUP_TOKEN` for `install.ps1` (the setup commands copied from SideHub pass it).
 
 ## Installation
 
@@ -356,6 +390,8 @@ side_hub_agent/
 │   ├── AgentSetup.cs              # `setup`: fetch the agent's config from its token
 │   ├── AgentConfig.cs             # Load and validate .sidehub/*.json
 │   ├── AgentRunner.cs             # One runner per config
+│   ├── DiagnosticReporter.cs      # Failure reports (install / start / connection) to SideHub
+│   ├── StartupChecks.cs           # pty-helper and CLI checks, once per start
 │   ├── WebSocketClient.cs         # Backend connection, message dispatch, PTY lifecycle
 │   ├── NodePtyExecutor.cs         # PTYs through pty-helper/
 │   ├── PtyOutputBuffer.cs         # Output history replayed after a reconnection

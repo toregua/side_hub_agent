@@ -51,6 +51,40 @@ LAST_UNSIGNED_VERSION="1.0.61"
 # Older ones need `npm install` from the registry at install time, running package scripts: refused.
 MIN_VERSION="1.0.59"
 
+# Failure reports: with a token, a failed install tells SideHub why (POST /api/agent/diagnostics), so a stuck
+# account shows the cause in SideHub. Only the first 16 characters of the token, the stage that failed and a short
+# detail without user paths, the version being installed and the platform are sent (see README "Failure reports").
+FAIL_REASON="install-failed"
+FAIL_DETAIL=""
+TOKEN=""
+TAG=""
+TMP_DIR=""
+
+# The stage being run: what is reported if the script exits with an error from here on
+stage() { FAIL_REASON="$1"; FAIL_DETAIL="$2"; }
+
+json_escape() { printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+report_failure() {
+    [ "${#TOKEN}" -ge 16 ] || return 0
+    command -v curl > /dev/null 2>&1 || return 0
+    local body
+    body=$(printf '{"tokenPrefix":"%s","reason":"%s","detail":"%s","agentVersion":"%s","os":"%s"}' \
+        "$(json_escape "${TOKEN:0:16}")" "$(json_escape "$FAIL_REASON")" "$(json_escape "$FAIL_DETAIL")" \
+        "$(json_escape "install.sh${TAG:+ $TAG}")" "$(json_escape "$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)")")
+    # Best-effort and bounded: never hold the user's terminal, never fail the script a second time
+    curl -fsS -m 5 -X POST -H 'Content-Type: application/json' --data "$body" \
+        "${SIDEHUB_API}/api/agent/diagnostics" > /dev/null 2>&1 || true
+}
+
+on_exit() {
+    local code=$?
+    [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"
+    [ "$code" -ne 0 ] && report_failure
+    exit "$code"
+}
+trap on_exit EXIT
+
 # Succeeds if version $1 > version $2 (dotted numbers, e.g. 1.0.61)
 version_gt() {
     local IFS=.
@@ -174,11 +208,13 @@ verify_checksum() {
     local checksums_file="$tmp_dir/checksums.sha256"
     local checksums_url="https://github.com/${GITHUB_REPO}/releases/download/${tag}/checksums.sha256"
 
+    stage install-download-failed "checksums.sha256 download from GitHub failed ($tag)"
     if ! curl -fsSL "$checksums_url" -o "$checksums_file"; then
         echo "❌ Impossible de télécharger les checksums depuis $checksums_url"
         return 1
     fi
 
+    stage install-verification-failed "release signature or archive checksum invalid ($tag)"
     verify_signature "$checksums_file" "$tag" "$tmp_dir" || return 1
 
     # sha256sum format: "<hash>  <name>" (or "<hash> *<name>" in binary mode)
@@ -205,9 +241,6 @@ verify_checksum() {
 
 # Download and install
 install() {
-    check_nodejs
-
-    local platform=$(detect_platform)
     local version="latest"
     local token="${SIDEHUB_SETUP_TOKEN:-}"
     local allow_root=""
@@ -220,9 +253,17 @@ install() {
             *) version="$1"; shift ;;
         esac
     done
+    TOKEN="$token"
+
+    stage install-node-missing "node not found in PATH"
+    check_nodejs
+
+    stage install-failed "unsupported platform"
+    local platform=$(detect_platform)
 
     # Pin "latest" to a tag so the archive and its checksum come from the same release
     local tag
+    stage install-download-failed "couldn't resolve the latest release from GitHub"
     if [ "$version" = "latest" ]; then
         if ! tag=$(resolve_latest_tag); then
             echo "❌ Impossible de déterminer la dernière version depuis https://github.com/${GITHUB_REPO}/releases"
@@ -232,6 +273,7 @@ install() {
         tag="v${version#v}"
     fi
     # The tag goes into URLs and messages: a plain version only
+    stage install-failed "invalid or too old version requested"
     if ! [[ "$tag" =~ ^v[0-9]+(\.[0-9]+){1,3}$ ]]; then
         echo "❌ Version invalide : $version (attendu : 1.0.61 ou v1.0.61)"
         exit 1
@@ -242,6 +284,9 @@ install() {
         exit 1
     fi
 
+    TAG="$tag"
+
+    stage install-failed "install folder exists and holds something else than an agent install"
     check_install_dir || exit 1
 
     local asset_name="sidehub-agent-${platform}.tar.gz"
@@ -255,10 +300,10 @@ install() {
 
     # Global (not local) so the EXIT trap still sees it once install() has returned
     TMP_DIR=$(mktemp -d)
-    trap 'rm -rf "$TMP_DIR"' EXIT
     local archive_file="$TMP_DIR/agent.tar.gz"
     local extract_dir="$TMP_DIR/package"
 
+    stage install-download-failed "archive download failed (${SIDEHUB_API}/agent/download/${platform}/${tag})"
     if ! curl -fsSL "$url" -o "$archive_file"; then
         echo "Erreur: Impossible de télécharger depuis $url"
         exit 1
@@ -269,6 +314,7 @@ install() {
         exit 1
     fi
 
+    stage install-failed "archive extraction failed, or pty-helper dependencies missing from it"
     echo "📁 Extraction..."
     mkdir -p "$extract_dir"
     tar -xzf "$archive_file" -C "$extract_dir"
@@ -282,6 +328,7 @@ install() {
     echo "✓ Dépendances Node.js incluses dans l'archive"
     touch "$extract_dir/$INSTALL_MARKER"
 
+    stage install-permission-denied "couldn't write the install folder or the links in /usr/local/bin"
     echo "🔧 Installation dans ${INSTALL_DIR}..."
     if [ -w "$(dirname "$INSTALL_DIR")" ]; then
         rm -rf "$INSTALL_DIR"
@@ -311,6 +358,7 @@ install() {
 
     if [ -n "$token" ] && [ "$(id -u)" -eq 0 ] && [ -z "$allow_root" ]; then
         # `curl … | sudo bash` with a token: installing system-wide needs root, running the agent must not.
+        stage root-refused "install.sh run as root without --allow-root: agent installed, not configured"
         echo "⛔ Agent non configuré : ce script tourne en root, et l'agent refuse de tourner en root"
         echo "   (le backend SideHub pilote ses terminaux : en root, il contrôlerait toute la machine)."
         echo ""
@@ -326,6 +374,7 @@ install() {
         cd "$PROJECT_DIR"
         echo "🔗 Configuration de l'agent dans ${PROJECT_DIR}..."
         # Token through the environment, not argv: argv is visible to every user in ps.
+        stage install-setup-failed "sidehub-agent setup failed after the install"
         SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup $allow_root
         echo ""
         echo "Commandes utiles : sidehub-agent status · sidehub-agent logs · sidehub-agent stop"

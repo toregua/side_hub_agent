@@ -1,6 +1,8 @@
 # SideHub Agent Installer for Windows
 # Requires: Node.js (for PTY terminal support)
 #
+#   SIDEHUB_SETUP_TOKEN  the agent token (optional): only used here to report a failed install to SideHub, then read
+#                        by `sidehub-agent setup`
 #   SIDEHUB_INSTALL_DIR  install folder (default %LOCALAPPDATA%\Programs\sidehub-agent); an existing folder
 #   is only replaced if it holds a previous agent install
 #
@@ -31,6 +33,38 @@ $LastUnsignedVersion = [version]"1.0.61"
 # First release whose archive bundles pty-helper's node_modules (npm ci from the lockfile, in the CI).
 # Older ones need `npm install` from the registry at install time, running package scripts: refused.
 $MinVersion = [version]"1.0.59"
+
+# Failure reports: with a token in SIDEHUB_SETUP_TOKEN, a failed install tells SideHub why
+# (POST /api/agent/diagnostics), so a stuck account shows the cause in SideHub. Only the first 16 characters of the
+# token, the stage that failed and a short detail without user paths, the version being installed and the platform are
+# sent (see README "Failure reports").
+$SideHubFailReason = "install-failed"
+$SideHubFailDetail = ""
+$SideHubFailTag = ""
+
+# The stage being run: what is reported if the install throws from here on
+function Set-InstallStage {
+    param([string]$Reason, [string]$Detail)
+    $script:SideHubFailReason = $Reason
+    $script:SideHubFailDetail = $Detail
+}
+
+function Send-InstallFailureReport {
+    $token = "$env:SIDEHUB_SETUP_TOKEN".Trim()
+    if ($token.Length -lt 16) { return }
+    $body = @{
+        tokenPrefix  = $token.Substring(0, 16)
+        reason       = $script:SideHubFailReason
+        detail       = $script:SideHubFailDetail
+        agentVersion = "install.ps1 $script:SideHubFailTag".Trim()
+        os           = "windows-$env:PROCESSOR_ARCHITECTURE".ToLowerInvariant()
+    } | ConvertTo-Json -Compress
+    # Best-effort and bounded: never hold the user's terminal, never hide the install error
+    try {
+        Invoke-RestMethod -Method Post -Uri "$SideHubApi/api/agent/diagnostics" -ContentType "application/json" `
+            -Body $body -TimeoutSec 5 -UseBasicParsing | Out-Null
+    } catch { }
+}
 
 # Check Node.js
 function Test-NodeJs {
@@ -132,6 +166,7 @@ function Test-ArchiveChecksum {
 
     $checksumsUrl = "https://github.com/$GitHubRepo/releases/download/$Tag/checksums.sha256"
     $checksumsPath = Join-Path $TempDir "checksums.sha256"
+    Set-InstallStage "install-download-failed" "checksums.sha256 download from GitHub failed ($Tag)"
     try {
         Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsPath -UseBasicParsing
     } catch {
@@ -139,6 +174,7 @@ function Test-ArchiveChecksum {
         return $false
     }
 
+    Set-InstallStage "install-verification-failed" "release signature or archive checksum invalid ($Tag)"
     if (-not (Test-ChecksumsSignature -ChecksumsPath $checksumsPath -Tag $Tag -TempDir $TempDir)) {
         return $false
     }
@@ -236,11 +272,14 @@ function Install-SideHubAgent {
     # 70 MB archive download many times slower
     $ProgressPreference = "SilentlyContinue"
 
+    Set-InstallStage "install-node-missing" "node not found in PATH"
     Test-NodeJs | Out-Null
 
+    Set-InstallStage "install-failed" "unsupported platform"
     $platform = Get-Platform
 
     # Pin "latest" to a tag so the archive and its checksum come from the same release
+    Set-InstallStage "install-download-failed" "couldn't resolve the latest release from GitHub"
     if ($Version -eq "latest") {
         $tag = Get-LatestTag
         if (-not $tag) {
@@ -250,6 +289,7 @@ function Install-SideHubAgent {
         $tag = "v" + $Version.TrimStart('v')
     }
     # The tag goes into URLs and messages: a plain version only
+    Set-InstallStage "install-failed" "invalid or too old version requested"
     if ($tag -notmatch '^v\d+(\.\d+){1,3}$') {
         throw "Invalid version: $Version (expected 1.0.61 or v1.0.61)"
     }
@@ -258,6 +298,9 @@ function Install-SideHubAgent {
             "dependencies from the npm registry at install time. Install v$MinVersion or later.")
     }
 
+    $script:SideHubFailTag = $tag
+
+    Set-InstallStage "install-failed" "install folder exists and holds something else than an agent install"
     if (-not (Test-InstallDir)) { throw "Installation aborted: unusable install folder ($InstallDir)." }
 
     $assetName = "sidehub-agent-$platform.zip"
@@ -277,6 +320,7 @@ function Install-SideHubAgent {
     try {
         $archivePath = Join-Path $tempDir "agent.zip"
 
+        Set-InstallStage "install-download-failed" "archive download failed ($SideHubApi/agent/download/$platform/$tag)"
         try {
             Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
         } catch {
@@ -287,6 +331,7 @@ function Install-SideHubAgent {
             throw "Installation aborted: the archive was not extracted."
         }
 
+        Set-InstallStage "install-failed" "archive extraction failed, or pty-helper dependencies missing from it"
         Write-Host "Extracting..."
         $extractDir = Join-Path $tempDir "package"
         Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
@@ -302,13 +347,16 @@ function Install-SideHubAgent {
         Write-Host "Installing to $InstallDir..."
         if (Test-Path -LiteralPath $InstallDir) {
             # A running agent locks its files: Remove-Item would fail halfway through the folder
+            Set-InstallStage "install-failed" "couldn't stop the agent running from the install folder"
             $restartDirs = @(Stop-RunningAgents)
+            Set-InstallStage "install-permission-denied" "couldn't replace the install folder"
             # Marker last: if a file is still locked, the folder stays recognisable as ours for the next run
             Get-ChildItem -LiteralPath $InstallDir -Force |
                 Where-Object { $_.Name -ne $InstallMarker } |
                 Remove-Item -Recurse -Force
             Remove-Item -LiteralPath $InstallDir -Recurse -Force
         }
+        Set-InstallStage "install-permission-denied" "couldn't write the install folder"
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
         Get-ChildItem -Path $extractDir -Force | Copy-Item -Destination $InstallDir -Recurse -Force
@@ -343,4 +391,9 @@ function Install-SideHubAgent {
     Write-Host "Note: Restart your terminal to update the PATH."
 }
 
-Install-SideHubAgent
+try {
+    Install-SideHubAgent
+} catch {
+    Send-InstallFailureReport
+    throw
+}

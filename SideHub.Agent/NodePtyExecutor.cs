@@ -82,19 +82,21 @@ public class NodePtyExecutor : IAsyncDisposable
     public NodePtyExecutor(string workingDirectory)
     {
         _workingDirectory = workingDirectory;
+        _helperPath = ResolveHelperPath();
+    }
 
-        // Find the pty-helper relative to the executable
+    /// <summary>pty-helper/index.js next to the executable, or one folder up (development).</summary>
+    public static string ResolveHelperPath()
+    {
         var exeDir = AppContext.BaseDirectory;
-        _helperPath = Path.Combine(exeDir, "pty-helper", "index.js");
+        var helperPath = Path.Combine(exeDir, "pty-helper", "index.js");
+        if (File.Exists(helperPath))
+            return helperPath;
 
-        // Fallback to development path
-        if (!File.Exists(_helperPath))
-        {
-            _helperPath = Path.Combine(
-                Path.GetDirectoryName(exeDir.TrimEnd(Path.DirectorySeparatorChar)) ?? "",
-                "pty-helper", "index.js"
-            );
-        }
+        return Path.Combine(
+            Path.GetDirectoryName(exeDir.TrimEnd(Path.DirectorySeparatorChar)) ?? "",
+            "pty-helper", "index.js"
+        );
     }
 
     public async Task StartAsync(
