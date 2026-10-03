@@ -1,150 +1,258 @@
 # SideHub Agent
 
-Remote command execution agent for the [SideHub](https://www.sidehub.io) platform. Connects via WebSocket to receive and execute shell commands with real-time output streaming.
+The open source agent that runs coding CLIs — Claude Code, Codex, Gemini CLI, GitHub Copilot CLI — on
+your own machines for the [SideHub](https://www.sidehub.io) cockpit.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Quick Start (< 5 minutes)
+The agent is a standalone .NET binary. It opens **one outbound WebSocket** (`wss://`, port 443) to
+SideHub and, when asked to, opens terminals (PTYs) in your project folder and types CLI commands into
+them. The CLIs run on your machine, with your own subscriptions or API keys; SideHub never sits between
+them and the model providers.
 
-### 1. Install the agent
+This README describes what the agent does, what leaves your machine, and how to install it. The full
+threat model is in [SECURITY.md](SECURITY.md).
 
-Requires [Node.js](https://nodejs.org) (used for PTY terminal support).
+## How it works
+
+```
+                    SideHub cockpit (www.sidehub.io)
+                                 ▲
+                                 │  wss:// — outbound only, no inbound port
+                                 │
+┌────────────────────────────────┼──────────────────────────────────────┐
+│ Your machine                   │                                      │
+│                                │                                      │
+│   sidehub-agent  (one daemon per project folder)                      │
+│     ├── WebSocketClient ── pty.start / pty.input / pty.stop …         │
+│     ├── NodePtyExecutor ── pty-helper/ (Node.js + node-pty)           │
+│     │      └── PTY: bash / zsh / pwsh … in the project folder         │
+│     │            └── sidehub-cli launch claude|codex|gemini|copilot   │
+│     │                  └── the real CLI ──▶ model provider (your keys)│
+│     ├── NotifyFifo ◀── session id, CLI state, CLI exit                │
+│     └── Usage/ ──────── token counts read from the CLI transcripts    │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+### Everything runs in a terminal
+
+Every execution — a terminal you open in the cockpit, a workflow step, a scheduled prompt — is a PTY on
+your machine. The backend starts a PTY (`pty.start`), types a command line into it (`pty.input`) and
+receives the terminal output (`pty.output`) as raw ANSI bytes, exactly like a human at a keyboard. There
+is no SDK proxy and no structured protocol between SideHub and the CLIs: you can open any run's terminal,
+watch it, interrupt it or take it over.
+
+- **`NodePtyExecutor` + `pty-helper/`** — PTYs are driven by a small Node.js helper built on
+  [node-pty](https://github.com/microsoft/node-pty) (this is why Node.js is required). Only allowlisted
+  shells can be spawned (`bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`; `cmd`, `powershell`, `pwsh` on
+  Windows), always inside the configured `workingDirectory`.
+- **Output history** — the recent output of each PTY is kept in memory (`PtyOutputBuffer`) and replayed
+  when the backend reconnects, so a terminal survives a network blip. PTYs idle for 30 minutes are
+  stopped.
+
+### `sidehub-cli launch`: the single entry point for coding CLIs
+
+Every coding CLI is started through `sidehub-cli launch` (shipped next to the agent), on every OS:
+
+```
+sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|gemini|copilot> [args…]
+```
+
+It:
+
+1. finds the real CLI on your `PATH` (skipping the SideHub wrappers);
+2. sets the session id up front when the CLI accepts one (`--session-id` for claude, copilot and
+   gemini ≥ 0.41), so SideHub can resume the session and read its usage;
+3. adds per-invocation state hooks (claude `--settings` hooks, codex `-c notify=`) that report whether
+   the CLI is `working`, `waiting-input` or `idle`;
+4. tells the agent which session runs in the terminal, then runs the CLI.
+
+For runs started by SideHub, the prompt is passed in the `SIDEHUB_PTY_PROMPT` environment variable and
+handed to the CLI as a single argument, so the typed line is identical in bash, cmd and PowerShell and
+the prompt is never parsed by a shell.
+
+**`cli-wrappers/`** (Linux, macOS) — the agent puts small `claude` / `codex` / `gemini` / `copilot`
+wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
+wrapper simply hands over to `sidehub-cli launch`. Without the launcher, the real CLI runs as if there
+were no wrapper.
+
+### `NotifyFifo`: from the terminal back to the agent
+
+`sidehub-cli launch` and the CLI hooks report events (session started, session title, CLI state, CLI
+exited) through a per-PTY channel exposed as `$SIDEHUB_PTY_NOTIFY_FIFO`: a `0600` FIFO in an agent-owned
+`0700` folder (`.sidehub/run/fifo/`) on Linux and macOS, a named pipe on Windows. The agent treats what
+arrives there as untrusted input (validated ids, bounded sizes).
+
+### Token usage (`Usage/`)
+
+After a run, and periodically for CLI sessions typed in terminals, the agent reads the CLI's own local
+transcript (`ClaudeTranscriptHarvester` for Claude Code's project JSONL, `CodexRolloutHarvester` for
+Codex rollouts) and sends **only token counts per model** (input, output, cache read/write, reasoning):
+
+- `run.usage` — at the end of a run started by SideHub;
+- `cli-session.usage` — a cumulative snapshot of a session typed in a terminal, when the CLI exits or
+  the PTY closes, and every 10 minutes while it changes.
+
+Reports that cannot be sent (backend unreachable) are queued in `.sidehub/run/pending-usage/` and
+replayed at the next connection. Transcripts themselves never leave the machine.
+
+### One daemon per project
+
+A daemon runs per project folder, with that folder as its working directory. It loads every
+`.sidehub/*.json` in the folder (one agent per file, all connected in parallel) and writes its logs and
+PID to `.sidehub/run/`. Started daemons are registered in `~/.sidehub/instances.json`, which is what
+`--all` operates on.
+
+When a PTY starts, the agent also writes the `sidehub` skill files (`AGENTS.md`, `GEMINI.md`, the
+Claude Code skill) into the working directory, so the CLIs know the `sidehub-cli` commands (tasks,
+workflow callbacks, drive…). Disable file writes (`"allowFileWrite": false`) to prevent it.
+
+## What leaves your machine — and what doesn't
+
+| Goes to SideHub | Stays on your machine |
+|---|---|
+| Connection info: agent id, version, OS shells, root folder path, installed CLI versions | Your source code and repositories¹ |
+| PTY lifecycle: started, exited (exit code), CLI session id and title | Your secrets, environment variables and credentials |
+| CLI state (`working` / `waiting-input` / `idle`) | Model calls: the CLIs talk to the providers directly, with your subscriptions or API keys |
+| Token counts per run and per CLI session | CLI transcripts and session files |
+| The output of the terminals SideHub opens (cockpit terminals and runs) | The agent token (sent only to SideHub, as an authentication header) |
+| Output of one-shot `command.execute` commands, if enabled | |
+| Whatever a CLI explicitly sends with `sidehub-cli` (task updates, step results, drive notes) | |
+
+¹ The agent never reads or uploads your files on its own. But a terminal's output is whatever is
+printed in it: if a CLI or a command prints a file, that output reaches SideHub like any terminal
+output.
+
+All traffic goes through the agent's outbound `wss://` connection and the `sidehub-cli` HTTPS calls to
+the same API. **No inbound port, no VPN, no reverse tunnel.**
+
+## Installation
+
+Requires [Node.js](https://nodejs.org) (for the PTY helper) and the CLIs you want to use (`claude`,
+`codex`, `gemini`, `copilot`) on the `PATH`.
+
+### Linux / macOS
 
 ```bash
-# macOS / Linux
 curl -fsSL https://api.sidehub.io/agent/install.sh | bash
+```
 
-# Windows (PowerShell)
+Installs the latest release in `/usr/local/lib/sidehub-agent/` and links `sidehub-agent` / `sidehub-cli`
+into `/usr/local/bin/`. To install a specific version:
+
+```bash
+curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.75
+```
+
+### Windows (PowerShell)
+
+```powershell
 irm https://api.sidehub.io/agent/install.ps1 | iex
 ```
 
-The script downloads the latest release for your platform, installs it in
-`/usr/local/lib/sidehub-agent/` and links `sidehub-agent` / `sidehub-cli` into
-`/usr/local/bin/`. To install a specific version:
+Installs in `%LOCALAPPDATA%\Programs\sidehub-agent`.
+
+### What the scripts check
+
+Set `SIDEHUB_INSTALL_DIR` to install elsewhere (an existing folder that does not hold a previous agent
+install is refused). Versions before `v1.0.59` can no longer be installed with the scripts.
+
+The scripts verify the signature of the release's `checksums.sha256` (fetched from GitHub Releases)
+against the key embedded in the script, then the archive against it, and abort on any mismatch. The
+archive ships `pty-helper`'s Node.js dependencies prebuilt (`npm ci` from the lockfile in the release
+CI): nothing is fetched from npm at install time. Each release also carries a build provenance
+attestation — see [Verifying a release](SECURITY.md#verifying-a-release).
+
+### Configure
+
+1. In [SideHub](https://www.sidehub.io), go to **Agents** in your workspace and create an agent.
+2. From your project folder, run the setup command shown by SideHub and paste the token:
+
+   ```bash
+   cd ~/my-project
+   sidehub-agent setup --token-stdin
+   ```
+
+   `setup` asks SideHub which agent the token belongs to, writes `.sidehub/agent.json` (`0600`, kept out
+   of git), and starts the agent in the background. Add `--no-start` to only write the file.
+
+### Root
+
+`setup`, `start` and `restart` refuse to run as `root`. Run the agent as a dedicated unprivileged user
+(see [Running as a service](#running-as-a-service)). If you really mean it, pass `--allow-root` (or set
+`SIDEHUB_ALLOW_ROOT=1`):
 
 ```bash
-curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.34
+sidehub-agent start -d --allow-root
 ```
 
-Set `SIDEHUB_INSTALL_DIR` to install elsewhere (an existing folder that does not hold a previous
-agent install is refused). Versions before `v1.0.59` can no longer be installed with the script.
-
-The script checks the signature of the release's `checksums.sha256` (fetched from GitHub Releases)
-against the key embedded in the script, then the archive against it, and aborts on any mismatch.
-Each release also carries a build provenance attestation — see
-[Verifying a release](SECURITY.md#verifying-a-release).
-
-### 2. Configure
-
-1. Log in to [SideHub](https://www.sidehub.io) and go to **Agents** in your workspace
-2. Create a new agent — this generates an `agentId`, `workspaceId`, and `agentToken`
-3. In your project directory, create a `.sidehub/` folder with a JSON config file:
-
-```bash
-mkdir -p .sidehub
-```
-
-```bash
-cat > .sidehub/agent.json << 'EOF'
-{
-  "name": "my-agent",
-  "sidehubUrl": "wss://api.sidehub.io/ws/agent",
-  "agentId": "<your-agent-uuid>",
-  "workspaceId": "<your-workspace-uuid>",
-  "agentToken": "sh_agent_<your-token>",
-  "workingDirectory": ".",
-  "capabilities": ["shell"]
-}
-EOF
-```
-
-Replace the placeholder values with the credentials from your SideHub dashboard.
-
-### 3. Start
-
-```bash
-sidehub-agent
-```
-
-That's it — the agent connects to SideHub and is ready to receive commands.
+`install.sh` run with `sudo` installs the binaries but does not configure the agent.
 
 ### Update
 
-Re-run the install script, then restart the running agents so they pick up the new binaries:
+Releases are published from version tags (`v1.0.x`) on this repository; the install scripts pull the
+release from GitHub. To update, re-run the install script, then restart the running agents so they pick
+up the new binaries:
 
 ```bash
 curl -fsSL https://api.sidehub.io/agent/install.sh | bash
 sidehub-agent restart --all -d
-sidehub-agent status
+sidehub-agent status --all
 ```
+
+On Windows, `install.ps1` stops the agents running from the install folder and restarts them itself.
 
 > Restarting stops every PTY session opened through SideHub on this machine.
 
 ## Configuration
 
-Agent configuration files live in `.sidehub/` at the root of your project. Each `.json` file defines one agent instance — all are launched in parallel.
-
-```
-my-project/
-└── .sidehub/
-    ├── agent-dev.json
-    ├── agent-staging.json
-    └── agent-prod.json
-```
-
-### Configuration fields
-
-| Field | Required | Description |
-|---|---|---|
-| `name` | No | Display name (defaults to filename) |
-| `sidehubUrl` | Yes | WebSocket endpoint — `wss://api.sidehub.io/ws/agent` |
-| `agentId` | Yes | Agent UUID (from SideHub dashboard) |
-| `workspaceId` | Yes | Workspace UUID (from SideHub dashboard) |
-| `agentToken` | Yes | Authentication token (prefix `sh_agent_`) |
-| `workingDirectory` | Yes | Working directory for command execution (`.` for current, or absolute path) |
-| `capabilities` | Yes | Agent capabilities: `"shell"`, `"claude-code"` |
-| `allowCommandExecute` | No | Allow one-shot `command.execute` from the backend (default `true`) |
-| `allowFileWrite` | No | Allow the backend to write files under `workingDirectory` — terminal image uploads (default `true`) |
-
-### Capabilities
-
-- **`shell`** — Execute shell commands remotely with real-time output streaming
-- **`claude-code`** — Proxy Claude Code SDK sessions through the agent
-
-### Example: multi-agent setup
+Each `.json` file in `.sidehub/` defines one agent; all are started in parallel by the folder's daemon.
 
 ```json
-// .sidehub/backend.json
 {
-  "name": "backend-server",
+  "name": "my-agent",
   "sidehubUrl": "wss://api.sidehub.io/ws/agent",
-  "agentId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-  "workspaceId": "11111111-2222-3333-4444-555555555555",
-  "agentToken": "sh_agent_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "workingDirectory": "/var/www/backend",
+  "agentId": "<agent-uuid>",
+  "workspaceId": "<workspace-uuid>",
+  "agentToken": "sh_agent_<token>",
+  "workingDirectory": ".",
   "capabilities": ["shell", "claude-code"]
 }
 ```
 
+| Field | Required | Description |
+|---|---|---|
+| `name` | No | Display name (defaults to the file name) |
+| `sidehubUrl` | Yes | `wss://api.sidehub.io/ws/agent` (`ws://` is only accepted for `localhost`) |
+| `agentId` | Yes | Agent UUID (from SideHub) |
+| `workspaceId` | Yes | Workspace UUID (from SideHub) |
+| `agentToken` | Yes | Agent token (prefix `sh_agent_`) |
+| `workingDirectory` | Yes | Folder PTYs start in and are confined to (`.` or an absolute path) |
+| `capabilities` | Yes | Labels reported to SideHub at connection (`setup` writes `["shell", "claude-code"]`) |
+| `allowCommandExecute` | No | Allow one-shot `command.execute` from the backend (default `true`) |
+| `allowFileWrite` | No | Allow the backend to write files under `workingDirectory` — terminal image uploads, skill files (default `true`) |
+
+The agent ignores configs tracked by git, symbolic links and files owned by another user (a config
+decides which backend the agent obeys), and tightens `.sidehub/` to `0700` and token files to `0600`.
+
 ## Security
 
-**The agent runs whatever the SideHub backend asks for**: it opens terminals and types into
-them, runs commands and writes files as the OS user that started it. A compromised backend
-means code execution on the agent's machine — the agent is not a sandbox.
+**The agent runs whatever the SideHub backend asks for**: it opens terminals and types into them, runs
+commands and writes files as the OS user that started it. A compromised backend means code execution on
+the agent's machine — the agent is not a sandbox.
 
 What the agent enforces:
 
-- `wss://` only (except `localhost`), token sent in a header
-- `pty.start` only spawns allowlisted shells (`bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`; `cmd`, `powershell`, `pwsh` on Windows), resolved from fixed system directories — any other binary is refused
+- `wss://` only (except `localhost`), token sent in a header; outbound connection only
+- `pty.start` only spawns allowlisted shells, resolved from fixed system directories — any other binary is refused
 - PTYs get an allowlisted environment; the backend cannot override `PATH`, `LD_PRELOAD`, rcfiles or agent-owned variables
 - PTY working directories and file writes are confined to `workingDirectory`
 - `command.execute` and file writes can be disabled with `"allowCommandExecute": false` / `"allowFileWrite": false`
-- `setup`, `start` and `restart` refuse to run as `root` unless `--allow-root` (or `SIDEHUB_ALLOW_ROOT=1`) is given; `install.sh` run with `sudo` installs the binaries but does not configure the agent
+- refuses to run as `root` unless `--allow-root` is given
 
-Run the agent as a dedicated unprivileged user, keep `.sidehub/*.json` out of
-version control, and use a container or VM if the machine holds anything you would not hand
-to the backend. See [SECURITY.md](SECURITY.md) for the full threat model and how to report a
-vulnerability.
+Run the agent as a dedicated unprivileged user, keep `.sidehub/*.json` out of version control, and use a
+container or VM if the machine holds anything you would not hand to the backend. See
+[SECURITY.md](SECURITY.md) for the full threat model and how to report a vulnerability.
 
 ## Commands
 
@@ -152,45 +260,28 @@ vulnerability.
 Usage: sidehub-agent [command] [options]
 
 Commands:
+  setup             Configure this folder for an agent, then start it
+    --token-stdin   Read the agent's token (copied from SideHub) from stdin
+    --no-start      Only write .sidehub/agent.json
   start             Start the agent (default)
     -d, --daemon    Run in background
-  stop              Stop the running agent
-  logs              Show agent logs
-    --no-follow     Print current logs without following
-  status            Show agent status
+    --all           Operate on all registered instances
+  stop              Stop the running agent (--all: every instance)
+  restart           Stop then start the agent (-d, --all)
+  logs              Show agent logs (--no-follow to print and exit)
+  status            Show agent status (--all: every instance)
   help              Show help
 
 Options:
   --allow-root      Allow setup/start/restart as root (refused by default)
 ```
 
-### Examples
-
-```bash
-# Start in foreground (default)
-sidehub-agent
-
-# Start as background daemon
-sidehub-agent start -d
-
-# View logs (follows by default)
-sidehub-agent logs
-
-# View logs without following
-sidehub-agent logs --no-follow
-
-# Check if the agent is running
-sidehub-agent status
-
-# Stop the daemon
-sidehub-agent stop
-```
+Logs are in `.sidehub/run/sidehub-agent.log` (rotated at 10 MB, 3 archives).
 
 ### Running as a service
 
-The agent refuses to run as `root` (`--allow-root` overrides it, at your own risk). To start it at boot,
-run it under a dedicated user with the templates in [`contrib/`](contrib/) (also installed in
-`/usr/local/lib/sidehub-agent/contrib/`):
+To start the agent at boot, run it under a dedicated user with the templates in [`contrib/`](contrib/)
+(also installed in `/usr/local/lib/sidehub-agent/contrib/`):
 
 - **systemd** — [`contrib/systemd/sidehub-agent@.service`](contrib/systemd/sidehub-agent@.service), one
   instance per project folder, `User=sidehub`, `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`…
@@ -210,182 +301,103 @@ run it under a dedicated user with the templates in [`contrib/`](contrib/) (also
   a per-user LaunchAgent (never a LaunchDaemon, which runs as root): fill in the project path, copy it to
   `~/Library/LaunchAgents/` and `launchctl bootstrap gui/$(id -u) <plist>`.
 
-## Architecture
+## WebSocket protocol
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     SideHub SaaS                        │
-│            https://www.sidehub.io                       │
-│                                                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
-│  │  Angular 18  │  │ .NET 10 API  │  │  PostgreSQL   │  │
-│  │  Frontend    │──│  (WebSocket  │──│  + pgvector   │  │
-│  │             │  │   handlers)  │  │               │  │
-│  └─────────────┘  └──────┬───────┘  └───────────────┘  │
-│                          │                              │
-└──────────────────────────┼──────────────────────────────┘
-                           │ wss://
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-    ┌─────┴──────┐  ┌─────┴──────┐  ┌─────┴──────┐
-    │   Agent 1  │  │   Agent 2  │  │   Agent N  │
-    │ (dev VPS)  │  │ (staging)  │  │ (prod)     │
-    └─────┬──────┘  └────────────┘  └────────────┘
-          │
-          ├── CommandExecutor     Shell command execution
-          ├── NodePtyExecutor     PTY terminal sessions
-          ├── AgentSdkProxy      Claude Code proxy
-          ├── DaemonManager       Background process management
-          └── RotatingLogWriter   Log rotation (10 MB)
-```
+**Backend → agent**
 
-### Core components
+| Message | Purpose |
+|---|---|
+| `pty.start` / `pty.stop` | Open / close a terminal (shell, size, extra environment) |
+| `pty.input` / `pty.resize` | Keystrokes / terminal size |
+| `pty.history.request` | Replay a terminal's buffered output |
+| `command.execute` | One-shot command (can be disabled) |
+| `file.write.start` / `.chunk` / `.end`, `terminal.attachment.enqueue` | File upload into `workingDirectory`, e.g. an image pasted in a terminal (can be disabled) |
 
-| Component | File | Description |
-|---|---|---|
-| **Entry point** | `Program.cs` | CLI argument parsing, command routing |
-| **Config loader** | `AgentConfig.cs` | Loads and validates `.sidehub/*.json` files |
-| **Agent runner** | `AgentRunner.cs` | Orchestrates agent lifecycle |
-| **WebSocket client** | `WebSocketClient.cs` | Maintains persistent connection to SideHub backend with auto-reconnection |
-| **Command executor** | `CommandExecutor.cs` | Executes shell commands with real-time stdout/stderr streaming |
-| **PTY executor** | `NodePtyExecutor.cs` | Full terminal emulation via Node.js PTY helper |
-| **Agent SDK proxy** | `AgentSdkProxy.cs` | Local WebSocket proxy for Claude Code sessions |
-| **Daemon manager** | `DaemonManager.cs` | PID file management, process lifecycle |
-| **Log writer** | `RotatingLogWriter.cs` | Automatic log rotation with configurable size |
+**Agent → backend**
 
-### WebSocket protocol
+| Message | Purpose |
+|---|---|
+| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions) and keep-alive every 15 s |
+| `pty.started` / `pty.exited` | Terminal spawned (with its real start time) / process ended (exit code) |
+| `pty.output` / `pty.history` | Terminal output, live / replayed |
+| `pty.cli-session-started` / `pty.cli-session-titled` | Id and title of the CLI session running in a terminal |
+| `pty.cli-state` | `working` / `waiting-input` / `idle` |
+| `run.usage` / `cli-session.usage` | Token counts per model |
+| `command.output` / `command.completed` / `command.failed` / `command.busy` | One-shot command results |
 
-**Agent → Backend:**
-- `agent.connected` — Sent on connection with capabilities and shell info
-- `agent.heartbeat` — Keep-alive every 15 seconds
-- `command.output` — Real-time stdout/stderr streaming
-- `command.completed` — Command finished (with exit code)
-- `command.failed` — Command execution error
-- `command.busy` — Agent is busy with another command
-
-**Backend → Agent:**
-- `command.execute` — Execute a shell command
-- `pty.start` — Start a PTY session
-- `pty.input` — Send input to PTY
-- `pty.resize` — Resize PTY terminal
-
-### Connection resilience
-
-- **Automatic reconnection** with exponential backoff (1s → 30s max)
-- **Heartbeat monitoring** — disconnects after 3 missed ACKs
-- **Stability detection** — backoff resets after 60s of stable connection
-- **Claude SDK buffering** — buffers up to 1000 messages during backend reconnections
+The connection reconnects with exponential backoff (1 s → 30 s, reset after 60 s of stable connection)
+and drops after 3 missed heartbeat acknowledgements.
 
 ## Building from source
 
-### Prerequisites
-
-- [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [Node.js](https://nodejs.org/) (for PTY helper, optional)
-
-### Build
+Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download) and [Node.js](https://nodejs.org/).
 
 ```bash
-git clone https://github.com/sidehub-io/side_hub_agent.git
+git clone https://github.com/toregua/side_hub_agent.git
 cd side_hub_agent
 
-# Debug build
 dotnet build SideHub.Agent
+dotnet test SideHub.Agent.Tests
 
-# Release build
-dotnet build SideHub.Agent -c Release
-
-# Run directly
-dotnet run --project SideHub.Agent
-```
-
-### Publish self-contained binary
-
-```bash
-# macOS (Apple Silicon)
-dotnet publish SideHub.Agent -c Release -r osx-arm64 --self-contained -p:PublishSingleFile=true
-
-# macOS (Intel)
-dotnet publish SideHub.Agent -c Release -r osx-x64 --self-contained -p:PublishSingleFile=true
-
-# Linux x64
+# Self-contained binaries, as built by the release workflow
 dotnet publish SideHub.Agent -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true
-
-# Linux ARM64
-dotnet publish SideHub.Agent -c Release -r linux-arm64 --self-contained -p:PublishSingleFile=true
-
-# Windows x64
-dotnet publish SideHub.Agent -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+dotnet publish SideHub.Cli   -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-### Available builds
-
-| Platform | Architecture | Artifact |
-|---|---|---|
-| macOS | Apple Silicon (M1/M2/M3/M4) | `sidehub-agent-osx-arm64` |
-| macOS | Intel | `sidehub-agent-osx-x64` |
-| Linux | x64 | `sidehub-agent-linux-x64` |
-| Linux | ARM64 | `sidehub-agent-linux-arm64` |
-| Windows | x64 | `sidehub-agent-win-x64.exe` |
-| Windows | ARM64 | `sidehub-agent-win-arm64.exe` |
+Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on each `v*` tag
+for `osx-arm64`, `osx-x64`, `linux-x64`, `linux-arm64`, `win-x64` and `win-arm64`.
 
 ## Project structure
 
 ```
 side_hub_agent/
-├── SideHub.Agent/
-│   ├── Program.cs                 # Entry point & CLI
-│   ├── AgentConfig.cs             # Configuration loading
-│   ├── AgentRunner.cs             # Agent lifecycle
-│   ├── WebSocketClient.cs         # WebSocket connection
-│   ├── CommandExecutor.cs         # Shell command execution
-│   ├── NodePtyExecutor.cs         # PTY terminal emulation
-│   ├── AgentSdkProxy.cs          # Claude Code proxy
-│   ├── DaemonManager.cs           # Daemon process management
-│   ├── RotatingLogWriter.cs       # Log rotation
-│   ├── SystemInfoProvider.cs      # Platform detection
-│   ├── Commands.cs                # CLI command handlers
-│   ├── Models/
-│   │   ├── AgentMessages.cs       # Agent protocol messages
-│   │   └── CommandMessages.cs     # Command protocol messages
-│   └── pty-helper/                # Node.js PTY helper
-│       ├── index.js
-│       └── package.json
-├── .github/workflows/
-│   └── release.yml                # Release builds on tags
-├── CONTRIBUTING.md
-├── SECURITY.md
-├── LICENSE
-└── README.md
+├── SideHub.Agent/                 # sidehub-agent
+│   ├── Program.cs, Commands.cs    # CLI: setup, start, stop, restart, logs, status
+│   ├── AgentSetup.cs              # `setup`: fetch the agent's config from its token
+│   ├── AgentConfig.cs             # Load and validate .sidehub/*.json
+│   ├── AgentRunner.cs             # One runner per config
+│   ├── WebSocketClient.cs         # Backend connection, message dispatch, PTY lifecycle
+│   ├── NodePtyExecutor.cs         # PTYs through pty-helper/
+│   ├── PtyOutputBuffer.cs         # Output history replayed after a reconnection
+│   ├── NotifyFifo.cs              # Terminal → agent channel (FIFO / named pipe)
+│   ├── CliStateTracker.cs         # working / waiting-input / idle per PTY
+│   ├── SkillInstaller.cs          # AGENTS.md / GEMINI.md / sidehub skill
+│   ├── ShellPolicy.cs, PtyEnvironmentPolicy.cs, PathConfinement.cs, RootPolicy.cs …
+│   ├── CommandExecutor.cs         # One-shot commands
+│   ├── DaemonManager.cs, InstanceRegistry.cs, RotatingLogWriter.cs
+│   ├── Usage/                     # Token usage from CLI transcripts, pending queue
+│   ├── Models/                    # WebSocket message DTOs
+│   ├── cli-wrappers/              # claude / codex / gemini / copilot wrappers (bash)
+│   └── pty-helper/                # Node.js + node-pty
+├── SideHub.Cli/                   # sidehub-cli
+│   ├── Launch/                    # `launch` and `cli-state`
+│   └── Commands/                  # tasks, workflows, schedulers, drive, tables…
+├── SideHub.Agent.Tests/
+├── scripts/                       # install.sh, install.ps1
+├── contrib/                       # systemd and launchd templates
+└── .github/workflows/release.yml
 ```
 
 ## Troubleshooting
 
-### Agent won't connect
+**Agent won't connect** — check the token in `.sidehub/*.json` (a `401` at the handshake means it
+matches no agent: copy the setup command again from SideHub), that `sidehubUrl` uses `wss://`, and that
+outbound HTTPS/WebSocket traffic to `api.sidehub.io` is allowed.
 
-1. Verify your `agentToken` is correct in the config file
-2. Check that `sidehubUrl` uses `wss://` (not `ws://`)
-3. Ensure your firewall allows outbound WebSocket connections
-4. Run `sidehub-agent status` to check if another instance is already running
+**"Configuration directory not found"** — run `sidehub-agent` from the project folder that holds
+`.sidehub/`.
 
-### "Configuration directory not found"
+**A CLI does not start in a terminal** — check it is installed for the agent's user (`claude --version`,
+`codex --version`…) and on the `PATH` the agent was started with.
 
-The agent expects a `.sidehub/` folder in the current working directory. Make sure you run `sidehub-agent` from your project root.
-
-### Daemon won't start
-
-Check logs for details:
-```bash
-sidehub-agent logs --no-follow
-```
-
-If a stale PID file exists, `sidehub-agent status` will clean it up automatically.
+**Daemon won't start** — `sidehub-agent logs --no-follow`. As root, it exits unless `--allow-root` is
+given. A stale PID file is cleaned up by `sidehub-agent status`.
 
 ## Links
 
-- **SideHub Platform**: [https://www.sidehub.io](https://www.sidehub.io)
-- **Issues**: [GitHub Issues](https://github.com/sidehub-io/side_hub_agent/issues)
+- **SideHub**: [https://www.sidehub.io](https://www.sidehub.io)
+- **Issues**: [GitHub Issues](https://github.com/toregua/side_hub_agent/issues)
+- **Security**: [SECURITY.md](SECURITY.md)
 
 ## License
 

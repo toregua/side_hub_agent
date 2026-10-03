@@ -12,7 +12,7 @@ Thanks for your interest in contributing to the SideHub Agent! This guide will h
 
 ```bash
 # Clone the repository
-git clone https://github.com/sidehub-io/side_hub_agent.git
+git clone https://github.com/toregua/side_hub_agent.git
 cd side_hub_agent
 
 # Build
@@ -47,38 +47,27 @@ dotnet run --project SideHub.Agent
 
 ## Project structure
 
-```
-SideHub.Agent/
-├── Program.cs              # Entry point, CLI routing
-├── AgentConfig.cs          # Config loading & validation
-├── AgentRunner.cs          # Agent lifecycle orchestration
-├── WebSocketClient.cs      # WebSocket connection & protocol
-├── CommandExecutor.cs      # Shell command execution
-├── NodePtyExecutor.cs      # PTY terminal emulation
-├── ClaudeSdkProxy.cs       # Claude Code local proxy
-├── DaemonManager.cs        # Background process management
-├── RotatingLogWriter.cs    # Log file rotation
-├── SystemInfoProvider.cs   # OS/shell detection
-├── Commands.cs             # CLI command handlers (start, stop, logs, status)
-└── Models/
-    ├── AgentMessages.cs    # Agent ↔ Backend protocol messages
-    └── CommandMessages.cs  # Command execution messages
-```
+See [Project structure](README.md#project-structure) and [How it works](README.md#how-it-works) in the README.
 
 ## Architecture overview
 
 The agent is a .NET 10 console application that:
 
-1. Loads all `.sidehub/*.json` config files
+1. Loads all `.sidehub/*.json` config files of the folder it runs in (one daemon per project folder)
 2. Launches one `AgentRunner` per config (in parallel)
-3. Each runner creates a `WebSocketClient` that connects to the SideHub backend
-4. The WebSocket client handles command execution, PTY sessions, and Claude Code proxying
-5. Auto-reconnection with exponential backoff ensures resilience
+3. Each runner creates a `WebSocketClient` that connects to the SideHub backend (outbound `wss://` only)
+4. The backend drives everything through PTYs (`pty.start` / `pty.input` / `pty.stop`); coding CLIs are
+   started in them through `sidehub-cli launch`
+5. Auto-reconnection with exponential backoff ensures resilience; PTY output is buffered and replayed
 
 Key design decisions:
-- **Single command at a time** — `CommandExecutor` uses a mutex to prevent concurrent execution
-- **PTY via Node.js** — Terminal emulation delegates to a Node.js helper using `node-pty`
-- **Claude SDK proxy** — A local WebSocket server decouples the CLI from backend reconnections
+- **Everything is a terminal** — runs and interactive sessions are PTYs the backend types into; there is
+  no SDK proxy or structured protocol with the CLIs
+- **PTY via Node.js** — Terminal emulation delegates to a Node.js helper using `node-pty` (`pty-helper/`)
+- **One launch path** — `sidehub-cli launch` starts claude / codex / gemini / copilot the same way on
+  every OS and reports the session id through `NotifyFifo`
+- **Usage from local transcripts** — `Usage/` reads token counts from the CLIs' own files; only counts
+  are sent
 - **Log rotation** — Daemon mode uses rotating logs (10 MB default, 3 archives)
 
 ## Building & testing
@@ -92,6 +81,9 @@ dotnet build SideHub.Agent -c Release
 
 # Run directly
 dotnet run --project SideHub.Agent
+
+# Tests
+dotnet test SideHub.Agent.Tests
 
 # Publish for your platform
 dotnet publish SideHub.Agent -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true
@@ -121,7 +113,7 @@ Update README with troubleshooting section
 
 ## Reporting issues
 
-- Use [GitHub Issues](https://github.com/sidehub-io/side_hub_agent/issues)
+- Use [GitHub Issues](https://github.com/toregua/side_hub_agent/issues)
 - Include: OS, .NET version, agent version, config (redact tokens), and logs
 - For bugs, include steps to reproduce
 
