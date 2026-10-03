@@ -58,6 +58,18 @@ public static class WorkflowCommands
         var defaultTimeout = result.TryGetProperty("defaultStepTimeoutMinutes", out var dt) && dt.ValueKind == JsonValueKind.Number
             ? dt.GetInt32() + " min" : "-";
         Console.WriteLine($"Default timeout: {defaultTimeout}");
+        if (result.TryGetProperty("parameters", out var parameters) && parameters.ValueKind == JsonValueKind.Array && parameters.GetArrayLength() > 0)
+        {
+            Console.WriteLine("Parameters (workflow run --input name=value):");
+            foreach (var p in parameters.EnumerateArray())
+            {
+                var required = p.TryGetProperty("required", out var r) && r.ValueKind == JsonValueKind.True ? ", required" : "";
+                var dflt = Prop(p, "default") is { } d ? $", default: {d}" : "";
+                var options = p.TryGetProperty("options", out var o) && o.ValueKind == JsonValueKind.Array
+                    ? $", one of: {string.Join(" | ", o.EnumerateArray().Select(x => x.GetString()))}" : "";
+                Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}) — {Prop(p, "label")}");
+            }
+        }
         Console.WriteLine();
         if (result.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)
         {
@@ -324,13 +336,18 @@ public static class WorkflowCommands
 
     public static async Task<int> RunAsync(SideHubApiClient client, string[] args, bool json)
     {
-        var workflowId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        var workflowId = args.FirstOrDefault(a => !a.StartsWith("--") && !IsOptionValue(args, a));
         var agentId = GetOption(args, "--agent") ?? client.DefaultAgentId;
         var provider = GetOption(args, "--provider") ?? "claude";
 
         if (string.IsNullOrEmpty(workflowId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli workflow run <workflowId> [--agent <id>] [--provider <p>]");
+            Console.Error.WriteLine("Usage: sidehub-cli workflow run <workflowId> [--agent <id>] [--provider <p>] [--input key=value]*");
+            return 1;
+        }
+        if (!TryCollectPairs(args, "--input", out var inputs, out var inputError))
+        {
+            Console.Error.WriteLine($"Error: {inputError}");
             return 1;
         }
         if (string.IsNullOrEmpty(agentId))
@@ -339,7 +356,7 @@ public static class WorkflowCommands
             return 1;
         }
 
-        var result = await client.RunWorkflowAsync(workflowId, agentId, provider);
+        var result = await client.RunWorkflowAsync(workflowId, agentId, provider, inputs);
 
         if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
         else Console.WriteLine($"Started workflow execution: {Prop(result, "id") ?? Prop(result, "executionId") ?? "?"}");
@@ -396,6 +413,30 @@ public static class WorkflowCommands
             else if (args[i] == "--input-step") inputs.Add(new SideHubApiClient.StepInputArg("step", args[i + 1]));
         }
         return inputs;
+    }
+
+    /// <summary>
+    /// Collects every <c>flag key=value</c> pair (repeatable; the value may itself contain '='). A key given twice keeps
+    /// its last value.
+    /// </summary>
+    public static bool TryCollectPairs(string[] args, string flag, out Dictionary<string, string> pairs, out string? error)
+    {
+        pairs = new Dictionary<string, string>();
+        error = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] != flag) continue;
+            var pair = i + 1 < args.Length ? args[i + 1] : "";
+            var separator = pair.IndexOf('=');
+            if (separator <= 0)
+            {
+                error = $"{flag} expects key=value (got '{pair}').";
+                return false;
+            }
+            pairs[pair[..separator].Trim()] = pair[(separator + 1)..];
+            i++;
+        }
+        return true;
     }
 
     private static bool HasFlag(string[] args, string flag)
@@ -456,11 +497,16 @@ public static class WorkflowCommands
         var outputId = GetOption(args, "--output-id");
         if (string.IsNullOrEmpty(outputId))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli workflow step-complete --output-id <guid>");
+            Console.Error.WriteLine("Usage: sidehub-cli workflow step-complete --output-id <guid> [--value key=value]*");
+            return 1;
+        }
+        if (!TryCollectPairs(args, "--value", out var outputs, out var valueError))
+        {
+            Console.Error.WriteLine($"Error: {valueError}");
             return 1;
         }
 
-        var result = await client.CompleteWorkflowStepAsync(executionId, stepId, outputId);
+        var result = await client.CompleteWorkflowStepAsync(executionId, stepId, outputId, outputs);
         NotifyAgentStepEnded();
 
         if (json)
@@ -469,7 +515,9 @@ public static class WorkflowCommands
             return 0;
         }
 
-        Console.WriteLine($"Workflow step {stepId} completed (output: {outputId})");
+        Console.WriteLine(outputs.Count == 0
+            ? $"Workflow step {stepId} completed (output: {outputId})"
+            : $"Workflow step {stepId} completed (output: {outputId}, values: {string.Join(", ", outputs.Keys)})");
         return 0;
     }
 

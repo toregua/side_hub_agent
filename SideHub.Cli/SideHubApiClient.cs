@@ -515,9 +515,11 @@ public class SideHubApiClient : IDisposable
 
     // --- Workflow executions ---
 
-    public async Task<JsonElement> CompleteWorkflowStepAsync(string executionId, string stepId, string outputDriveItemId)
+    public async Task<JsonElement> CompleteWorkflowStepAsync(
+        string executionId, string stepId, string outputDriveItemId, IReadOnlyDictionary<string, string>? outputs = null)
     {
-        var body = new { outputDriveItemId };
+        var body = new Dictionary<string, object?> { ["outputDriveItemId"] = outputDriveItemId };
+        if (outputs is { Count: > 0 }) body["outputs"] = outputs;
         var resp = await _http.PostAsJsonAsync($"api/workflow-executions/{executionId}/steps/{stepId}/complete", body);
         await EnsureSuccessAsync(resp);
         var content = await resp.Content.ReadAsStringAsync();
@@ -642,9 +644,11 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> RunWorkflowAsync(string workflowId, string agentId, string provider)
+    public async Task<JsonElement> RunWorkflowAsync(
+        string workflowId, string agentId, string provider, IReadOnlyDictionary<string, string>? inputs = null)
     {
-        var body = new { agentId, provider };
+        var body = new Dictionary<string, object?> { ["agentId"] = agentId, ["provider"] = provider };
+        if (inputs is { Count: > 0 }) body["inputs"] = inputs;
         var resp = await _http.PostAsJsonAsync($"api/workflows/{workflowId}/run", body);
         await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();

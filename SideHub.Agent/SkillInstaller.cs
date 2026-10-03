@@ -24,6 +24,9 @@ public static class SkillInstaller
     /// <summary>Most drive items listed in the skill files; the rest is reachable with `drive list`.</summary>
     public const int MaxIndexEntries = 200;
 
+    /// <summary>How a later step reads a value returned with <c>step-complete --value score=...</c> (kept out of the raw string: braces).</summary>
+    private const string StepOutputPlaceholder = "{{steps.<step>.outputs.score}}";
+
     private static string BuildSkillContent(string driveIndex)
     {
         return $"""
@@ -127,6 +130,14 @@ Drive (use `sidehub-cli drive create` and note the returned id).
 
 When you finish successfully, you MUST run:
     sidehub-cli workflow step-complete --output-id <id>
+
+To hand values to the next steps (a score, a verdict, a URL...), add
+`--value key=value` (repeatable, letters/digits/underscores for the key):
+    sidehub-cli workflow step-complete --output-id <id> --value score=72
+Later steps receive them in their prompt through {StepOutputPlaceholder}.
+
+Launch inputs of the workflow are already in your prompt, and in the
+environment as `SIDEHUB_INPUT_<NAME>` (e.g. `SIDEHUB_INPUT_KEYWORD`).
 
 If you cannot complete the step, run:
     sidehub-cli workflow step-fail "short reason"

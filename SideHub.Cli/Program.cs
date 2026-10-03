@@ -104,9 +104,9 @@ if (args.Length < 2)
     Console.Error.WriteLine("  workflow update-step <wfId> <stepId> [--name] [--prompt] [--input-drive]* [--input-step]* [--clear-inputs] [--output-path] [--output-drive | --clear-output-drive] [--timeout]");
     Console.Error.WriteLine("  workflow delete-step <wfId> <stepId> [--yes]");
     Console.Error.WriteLine("  workflow reorder-steps <wfId> <stepId1> <stepId2> [...]");
-    Console.Error.WriteLine("  workflow run <wfId> [--agent <id>] [--provider <p>]");
+    Console.Error.WriteLine("  workflow run <wfId> [--agent <id>] [--provider <p>] [--input key=value]*");
     Console.Error.WriteLine("  workflow execution-get <executionId>");
-    Console.Error.WriteLine("  workflow step-complete --output-id <guid>");
+    Console.Error.WriteLine("  workflow step-complete --output-id <guid> [--value key=value]*");
     Console.Error.WriteLine("  workflow step-fail \"<reason>\"");
     return 1;
 }
