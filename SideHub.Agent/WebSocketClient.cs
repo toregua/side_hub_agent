@@ -168,7 +168,8 @@ public class WebSocketClient : IAsyncDisposable
     /// Also prepends the cli-wrappers dir so `claude` resolves to our wrapper that
     /// pre-mints a session UUID, and exposes SIDEHUB_PTY_NOTIFY_FIFO so the
     /// wrapper can post back the session id.</summary>
-    private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null)
+    private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(
+        string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null, IReadOnlyCollection<string>? secretKeys = null)
     {
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         // The folder the agent actually runs from (sidehub-cli ships next to it), not a hard-coded install path.
@@ -202,11 +203,11 @@ public class WebSocketClient : IAsyncDisposable
         if (!string.IsNullOrEmpty(_config.AgentId))
             env["SIDEHUB_AGENT_ID"] = _config.AgentId!;
 
-        // Merge caller-supplied env (e.g. workflow execution context), restricted to SIDEHUB_* and an
-        // allow-list. The agent's own token never enters a PTY: the shell only gets the token the
+        // Merge caller-supplied env (e.g. workflow execution context), restricted to SIDEHUB_*, an
+        // allow-list and the workspace secrets marked in secretKeys (never a protected variable). The agent's own token never enters a PTY: the shell only gets the token the
         // backend scoped to it (run token or terminal session token) in SIDEHUB_AGENT_TOKEN. Without
         // one (older backend), sidehub-cli is unavailable in this terminal.
-        var allowedEnv = PtyEnvironmentPolicy.FilterAdditionalEnv(additionalEnv, out var rejectedKeys);
+        var allowedEnv = PtyEnvironmentPolicy.FilterAdditionalEnv(additionalEnv, secretKeys, out var rejectedKeys);
         if (rejectedKeys.Count > 0)
             Log($"SECURITY: PTY {ptySessionId} ignored additionalEnv keys: {string.Join(", ", rejectedKeys)}");
         if (!allowedEnv.ContainsKey(PtyEnvironmentPolicy.AgentTokenKey))
@@ -1508,7 +1509,7 @@ public class WebSocketClient : IAsyncDisposable
             // Set up the CLI-session notification FIFO BEFORE building the env,
             // because the env points the wrappers at it.
             EnsureNotifyFifo(ptySessionId);
-            var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv);
+            var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv, message.SecretKeys);
 
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
             // CLI launched from this terminal discovers sidehub-cli automatically.

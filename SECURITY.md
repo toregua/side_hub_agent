@@ -35,7 +35,8 @@ silently do. They are not a security boundary against a compromised backend.
   its shells (`bash`, `sh`, `zsh`, `pwsh`, `cmd`) through the same policy.
 - **PTY environment** — the PTY does not inherit the daemon's environment (API keys, cloud
   credentials…), only an allowlist. The backend may only add `SIDEHUB_*` / telemetry
-  variables and cannot override `PATH`, `LD_PRELOAD`, rcfiles or the agent-owned `SIDEHUB_*`
+  variables, plus the workspace secrets it marks in `secretKeys` (UPPER_SNAKE_CASE names), and
+  cannot override `PATH`, `LD_PRELOAD`, `NODE_OPTIONS`, rcfiles or the agent-owned `SIDEHUB_*`
   variables (`PtyEnvironmentPolicy`). `command.execute` children get the same allowlist
   (`DaemonEnvironmentPolicy`). Both then load the user's own shell init like any login
   terminal (`/etc/profile`, `~/.profile`, `~/.bashrc`; `command.execute` runs `bash -l -c`):

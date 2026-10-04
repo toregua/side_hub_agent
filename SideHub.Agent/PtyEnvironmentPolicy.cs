@@ -37,17 +37,40 @@ public static partial class PtyEnvironmentPolicy
         "SIDEHUB_AGENT_ID",
     };
 
+    /// <summary>Variables a workspace secret may never replace: they decide what code the shell (or a CLI it starts)
+    /// runs, where it looks for it, or who the shell is.</summary>
+    private static readonly HashSet<string> ProtectedKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "TERM", "LANG", "TMPDIR", "TZ",
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+        "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "BASH_ENV", "ENV", "PROMPT_COMMAND", "IFS",
+        "CLAUDECODE", "COMSPEC", "PATHEXT", "SYSTEMROOT", "USERPROFILE", "APPDATA",
+    };
+
     [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
     private static partial Regex EnvKeyPattern();
+
+    [GeneratedRegex("^[A-Z][A-Z0-9_]*$")]
+    private static partial Regex SecretKeyPattern();
 
     /// <summary>
     /// Keeps the <paramref name="additionalEnv"/> entries the backend may set for this PTY.
     /// <c>SIDEHUB_AGENT_TOKEN</c> is accepted only when it holds a scoped token (<c>sh_run_</c> or
     /// <c>sh_pty_</c>): it is the only credential the shell gets, and without it <c>sidehub-cli</c>
-    /// is unavailable. Rejected keys are returned for logging; their values never leave this method.
+    /// is unavailable. The keys listed in <paramref name="secretKeys"/> (workspace secrets given to a
+    /// run, e.g. <c>UBERSUGGEST_API_KEY</c>) pass too when they are UPPER_SNAKE_CASE and not a
+    /// protected variable (<c>PATH</c>, <c>LD_PRELOAD</c>…) nor <c>SIDEHUB_*</c>. Rejected keys are
+    /// returned for logging; their values never leave this method.
     /// </summary>
     public static Dictionary<string, string> FilterAdditionalEnv(
         IReadOnlyDictionary<string, string>? additionalEnv,
+        out IReadOnlyList<string> rejectedKeys) =>
+        FilterAdditionalEnv(additionalEnv, null, out rejectedKeys);
+
+    /// <inheritdoc cref="FilterAdditionalEnv(IReadOnlyDictionary{string, string}?, out IReadOnlyList{string})"/>
+    public static Dictionary<string, string> FilterAdditionalEnv(
+        IReadOnlyDictionary<string, string>? additionalEnv,
+        IReadOnlyCollection<string>? secretKeys,
         out IReadOnlyList<string> rejectedKeys)
     {
         var allowed = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -61,7 +84,7 @@ public static partial class PtyEnvironmentPolicy
         foreach (var (key, value) in additionalEnv)
         {
             if (string.IsNullOrEmpty(key)) continue;
-            if (IsAllowedEntry(key, value))
+            if (IsAllowedEntry(key, value) || (secretKeys?.Contains(key) == true && IsAllowedSecretKey(key)))
                 allowed[key] = value ?? string.Empty;
             else
                 rejected.Add(key);
@@ -82,6 +105,11 @@ public static partial class PtyEnvironmentPolicy
         if (AgentOwnedKeys.Contains(key)) return false;
         return key.StartsWith(SideHubPrefix, StringComparison.Ordinal) || AllowedExtraKeys.Contains(key);
     }
+
+    private static bool IsAllowedSecretKey(string key) =>
+        SecretKeyPattern().IsMatch(key)
+        && !key.StartsWith(SideHubPrefix, StringComparison.Ordinal)
+        && !ProtectedKeys.Contains(key);
 
     /// <summary>
     /// The directory a PTY starts in: <paramref name="requested"/> when it is the agent's working

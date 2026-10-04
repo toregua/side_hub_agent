@@ -92,6 +92,43 @@ public class PtyEnvironmentPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Secret_keys_pass_only_when_marked()
+    {
+        var additional = new Dictionary<string, string> { ["UBERSUGGEST_API_KEY"] = "k", ["CMS_TOKEN"] = "t" };
+
+        var env = PtyEnvironmentPolicy.FilterAdditionalEnv(additional, ["UBERSUGGEST_API_KEY"], out var rejected);
+
+        Assert.Equal("k", env["UBERSUGGEST_API_KEY"]);
+        Assert.False(env.ContainsKey("CMS_TOKEN"));
+        Assert.Equal(["CMS_TOKEN"], rejected);
+    }
+
+    [Theory]
+    [InlineData("PATH")]
+    [InlineData("LD_PRELOAD")]
+    [InlineData("NODE_OPTIONS")]
+    [InlineData("BASH_ENV")]
+    [InlineData("SIDEHUB_API_URL")]
+    [InlineData("SIDEHUB_BASHRC")]
+    [InlineData("lower_case")]
+    public void A_secret_key_never_overrides_a_protected_variable(string key)
+    {
+        var env = PtyEnvironmentPolicy.FilterAdditionalEnv(new Dictionary<string, string> { [key] = "/evil" }, [key], out var rejected);
+
+        Assert.False(env.ContainsKey(key));
+        Assert.Equal([key], rejected);
+    }
+
+    [Fact]
+    public void A_secret_key_cannot_smuggle_an_agent_token()
+    {
+        var env = PtyEnvironmentPolicy.FilterAdditionalEnv(
+            new Dictionary<string, string> { ["SIDEHUB_AGENT_TOKEN"] = "sh_agent_abc" }, ["SIDEHUB_AGENT_TOKEN"], out _);
+
+        Assert.False(env.ContainsKey("SIDEHUB_AGENT_TOKEN"));
+    }
+
+    [Fact]
     public void Null_env_is_empty()
     {
         var env = PtyEnvironmentPolicy.FilterAdditionalEnv(null, out var rejected);
