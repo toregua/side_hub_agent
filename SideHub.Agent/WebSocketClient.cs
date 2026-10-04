@@ -1543,6 +1543,7 @@ public class WebSocketClient : IAsyncDisposable
                     columns,
                     rows,
                     ptyEnv,
+                    SecretMasker.For(message.AdditionalEnv, message.SecretKeys),
                     ct
                 );
 
@@ -1609,6 +1610,7 @@ public class WebSocketClient : IAsyncDisposable
                     },
                     columns,
                     rows,
+                    null,
                     null,
                     ct
                 );

@@ -63,6 +63,11 @@ silently do. They are not a security boundary against a compromised backend.
   either.
 - **Secrets in logs** — commands, terminal output and tokens are not written to the agent
   logs; setup tokens are kept out of the process arguments.
+- **Injected secrets in terminal output** — the values of the variables `pty.start` marks as
+  secrets (`secretKeys`, e.g. workspace secrets given to a run) are replaced with `***` in the
+  terminal output before it is sent and in the history replayed on reconnect, even when a value is
+  cut between two output chunks. Values shorter than 4 characters are not masked, and like CI log
+  masking it is best effort: a value printed encoded or transformed is not recognized.
 - **Untrusted `.sidehub/` content** — `.sidehub/` sits in the work tree, so a commit can fill
   it. At startup the agent ignores (with a warning) any `.sidehub/*.json` tracked by git, that
   is a symbolic link or that belongs to another user: such a config could point the agent to

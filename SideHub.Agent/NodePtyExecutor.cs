@@ -19,11 +19,16 @@ public class NodePtyExecutor : IAsyncDisposable
     private int _columns;
     private int _rows;
     private readonly PtyOutputBuffer _outputBuffer = new();
+    private SecretMasker? _secretMasker;
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingPings = new();
 
     private const int MaxStderrLineLength = 8192;
     private const int MaxStderrLinesLogged = 1000;
+
+    /// <summary>How long output held back by the <see cref="SecretMasker"/> (possible start of a secret)
+    /// waits for the next chunk before it is released anyway, so a quiet terminal is not left stale.</summary>
+    private static readonly TimeSpan HeldOutputDelay = TimeSpan.FromMilliseconds(250);
 
     public bool IsRunning
     {
@@ -106,6 +111,7 @@ public class NodePtyExecutor : IAsyncDisposable
         int columns = 80,
         int rows = 24,
         IReadOnlyDictionary<string, string>? environment = null,
+        SecretMasker? secretMasker = null,
         CancellationToken ct = default)
     {
         lock (_lock)
@@ -118,6 +124,7 @@ public class NodePtyExecutor : IAsyncDisposable
 
         _onOutput = onOutput;
         _onExit = onExit;
+        _secretMasker = secretMasker;
         _columns = columns;
         _rows = rows;
 
@@ -218,7 +225,13 @@ public class NodePtyExecutor : IAsyncDisposable
         {
             while (!ct.IsCancellationRequested && !_hasExited)
             {
-                var line = await _nodeProcess.StandardOutput.ReadLineAsync(ct);
+                var lineTask = _nodeProcess.StandardOutput.ReadLineAsync(ct).AsTask();
+                if (_secretMasker is { HasPending: true }
+                    && await Task.WhenAny(lineTask, Task.Delay(HeldOutputDelay, ct)) != lineTask)
+                {
+                    await EmitOutputAsync(_secretMasker.Flush());
+                }
+                var line = await lineTask;
                 if (line == null) break;
 
                 try
@@ -242,11 +255,7 @@ public class NodePtyExecutor : IAsyncDisposable
                             var data = root.GetProperty("data").GetString();
                             if (data != null)
                             {
-                                _outputBuffer.Write(data);
-                                if (_onOutput != null)
-                                {
-                                    await _onOutput(data);
-                                }
+                                await EmitOutputAsync(_secretMasker?.Process(data) ?? data);
                             }
                             break;
 
@@ -257,6 +266,10 @@ public class NodePtyExecutor : IAsyncDisposable
                             {
                                 _hasExited = true;
                                 if (_isStopping) return;
+                            }
+                            if (_secretMasker != null)
+                            {
+                                await EmitOutputAsync(_secretMasker.Flush());
                             }
                             if (_onExit != null)
                             {
@@ -295,6 +308,17 @@ public class NodePtyExecutor : IAsyncDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"[NodePty] Read error: {ex.Message}");
+        }
+    }
+
+    /// <summary>Output already masked: kept for the replayed history and sent.</summary>
+    private async Task EmitOutputAsync(string data)
+    {
+        if (data.Length == 0) return;
+        _outputBuffer.Write(data);
+        if (_onOutput != null)
+        {
+            await _onOutput(data);
         }
     }
 

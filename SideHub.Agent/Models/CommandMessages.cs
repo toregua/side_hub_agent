@@ -120,6 +120,11 @@ public class IncomingMessage
     // (workflow execution context, run token…). Filtered by PtyEnvironmentPolicy: only SIDEHUB_* and an allow-list.
     [JsonPropertyName("additionalEnv")]
     public Dictionary<string, string>? AdditionalEnv { get; init; }
+
+    // pty.start: the additionalEnv keys whose values are secrets (workspace secrets): the agent replaces
+    // those values with *** in pty.output and in the replayed history (SecretMasker).
+    [JsonPropertyName("secretKeys")]
+    public List<string>? SecretKeys { get; init; }
 }
 
 public class TerminalAttachmentPayload

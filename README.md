@@ -341,7 +341,7 @@ To start the agent at boot, run it under a dedicated user with the templates in 
 
 | Message | Purpose |
 |---|---|
-| `pty.start` / `pty.stop` | Open / close a terminal (shell, size, extra environment) |
+| `pty.start` / `pty.stop` | Open / close a terminal (shell, size, extra environment, which of its keys are secrets) |
 | `pty.input` / `pty.resize` | Keystrokes / terminal size |
 | `pty.history.request` | Replay a terminal's buffered output |
 | `command.execute` | One-shot command (can be disabled) |
