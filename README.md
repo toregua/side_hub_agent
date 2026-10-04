@@ -65,11 +65,28 @@ It:
    gemini ≥ 0.41), so SideHub can resume the session and read its usage;
 3. adds per-invocation state hooks (claude `--settings` hooks, codex `-c notify=`) that report whether
    the CLI is `working`, `waiting-input` or `idle`;
-4. tells the agent which session runs in the terminal, then runs the CLI.
+4. gives the CLI the workspace MCP servers the run may use, if any (see below);
+5. tells the agent which session runs in the terminal, then runs the CLI.
 
 For runs started by SideHub, the prompt is passed in the `SIDEHUB_PTY_PROMPT` environment variable and
 handed to the CLI as a single argument, so the typed line is identical in bash, cmd and PowerShell and
 the prompt is never parsed by a shell.
+
+**Workspace MCP servers.** A run's `pty.start` may carry the MCP servers its workflow or scheduler allows
+(`mcpServers`, their secrets as `${NAME}` references to workspace secrets of the run). The agent checks
+them (`McpServerPolicy`) and passes them in `SIDEHUB_PTY_MCP_SERVERS`; the launcher then configures the
+CLI for this invocation only, never through a file in the repository:
+
+| CLI | How | Only these servers? |
+|-----|-----|---------------------|
+| claude | `--mcp-config <json> --strict-mcp-config`; claude expands `${NAME}` itself | yes |
+| codex | `-c mcp_servers.<name>={…}`; secrets read from the environment (`env_vars`, `bearer_token_env_var`, `env_http_headers`, or `/bin/sh -c` for a secret in a stdio server's arguments) | no, added to your own |
+| gemini | a temporary system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, your machine's system settings copied in) deleted when gemini exits; gemini expands `${NAME}` | yes (`--allowed-mcp-server-names`) |
+| copilot | not supported | — |
+
+A server a CLI cannot read its secrets for without putting them on its command line (codex: a secret in
+an http URL or inside a header other than `Bearer ${NAME}`; on Windows, anywhere but a variable of the
+same name) is left out, with a message in the terminal.
 
 **`cli-wrappers/`** (Linux, macOS) — the agent puts small `claude` / `codex` / `gemini` / `copilot`
 wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
@@ -341,7 +358,7 @@ To start the agent at boot, run it under a dedicated user with the templates in 
 
 | Message | Purpose |
 |---|---|
-| `pty.start` / `pty.stop` | Open / close a terminal (shell, size, extra environment, which of its keys are secrets) |
+| `pty.start` / `pty.stop` | Open / close a terminal (shell, size, extra environment, which of its keys are secrets, MCP servers of a run) |
 | `pty.input` / `pty.resize` | Keystrokes / terminal size |
 | `pty.history.request` | Replay a terminal's buffered output |
 | `command.execute` | One-shot command (can be disabled) |

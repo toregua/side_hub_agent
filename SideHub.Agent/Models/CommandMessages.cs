@@ -125,6 +125,40 @@ public class IncomingMessage
     // those values with *** in pty.output and in the replayed history (SecretMasker).
     [JsonPropertyName("secretKeys")]
     public List<string>? SecretKeys { get; init; }
+
+    // pty.start: the workspace MCP servers the run may use, values referencing secrets of additionalEnv as ${NAME}.
+    // Checked by McpServerPolicy and handed to sidehub-cli launch, which gives them to the CLI.
+    [JsonPropertyName("mcpServers")]
+    public List<PtyMcpServer>? McpServers { get; init; }
+}
+
+/// <summary>One entry of <c>pty.start.mcpServers</c>: <c>command</c>/<c>args</c>/<c>env</c> for the <c>stdio</c>
+/// transport, <c>url</c>/<c>headers</c> for <c>http</c>.</summary>
+public class PtyMcpServer
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("revision")]
+    public int? Revision { get; init; }
+
+    [JsonPropertyName("transport")]
+    public string? Transport { get; init; }
+
+    [JsonPropertyName("command")]
+    public string? Command { get; init; }
+
+    [JsonPropertyName("args")]
+    public List<string>? Args { get; init; }
+
+    [JsonPropertyName("env")]
+    public Dictionary<string, string>? Env { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
+
+    [JsonPropertyName("headers")]
+    public Dictionary<string, string>? Headers { get; init; }
 }
 
 public class TerminalAttachmentPayload

@@ -40,7 +40,10 @@ public static class LaunchCommand
         }
 
         var geminiVersion = cli == "gemini" ? RealCli.PackageVersion(target.ScriptPath, "@google/gemini-cli") : null;
-        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli));
+        var warnings = new List<string>();
+        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli), McpSetup(cli, warnings));
+        foreach (var warning in warnings.Concat(plan.Warnings))
+            Console.Error.WriteLine($"sidehub-cli launch: {warning}");
 
         if (plan.SessionId is { } sessionId)
             AgentNotifier.SessionStarted(cli, sessionId);
@@ -51,6 +54,20 @@ public static class LaunchCommand
         // The CLI must not see the prompt twice (some read their environment into sub-processes).
         startInfo.Environment.Remove(PromptVariable);
 
+        var geminiSettingsDirectory = plan.GeminiSystemSettings is { } settings ? WriteGeminiSettings(settings, startInfo) : null;
+        try
+        {
+            return Start(cli, startInfo, target, plan);
+        }
+        finally
+        {
+            if (geminiSettingsDirectory is not null)
+                try { Directory.Delete(geminiSettingsDirectory, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    private static int Start(string cli, ProcessStartInfo startInfo, RealCli.Target target, CliLaunchPlan plan)
+    {
         // Ctrl+C reaches every process of the terminal: it is the CLI's to handle, the launcher waits.
         using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, context => context.Cancel = true);
         using var quit = PosixSignalRegistration.Create(PosixSignal.SIGQUIT, context => context.Cancel = true);
@@ -87,6 +104,48 @@ public static class LaunchCommand
             return null;
         var codexNotifyTaken = cli == "codex" && CliStateHooks.CodexConfigDefinesNotify(CliStateHooks.CodexConfigPath());
         return new CliLaunchPlan.StateReporting(program, codexNotifyTaken);
+    }
+
+    /// <summary>The run's MCP servers (<c>$SIDEHUB_PTY_MCP_SERVERS</c>, set by the agent), null when there are none.</summary>
+    private static CliLaunchPlan.McpSetup? McpSetup(string cli, List<string> warnings)
+    {
+        var servers = McpServers.Parse(Environment.GetEnvironmentVariable(McpServers.Variable), warnings);
+        if (servers.Count == 0)
+            return null;
+        string? geminiSettings = null;
+        if (cli == "gemini")
+        {
+            var path = McpServers.GeminiSystemSettingsPath();
+            try
+            {
+                geminiSettings = File.Exists(path) ? File.ReadAllText(path) : null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                warnings.Add($"gemini: MCP servers left out: cannot read the machine's gemini system settings ({path}).");
+                return null;
+            }
+        }
+        return new CliLaunchPlan.McpSetup(servers, PosixShell: !OperatingSystem.IsWindows(), geminiSettings);
+    }
+
+    /// <summary>gemini's system settings for this launch, in a private temporary folder (never in the repository):
+    /// they hold the servers' definitions, whose secrets stay <c>${NAME}</c> references. Returns the folder.</summary>
+    private static string? WriteGeminiSettings(string settings, ProcessStartInfo startInfo)
+    {
+        try
+        {
+            var directory = Directory.CreateTempSubdirectory("sidehub-gemini-").FullName;
+            var path = Path.Combine(directory, "settings.json");
+            File.WriteAllText(path, settings);
+            startInfo.Environment[McpServers.GeminiSystemSettingsVariable] = path;
+            return directory;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: gemini: MCP servers left out: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>

@@ -7,6 +7,12 @@ namespace SideHub.Cli.Launch;
 /// </summary>
 public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, string? SessionId, bool ReportLaunch)
 {
+    /// <summary>gemini: the system settings file to run it with (<see cref="McpServers.Gemini"/>), null for none.</summary>
+    public string? GeminiSystemSettings { get; init; }
+
+    /// <summary>MCP servers that could not be given to the CLI, to show in the terminal.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     public static readonly IReadOnlySet<string> KnownClis = new HashSet<string>(StringComparer.Ordinal)
     {
         "claude", "codex", "gemini", "copilot",
@@ -37,8 +43,9 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// <param name="newSessionId">Mints a session UUID.</param>
     /// <param name="stateReporting">How the CLI's state is reported to the agent (see <see cref="CliStateHooks"/>),
     /// null to add no hooks.</param>
+    /// <param name="mcp">The run's MCP servers (see <see cref="McpServers"/>), null for none.</param>
     public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion,
-        Func<Guid> newSessionId, StateReporting? stateReporting = null)
+        Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null)
     {
         if (!KnownClis.Contains(cli))
             throw new ArgumentException($"Unknown CLI '{cli}'.", nameof(cli));
@@ -67,10 +74,46 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         if (startsConversation && stateReporting is not null)
             AddStateHooks(cli, args, stateReporting);
 
+        var warnings = new List<string>();
+        string? geminiSettings = null;
+        if (startsConversation && mcp is { Servers.Count: > 0 })
+            geminiSettings = AddMcpServers(cli, args, mcp, warnings);
+
         if (prompt is not null)
             args.Add(prompt);
 
-        return new CliLaunchPlan(cli, args, sessionId, ReportLaunch: cli == "codex" && startsConversation);
+        return new CliLaunchPlan(cli, args, sessionId, ReportLaunch: cli == "codex" && startsConversation)
+        {
+            GeminiSystemSettings = geminiSettings,
+            Warnings = warnings,
+        };
+    }
+
+    /// <param name="Servers">The servers to give the CLI.</param>
+    /// <param name="PosixShell">codex may start a stdio server through <c>/bin/sh</c> (not on Windows).</param>
+    /// <param name="GeminiSystemSettings">The machine's gemini system settings, null when there are none.</param>
+    public sealed record McpSetup(IReadOnlyList<McpServers.Server> Servers, bool PosixShell, string? GeminiSystemSettings);
+
+    /// <summary>Adds the MCP options in front of the caller's arguments; returns gemini's system settings.</summary>
+    private static string? AddMcpServers(string cli, List<string> args, McpSetup mcp, List<string> warnings)
+    {
+        switch (cli)
+        {
+            case "claude":
+                args.InsertRange(0, McpServers.ClaudeArguments(mcp.Servers));
+                return null;
+            case "codex":
+                args.InsertRange(0, McpServers.CodexArguments(mcp.Servers, mcp.PosixShell, warnings));
+                return null;
+            case "gemini":
+                if (McpServers.Gemini(mcp.Servers, mcp.GeminiSystemSettings, warnings) is not { } gemini)
+                    return null;
+                args.InsertRange(0, gemini.Arguments);
+                return gemini.Settings;
+            default:
+                warnings.Add($"{cli}: MCP servers {string.Join(", ", mcp.Servers.Select(s => s.Name))} left out: not supported for this CLI.");
+                return null;
+        }
     }
 
     /// <param name="Program">The <c>sidehub-cli</c> the hooks run (absolute path).</param>

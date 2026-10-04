@@ -35,6 +35,7 @@ public static partial class PtyEnvironmentPolicy
         "SIDEHUB_API_URL",
         "SIDEHUB_WORKSPACE_ID",
         "SIDEHUB_AGENT_ID",
+        McpServerPolicy.EnvironmentKey,
     };
 
     /// <summary>Variables a workspace secret may never replace: they decide what code the shell (or a CLI it starts)

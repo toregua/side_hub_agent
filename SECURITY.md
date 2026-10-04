@@ -69,6 +69,13 @@ silently do. They are not a security boundary against a compromised backend.
   terminal output before it is sent and in the history replayed on reconnect, even when a value is
   cut between two output chunks. Values shorter than 4 characters are not masked, and like CI log
   masking it is best effort: a value printed encoded or transformed is not recognized.
+- **Workspace MCP servers** — the MCP servers `pty.start` hands a run (`mcpServers`) reach the
+  CLI only through per-invocation options of `sidehub-cli launch` (no `.mcp.json` or settings file
+  in the repository). A value may only reference, as `${NAME}`, a workspace secret admitted in that
+  PTY: a server reading any other variable (`${SIDEHUB_AGENT_TOKEN}`, `${PATH}`…), an http server
+  that is not https (http only to localhost), or an invalid name is ignored (`McpServerPolicy`).
+  The launcher never writes a secret value into a command line or a file: the CLI reads it from its
+  environment. A `stdio` server runs its command on this machine.
 - **Untrusted `.sidehub/` content** — `.sidehub/` sits in the work tree, so a commit can fill
   it. At startup the agent ignores (with a warning) any `.sidehub/*.json` tracked by git, that
   is a symbolic link or that belongs to another user: such a config could point the agent to

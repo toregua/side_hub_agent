@@ -169,7 +169,8 @@ public class WebSocketClient : IAsyncDisposable
     /// pre-mints a session UUID, and exposes SIDEHUB_PTY_NOTIFY_FIFO so the
     /// wrapper can post back the session id.</summary>
     private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(
-        string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null, IReadOnlyCollection<string>? secretKeys = null)
+        string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null, IReadOnlyCollection<string>? secretKeys = null,
+        IReadOnlyList<PtyMcpServer>? mcpServers = null)
     {
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         // The folder the agent actually runs from (sidehub-cli ships next to it), not a hard-coded install path.
@@ -214,6 +215,16 @@ public class WebSocketClient : IAsyncDisposable
             Log($"PTY {ptySessionId} has no session token: sidehub-cli is unavailable in it");
         foreach (var (key, value) in allowedEnv)
             env[key] = value;
+
+        // The run's MCP servers, for sidehub-cli launch to give the CLI: they may only reference the secrets admitted above.
+        if (mcpServers is { Count: > 0 })
+        {
+            var admittedSecrets = secretKeys?.Where(allowedEnv.ContainsKey).ToHashSet(StringComparer.Ordinal) ?? [];
+            if (McpServerPolicy.ToEnvironmentValue(mcpServers, admittedSecrets, out var rejectedServers) is { } servers)
+                env[McpServerPolicy.EnvironmentKey] = servers;
+            if (rejectedServers.Count > 0)
+                Log($"SECURITY: PTY {ptySessionId} ignored MCP servers: {string.Join(", ", rejectedServers)}");
+        }
 
         // Windows: cmd.exe would run a claude.exe / codex.cmd committed in the repository before
         // the one on the PATH.
@@ -1509,7 +1520,7 @@ public class WebSocketClient : IAsyncDisposable
             // Set up the CLI-session notification FIFO BEFORE building the env,
             // because the env points the wrappers at it.
             EnsureNotifyFifo(ptySessionId);
-            var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv, message.SecretKeys);
+            var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv, message.SecretKeys, message.McpServers);
 
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
             // CLI launched from this terminal discovers sidehub-cli automatically.
