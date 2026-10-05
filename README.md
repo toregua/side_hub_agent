@@ -1,6 +1,6 @@
 # SideHub Agent
 
-The open source agent that runs coding CLIs — Claude Code, Codex, Gemini CLI, GitHub Copilot CLI — on
+The open source agent that runs coding CLIs (Claude Code, Codex, Gemini CLI, GitHub Copilot CLI) on
 your own machines for the [SideHub](https://www.sidehub.io) cockpit.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -18,7 +18,7 @@ threat model is in [SECURITY.md](SECURITY.md).
 ```
                     SideHub cockpit (www.sidehub.io)
                                  ▲
-                                 │  wss:// — outbound only, no inbound port
+                                 │  wss:// (outbound only, no inbound port)
                                  │
 ┌────────────────────────────────┼──────────────────────────────────────┐
 │ Your machine                   │                                      │
@@ -36,17 +36,17 @@ threat model is in [SECURITY.md](SECURITY.md).
 
 ### Everything runs in a terminal
 
-Every execution — a terminal you open in the cockpit, a workflow step, a scheduled prompt — is a PTY on
+Every execution (a terminal you open in the cockpit, a workflow step, a scheduled prompt) is a PTY on
 your machine. The backend starts a PTY (`pty.start`), types a command line into it (`pty.input`) and
 receives the terminal output (`pty.output`) as raw ANSI bytes, exactly like a human at a keyboard. There
 is no SDK proxy and no structured protocol between SideHub and the CLIs: you can open any run's terminal,
 watch it, interrupt it or take it over.
 
-- **`NodePtyExecutor` + `pty-helper/`** — PTYs are driven by a small Node.js helper built on
+- **`NodePtyExecutor` + `pty-helper/`**: PTYs are driven by a small Node.js helper built on
   [node-pty](https://github.com/microsoft/node-pty) (this is why Node.js is required). Only allowlisted
   shells can be spawned (`bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`; `cmd`, `powershell`, `pwsh` on
   Windows), always inside the configured `workingDirectory`.
-- **Output history** — the recent output of each PTY is kept in memory (`PtyOutputBuffer`) and replayed
+- **Output history**: the recent output of each PTY is kept in memory (`PtyOutputBuffer`) and replayed
   when the backend reconnects, so a terminal survives a network blip. PTYs idle for 30 minutes are
   stopped.
 
@@ -82,13 +82,13 @@ CLI for this invocation only, never through a file in the repository:
 | claude | `--mcp-config <json> --strict-mcp-config`; claude expands `${NAME}` itself | yes |
 | codex | `-c mcp_servers.<name>={…}`; secrets read from the environment (`env_vars`, `bearer_token_env_var`, `env_http_headers`, or `/bin/sh -c` for a secret in a stdio server's arguments) | no, added to your own |
 | gemini | a temporary system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, your machine's system settings copied in) deleted when gemini exits; gemini expands `${NAME}` | yes (`--allowed-mcp-server-names`) |
-| copilot | not supported | — |
+| copilot | not supported | – |
 
 A server a CLI cannot read its secrets for without putting them on its command line (codex: a secret in
 an http URL or inside a header other than `Bearer ${NAME}`; on Windows, anywhere but a variable of the
 same name) is left out, with a message in the terminal.
 
-**`cli-wrappers/`** (Linux, macOS) — the agent puts small `claude` / `codex` / `gemini` / `copilot`
+**`cli-wrappers/`** (Linux, macOS): the agent puts small `claude` / `codex` / `gemini` / `copilot`
 wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
 wrapper simply hands over to `sidehub-cli launch`. Without the launcher, the real CLI runs as if there
 were no wrapper.
@@ -106,8 +106,8 @@ After a run, and periodically for CLI sessions typed in terminals, the agent rea
 transcript (`ClaudeTranscriptHarvester` for Claude Code's project JSONL, `CodexRolloutHarvester` for
 Codex rollouts) and sends **only token counts per model** (input, output, cache read/write, reasoning):
 
-- `run.usage` — at the end of a run started by SideHub;
-- `cli-session.usage` — a cumulative snapshot of a session typed in a terminal, when the CLI exits or
+- `run.usage`: at the end of a run started by SideHub;
+- `cli-session.usage`: a cumulative snapshot of a session typed in a terminal, when the CLI exits or
   the PTY closes, and every 10 minutes while it changes.
 
 Reports that cannot be sent (backend unreachable) are queued in `.sidehub/run/pending-usage/` and
@@ -124,7 +124,7 @@ When a PTY starts, the agent also writes the `sidehub` skill files (`AGENTS.md`,
 Claude Code skill) into the working directory, so the CLIs know the `sidehub-cli` commands (tasks,
 workflow callbacks, drive…). Disable file writes (`"allowFileWrite": false`) to prevent it.
 
-## What leaves your machine — and what doesn't
+## What leaves your machine, and what doesn't
 
 | Goes to SideHub | Stays on your machine |
 |---|---|
@@ -154,9 +154,9 @@ What a report holds, and nothing else:
 
 | Field | Example |
 |---|---|
-| `tokenPrefix` — the first 16 characters of the agent token (`sh_agent_` + 7), never the token: it ties the report to the agent, and SideHub drops reports matching no agent | `sh_agent_Ab3xQ9z` |
+| `tokenPrefix`: the first 16 characters of the agent token (`sh_agent_` + 7), never the token: it ties the report to the agent, and SideHub drops reports matching no agent | `sh_agent_Ab3xQ9z` |
 | `reason` | `handshake-rejected` |
-| `detail` — one line, at most 300 characters: tokens masked, your home folder shown as `~`, your user name in paths as `<user>` | `HTTP 401: the token matches no agent…` |
+| `detail`: one line, at most 300 characters: tokens masked, your home folder shown as `~`, your user name in paths as `<user>` | `HTTP 401: the token matches no agent…` |
 | `agentVersion` | `1.0.80`, `install.sh v1.0.80` |
 | `os` | `linux-x64` |
 
@@ -212,7 +212,7 @@ The scripts verify the signature of the release's `checksums.sha256` (fetched fr
 against the key embedded in the script, then the archive against it, and abort on any mismatch. The
 archive ships `pty-helper`'s Node.js dependencies prebuilt (`npm ci` from the lockfile in the release
 CI): nothing is fetched from npm at install time. Each release also carries a build provenance
-attestation — see [Verifying a release](SECURITY.md#verifying-a-release).
+attestation: see [Verifying a release](SECURITY.md#verifying-a-release).
 
 ### Configure
 
@@ -281,7 +281,7 @@ Each `.json` file in `.sidehub/` defines one agent; all are started in parallel 
 | `workingDirectory` | Yes | Folder PTYs start in and are confined to (`.` or an absolute path) |
 | `capabilities` | Yes | Labels reported to SideHub at connection (`setup` writes `["shell", "claude-code"]`) |
 | `allowCommandExecute` | No | Allow one-shot `command.execute` from the backend (default `true`) |
-| `allowFileWrite` | No | Allow the backend to write files under `workingDirectory` — terminal image uploads, skill files (default `true`) |
+| `allowFileWrite` | No | Allow the backend to write files under `workingDirectory`, such as terminal image uploads and skill files (default `true`) |
 
 The agent ignores configs tracked by git, symbolic links and files owned by another user (a config
 decides which backend the agent obeys), and tightens `.sidehub/` to `0700` and token files to `0600`.
@@ -290,12 +290,12 @@ decides which backend the agent obeys), and tightens `.sidehub/` to `0700` and t
 
 **The agent runs whatever the SideHub backend asks for**: it opens terminals and types into them, runs
 commands and writes files as the OS user that started it. A compromised backend means code execution on
-the agent's machine — the agent is not a sandbox.
+the agent's machine: the agent is not a sandbox.
 
 What the agent enforces:
 
 - `wss://` only (except `localhost`), token sent in a header; outbound connection only
-- `pty.start` only spawns allowlisted shells, resolved from fixed system directories — any other binary is refused
+- `pty.start` only spawns allowlisted shells, resolved from fixed system directories; any other binary is refused
 - PTYs get an allowlisted environment; the backend cannot override `PATH`, `LD_PRELOAD`, rcfiles or agent-owned variables
 - PTY working directories and file writes are confined to `workingDirectory`
 - `command.execute` and file writes can be disabled with `"allowCommandExecute": false` / `"allowFileWrite": false`
@@ -334,7 +334,7 @@ Logs are in `.sidehub/run/sidehub-agent.log` (rotated at 10 MB, 3 archives).
 To start the agent at boot, run it under a dedicated user with the templates in [`contrib/`](contrib/)
 (also installed in `/usr/local/lib/sidehub-agent/contrib/`):
 
-- **systemd** — [`contrib/systemd/sidehub-agent@.service`](contrib/systemd/sidehub-agent@.service), one
+- **systemd**: [`contrib/systemd/sidehub-agent@.service`](contrib/systemd/sidehub-agent@.service), one
   instance per project folder, `User=sidehub`, `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`…
 
   ```bash
@@ -348,7 +348,7 @@ To start the agent at boot, run it under a dedicated user with the templates in 
   `NoNewPrivileges` means `sudo` does not work in the agent's terminals. The CLIs (`claude`, `codex`,
   `node`) must be on the unit's `PATH`. Stop it with `systemctl stop`, not `sidehub-agent stop`.
 
-- **launchd (macOS)** — [`contrib/launchd/io.sidehub.agent.plist`](contrib/launchd/io.sidehub.agent.plist),
+- **launchd (macOS)**: [`contrib/launchd/io.sidehub.agent.plist`](contrib/launchd/io.sidehub.agent.plist),
   a per-user LaunchAgent (never a LaunchDaemon, which runs as root): fill in the project path, copy it to
   `~/Library/LaunchAgents/` and `launchctl bootstrap gui/$(id -u) <plist>`.
 
@@ -433,17 +433,17 @@ side_hub_agent/
 
 ## Troubleshooting
 
-**Agent won't connect** — check the token in `.sidehub/*.json` (a `401` at the handshake means it
+**Agent won't connect**: check the token in `.sidehub/*.json` (a `401` at the handshake means it
 matches no agent: copy the setup command again from SideHub), that `sidehubUrl` uses `wss://`, and that
 outbound HTTPS/WebSocket traffic to `api.sidehub.io` is allowed.
 
-**"Configuration directory not found"** — run `sidehub-agent` from the project folder that holds
+**"Configuration directory not found"**: run `sidehub-agent` from the project folder that holds
 `.sidehub/`.
 
-**A CLI does not start in a terminal** — check it is installed for the agent's user (`claude --version`,
+**A CLI does not start in a terminal**: check it is installed for the agent's user (`claude --version`,
 `codex --version`…) and on the `PATH` the agent was started with.
 
-**Daemon won't start** — `sidehub-agent logs --no-follow`. As root, it exits unless `--allow-root` is
+**Daemon won't start**: `sidehub-agent logs --no-follow`. As root, it exits unless `--allow-root` is
 given. A stale PID file is cleaned up by `sidehub-agent status`.
 
 ## Links

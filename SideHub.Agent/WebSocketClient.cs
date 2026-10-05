@@ -27,7 +27,7 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     // Background tasks reading the CLI-session notification FIFO for each PTY.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
-    // Real-path cwd of each PTY session — needed to locate Claude's project JSONL
+    // Real-path cwd of each PTY session, needed to locate Claude's project JSONL
     // for the ai-title watcher.
     private readonly ConcurrentDictionary<string, string> _ptyCwd = new();
     // Background file watchers waiting for Claude's "ai-title" line. Keyed by
@@ -309,7 +309,7 @@ public class WebSocketClient : IAsyncDisposable
     }
 
     /// <summary>Create the notification FIFO before the PTY starts. Best-effort:
-    /// if mkfifo isn't available, we log and skip — the CLI wrapper will simply
+    /// if mkfifo isn't available, we log and skip: the CLI wrapper will simply
     /// no-op its notification and the existing session behavior is preserved.</summary>
     private void EnsureNotifyFifo(string ptySessionId)
     {
@@ -595,7 +595,7 @@ public class WebSocketClient : IAsyncDisposable
     /// something like {"type":"ai-title","aiTitle":"...","sessionId":"..."}
     /// shortly after the first user message. The file lives at
     /// <c>$HOME/.claude/projects/&lt;cwd-with-slashes-as-dashes&gt;/&lt;cliSessionId&gt;.jsonl</c>.
-    /// First match wins — we emit a single PtyCliSessionTitledMessage then
+    /// First match wins: we emit a single PtyCliSessionTitledMessage then
     /// dispose the watcher.
     /// </summary>
     private void StartClaudeTitleWatcher(string ptySessionId, string cliSessionId, CancellationToken ct)
@@ -682,7 +682,7 @@ public class WebSocketClient : IAsyncDisposable
                     {
                         Log($"Failed to send pty.cli-session-titled for {cliSessionId}: {ex.Message}");
                     }
-                    // Dispose ourselves — title is single-shot.
+                    // Dispose ourselves: title is single-shot.
                     if (_claudeTitleWatchers.TryRemove(watcherKey, out var ownCts))
                     {
                         try { ownCts.Cancel(); } catch { }
@@ -951,7 +951,7 @@ public class WebSocketClient : IAsyncDisposable
                             try { await session.Executor.DisposeAsync(); } catch { }
                             CleanupNotifyFifo(sid);
                             // DisposeAsync doesn't fire the executor's exit callback, so tell the
-                            // backend explicitly — otherwise it keeps reporting the session as
+                            // backend explicitly, otherwise it keeps reporting the session as
                             // running and frontends reattach to a dead PTY (blank terminal).
                             try { await SendAsync(new PtyExitedMessage { ExitCode = 0, PtySessionId = sid }, CancellationToken.None); } catch { }
                             HarvestFinalUsage(sid, "reaped", TimeSpan.FromSeconds(2));
@@ -1142,7 +1142,7 @@ public class WebSocketClient : IAsyncDisposable
 
         if (!_config.AllowFileWrite)
         {
-            Log($"SECURITY: terminal attachment for PTY {message.PtySessionId} refused — file writes are disabled (allowFileWrite: false)");
+            Log($"SECURITY: terminal attachment for PTY {message.PtySessionId} refused: file writes are disabled (allowFileWrite: false)");
             return;
         }
 
@@ -1207,7 +1207,7 @@ public class WebSocketClient : IAsyncDisposable
 
         if (!_config.AllowCommandExecute)
         {
-            Log($"SECURITY: command {message.CommandId} refused — command.execute is disabled (allowCommandExecute: false)");
+            Log($"SECURITY: command {message.CommandId} refused: command.execute is disabled (allowCommandExecute: false)");
             await SendAsync(new CommandFailedMessage
             {
                 CommandId = message.CommandId,
@@ -1275,14 +1275,14 @@ public class WebSocketClient : IAsyncDisposable
 
         if (!_config.AllowFileWrite)
         {
-            Log($"SECURITY: file write {message.CommandId} refused — file.write is disabled (allowFileWrite: false)");
+            Log($"SECURITY: file write {message.CommandId} refused: file.write is disabled (allowFileWrite: false)");
             await SendFileWriteFailedAsync(message.CommandId, "file.write is disabled on this agent (allowFileWrite: false)", ct);
             return;
         }
 
         if (!FileWritePolicy.TryResolveTarget(_workingDirectory, message.Path, out var resolvedPath, out var error))
         {
-            Log($"SECURITY: file write {message.CommandId} rejected — {error} (working directory '{_workingDirectory}')");
+            Log($"SECURITY: file write {message.CommandId} rejected: {error} (working directory '{_workingDirectory}')");
             await SendFileWriteFailedAsync(message.CommandId, error, ct);
             return;
         }
@@ -1291,7 +1291,7 @@ public class WebSocketClient : IAsyncDisposable
         // directory named "x\e[201~\rcmd\r") would close the paste and type the rest as keystrokes.
         if (!PtyPastePolicy.IsSafeToPaste(resolvedPath))
         {
-            Log($"SECURITY: file write {message.CommandId} rejected — resolved path contains control characters");
+            Log($"SECURITY: file write {message.CommandId} rejected: resolved path contains control characters");
             await SendFileWriteFailedAsync(message.CommandId, "Path contains control characters", ct);
             return;
         }
@@ -1302,7 +1302,7 @@ public class WebSocketClient : IAsyncDisposable
         await ExpirePendingFileWritesAsync(ct);
         if (!_pendingFileWrites.TryStart(message.CommandId, resolvedPath, ptyPaste, message.PtySessionId))
         {
-            Log($"SECURITY: file write {message.CommandId} refused — {PendingFileWrites.MaxConcurrentWrites} writes already in progress");
+            Log($"SECURITY: file write {message.CommandId} refused: {PendingFileWrites.MaxConcurrentWrites} writes already in progress");
             await SendFileWriteFailedAsync(message.CommandId, $"Too many file writes in progress (max {PendingFileWrites.MaxConcurrentWrites})", ct);
             return;
         }
@@ -1316,15 +1316,15 @@ public class WebSocketClient : IAsyncDisposable
         switch (_pendingFileWrites.Append(message.CommandId, message.Data))
         {
             case FileWriteChunkResult.TooLarge:
-                Log($"SECURITY: file write {message.CommandId} dropped — larger than {FileWritePolicy.MaxFileBytes} bytes");
+                Log($"SECURITY: file write {message.CommandId} dropped: larger than {FileWritePolicy.MaxFileBytes} bytes");
                 await SendFileWriteFailedAsync(message.CommandId, $"File is larger than the {FileWritePolicy.MaxFileBytes / (1024 * 1024)} MB limit", ct);
                 break;
             case FileWriteChunkResult.OverBudget:
-                Log($"SECURITY: file write {message.CommandId} dropped — file writes in progress already hold {PendingFileWrites.MaxTotalBytes} bytes");
+                Log($"SECURITY: file write {message.CommandId} dropped: file writes in progress already hold {PendingFileWrites.MaxTotalBytes} bytes");
                 await SendFileWriteFailedAsync(message.CommandId, $"Too much file data in progress (max {PendingFileWrites.MaxTotalBytes / (1024 * 1024)} MB)", ct);
                 break;
             case FileWriteChunkResult.Invalid:
-                Log($"File write {message.CommandId} dropped — chunk is not valid base64");
+                Log($"File write {message.CommandId} dropped: chunk is not valid base64");
                 await SendFileWriteFailedAsync(message.CommandId, "File data is not valid base64", ct);
                 break;
         }
@@ -1335,7 +1335,7 @@ public class WebSocketClient : IAsyncDisposable
     {
         foreach (var commandId in _pendingFileWrites.RemoveExpired())
         {
-            Log($"File write {commandId} expired — no file.write.end within {PendingFileWrites.Expiry.TotalMinutes:0} min");
+            Log($"File write {commandId} expired: no file.write.end within {PendingFileWrites.Expiry.TotalMinutes:0} min");
             try { await SendFileWriteFailedAsync(commandId, "File write expired before file.write.end", ct); } catch { }
         }
     }
@@ -1360,7 +1360,7 @@ public class WebSocketClient : IAsyncDisposable
             // Checked again right before writing: a link may have been planted since file.write.start.
             if (!FileWritePolicy.TryResolveTarget(_workingDirectory, state.Path, out var target, out var error) || target != state.Path)
             {
-                Log($"SECURITY: file write {message.CommandId} rejected at write time — {(error.Length > 0 ? error : $"'{state.Path}' now resolves to '{target}'")}");
+                Log($"SECURITY: file write {message.CommandId} rejected at write time: {(error.Length > 0 ? error : $"'{state.Path}' now resolves to '{target}'")}");
                 await SendFileWriteFailedAsync(message.CommandId, error.Length > 0 ? error : $"Path '{state.Path}' changed during the upload", ct);
                 return;
             }
@@ -1368,7 +1368,7 @@ public class WebSocketClient : IAsyncDisposable
             // The chunks were decoded and size-checked as they came: only a truncated last group is left to refuse.
             if (!state.IsComplete)
             {
-                Log($"File write {message.CommandId} dropped — base64 data ends mid-group");
+                Log($"File write {message.CommandId} dropped: base64 data ends mid-group");
                 await SendFileWriteFailedAsync(message.CommandId, "File data is not valid base64", ct);
                 return;
             }
@@ -1482,7 +1482,7 @@ public class WebSocketClient : IAsyncDisposable
     {
         if (!ShellPolicy.TryResolve(requested, out shellPath))
         {
-            Log($"SECURITY: PTY {ptySessionId} refused — shell '{requested}' is not an allowed shell");
+            Log($"SECURITY: PTY {ptySessionId} refused: shell '{requested}' is not an allowed shell");
             shell = string.Empty;
             return false;
         }
@@ -1531,7 +1531,7 @@ public class WebSocketClient : IAsyncDisposable
             }
             else
             {
-                Log($"Skill files not written for PTY {ptySessionId} — file writes are disabled (allowFileWrite: false)");
+                Log($"Skill files not written for PTY {ptySessionId}: file writes are disabled (allowFileWrite: false)");
             }
 
             Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
@@ -1578,7 +1578,7 @@ public class WebSocketClient : IAsyncDisposable
             return;
         }
 
-        // Legacy mode (no ptySessionId) — single PTY per agent
+        // Legacy mode (no ptySessionId): single PTY per agent
         if (_ptyExecutor?.IsRunning == true)
         {
             var isHealthy = await _ptyExecutor.IsHealthyAsync();

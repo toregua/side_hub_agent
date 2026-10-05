@@ -19,7 +19,7 @@ public static class ShellPolicy
         "cmd", "powershell", "pwsh",
     };
 
-    /// <summary>Where Unix shells are looked up — never the PATH, which the daemon may have
+    /// <summary>Where Unix shells are looked up, never the PATH, which the daemon may have
     /// inherited from anywhere.</summary>
     private static readonly string[] UnixShellDirectories =
     [

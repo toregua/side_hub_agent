@@ -73,7 +73,7 @@ public static class SqliteCommands
         var rows = result.TryGetProperty("rowsAffected", out var ra) ? ra.GetInt32() : 0;
         var size = result.TryGetProperty("newFileSize", out var sz) ? sz.GetInt64() : 0;
         var ms = result.TryGetProperty("durationMs", out var dm) ? dm.GetInt64() : 0;
-        Console.WriteLine($"OK — rows affected: {rows}, db size: {size} bytes, duration: {ms} ms");
+        Console.WriteLine($"OK: rows affected: {rows}, db size: {size} bytes, duration: {ms} ms");
         return 0;
     }
 
@@ -208,7 +208,7 @@ public static class SqliteCommands
         }
 
         if (result.TryGetProperty("truncated", out var t) && t.GetBoolean())
-            Console.WriteLine("(results truncated — pass --row-limit to expand or refine the query)");
+            Console.WriteLine("(results truncated; pass --row-limit to expand or refine the query)");
     }
 
     private static string? GetOption(string[] args, string flag)

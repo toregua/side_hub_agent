@@ -26,14 +26,14 @@ do. Treat the agent like an SSH key handed to the SideHub backend.
 These controls reduce mistakes and limit what a *misbehaving* (not malicious) backend can
 silently do. They are not a security boundary against a compromised backend.
 
-- **Transport** — `sidehubUrl` must be `wss://` (TLS) except for `localhost`; the agent token
+- **Transport**: `sidehubUrl` must be `wss://` (TLS) except for `localhost`; the agent token
   is sent in a header, never in the URL.
-- **Shell allowlist** — `pty.start` only spawns `bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`
+- **Shell allowlist**: `pty.start` only spawns `bash`, `zsh`, `sh`, `dash`, `fish`, `pwsh`
   (Unix) or `cmd`, `powershell`, `pwsh` (Windows). Names are resolved by the agent from fixed
   system directories (`/bin`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`), never from
   `PATH`; any other binary or path is refused and no PTY is started. `command.execute` resolves
   its shells (`bash`, `sh`, `zsh`, `pwsh`, `cmd`) through the same policy.
-- **PTY environment** — the PTY does not inherit the daemon's environment (API keys, cloud
+- **PTY environment**: the PTY does not inherit the daemon's environment (API keys, cloud
   credentials…), only an allowlist. The backend may only add `SIDEHUB_*` / telemetry
   variables, plus the workspace secrets it marks in `secretKeys` (UPPER_SNAKE_CASE names), and
   cannot override `PATH`, `LD_PRELOAD`, `NODE_OPTIONS`, rcfiles or the agent-owned `SIDEHUB_*`
@@ -41,17 +41,17 @@ silently do. They are not a security boundary against a compromised backend.
   (`DaemonEnvironmentPolicy`). Both then load the user's own shell init like any login
   terminal (`/etc/profile`, `~/.profile`, `~/.bashrc`; `command.execute` runs `bash -l -c`):
   whatever those files export is visible to the commands, so keep secrets out of them.
-- **No agent token in terminals** — the agent token never enters a PTY environment. A terminal
+- **No agent token in terminals**: the agent token never enters a PTY environment. A terminal
   only gets the token SideHub scoped to it in `SIDEHUB_AGENT_TOKEN`: a run token (`sh_run_…`)
   for a SideHub-launched run, a session token (`sh_pty_…`) for an interactive terminal. Both
   are short-lived, die with their run / terminal, are denied agent management and session
   launches, and cannot open the agent WebSocket. Without one, `sidehub-cli` is unavailable.
   The setup token (`SIDEHUB_SETUP_TOKEN`) is removed from the agent's environment once read
   and is not passed to the background daemon, so git, commands and `pty-helper` never inherit it.
-- **Working directory** — PTY working directories and `file.write` paths are confined to the
+- **Working directory**: PTY working directories and `file.write` paths are confined to the
   agent's `workingDirectory`, symbolic links resolved. This only limits where a terminal
   *starts*; the shell itself can still `cd` anywhere.
-- **File writes** — everything written into the working directory (`file.write`, terminal image
+- **File writes**: everything written into the working directory (`file.write`, terminal image
   attachments under `.sidehub-images/`, the skill files `AGENTS.md` / `GEMINI.md` /
   `.claude/commands/sidehub.md`) goes through `FileWritePolicy`: never under `.git/` or
   `.sidehub/`, never into a file that makes a tool run commands (`.claude/settings*.json`,
@@ -62,38 +62,38 @@ silently do. They are not a security boundary against a compromised backend.
   or planted after the check makes the write fail. A linked `AGENTS.md` / `GEMINI.md` / `.claude`
   therefore gets no skill section. With `allowFileWrite: false` the skill files are not written
   either.
-- **Secrets in logs** — commands, terminal output and tokens are not written to the agent
+- **Secrets in logs**: commands, terminal output and tokens are not written to the agent
   logs; setup tokens are kept out of the process arguments.
-- **Injected secrets in terminal output** — the values of the variables `pty.start` marks as
+- **Injected secrets in terminal output**: the values of the variables `pty.start` marks as
   secrets (`secretKeys`, e.g. workspace secrets given to a run) are replaced with `***` in the
   terminal output before it is sent and in the history replayed on reconnect, even when a value is
   cut between two output chunks. Values shorter than 4 characters are not masked, and like CI log
   masking it is best effort: a value printed encoded or transformed is not recognized.
-- **Workspace MCP servers** — the MCP servers `pty.start` hands a run (`mcpServers`) reach the
+- **Workspace MCP servers**: the MCP servers `pty.start` hands a run (`mcpServers`) reach the
   CLI only through per-invocation options of `sidehub-cli launch` (no `.mcp.json` or settings file
   in the repository). A value may only reference, as `${NAME}`, a workspace secret admitted in that
   PTY: a server reading any other variable (`${SIDEHUB_AGENT_TOKEN}`, `${PATH}`…), an http server
   that is not https (http only to localhost), or an invalid name is ignored (`McpServerPolicy`).
   The launcher never writes a secret value into a command line or a file: the CLI reads it from its
   environment. A `stdio` server runs its command on this machine.
-- **Untrusted `.sidehub/` content** — `.sidehub/` sits in the work tree, so a commit can fill
+- **Untrusted `.sidehub/` content**: `.sidehub/` sits in the work tree, so a commit can fill
   it. At startup the agent ignores (with a warning) any `.sidehub/*.json` tracked by git, that
   is a symbolic link or that belongs to another user: such a config could point the agent to
   another backend, which would then run commands in its terminals. Logs, PID file, pending
   usage reports and notification FIFOs under `.sidehub/run/` are never written or chmodded
   through a symbolic link or an entry owned by another user; the agent refuses to start
   instead.
-- **No root by default** — on Linux and macOS, `setup`, `start`, `restart` and the daemon refuse to
+- **No root by default**: on Linux and macOS, `setup`, `start`, `restart` and the daemon refuse to
   run with effective UID 0: as root, the backend would control the whole machine. `--allow-root`
   (or `SIDEHUB_ALLOW_ROOT=1`) overrides it and logs a warning. `install.sh` run as root (`curl … |
   sudo bash`) installs the binaries but does not configure or start the agent. Service templates
   for an unprivileged user ship in `contrib/` (systemd unit with `NoNewPrivileges`,
   `ProtectSystem=full`, `PrivateTmp`…, and a per-user launchd agent).
-- **Opt-out switches** — `command.execute` and file writes can be turned off per agent.
+- **Opt-out switches**: `command.execute` and file writes can be turned off per agent.
 
 ### What the agent does not protect
 
-- Code execution by the backend through a PTY (`pty.input`) — always possible.
+- Code execution by the backend through a PTY (`pty.input`): always possible.
 - Access to anything the agent's OS user can read or write, including outside
   `workingDirectory`.
 - The agent token stored in `.sidehub/*.json`: anyone who can read it can impersonate the
@@ -126,14 +126,14 @@ Recommended practice:
 Releases are built by GitHub Actions from a tag (`.github/workflows/release.yml`); no binary
 is committed to the repository. Each release ships:
 
-- `sidehub-agent-<platform>.tar.gz` / `.zip` — the agent, `sidehub-cli`, `pty-helper` (with its
+- `sidehub-agent-<platform>.tar.gz` / `.zip`: the agent, `sidehub-cli`, `pty-helper` (with its
   `node_modules`, installed by the CI with `npm ci --omit=dev --ignore-scripts` from the committed
   lockfile, `node-pty` pinned to an exact version) and `cli-wrappers`. `node-pty` is a
   `1.2.0` prerelease on purpose: the latest stable (`1.1.0`) ships no Linux prebuilds, so it
   would have to be compiled at install time, running its install scripts. Move to `1.2.x`
   once it is released;
-- `checksums.sha256` — SHA-256 of every archive;
-- `checksums.sha256.sig` — RSA signature (PKCS#1 v1.5, SHA-256) of `checksums.sha256` by the
+- `checksums.sha256`: SHA-256 of every archive;
+- `checksums.sha256.sig`: RSA signature (PKCS#1 v1.5, SHA-256) of `checksums.sha256` by the
   release signing key, whose public half is embedded in `install.sh` / `install.ps1`;
 - a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
   (Sigstore, signed with the workflow's OIDC identity) for each archive and for
@@ -216,7 +216,7 @@ Report it privately through GitHub's
 
 - the agent version (the `Agent version:` line in the agent log) and platform,
 - the steps to reproduce and the impact,
-- whether the issue requires a compromised backend (see the trust model above — issues that
+- whether the issue requires a compromised backend (see the trust model above; issues that
   only restate "the backend can run code on the agent" are expected behavior).
 
 We aim to acknowledge reports within 5 business days and will coordinate a fix and a release

@@ -67,7 +67,7 @@ public static class WorkflowCommands
                 var dflt = Prop(p, "default") is { } d ? $", default: {d}" : "";
                 var options = p.TryGetProperty("options", out var o) && o.ValueKind == JsonValueKind.Array
                     ? $", one of: {string.Join(" | ", o.EnumerateArray().Select(x => x.GetString()))}" : "";
-                Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}) — {Prop(p, "label")}");
+                Console.WriteLine($"  {Prop(p, "name")} ({Prop(p, "type")}{required}{dflt}{options}): {Prop(p, "label")}");
             }
         }
         Console.WriteLine();

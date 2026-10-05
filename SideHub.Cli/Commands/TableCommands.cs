@@ -308,7 +308,7 @@ public static class TableCommands
     private static async Task SaveAsync(SideHubApiClient client, string pageId, string title, JsonObject schema)
     {
         if (string.IsNullOrEmpty(title))
-            throw new InvalidOperationException($"Drive item {pageId} has no title — refusing to save (backend would reject).");
+            throw new InvalidOperationException($"Drive item {pageId} has no title; refusing to save (backend would reject).");
 
         var content = schema.ToJsonString();
         if (content.Length > 100 * 1024)
@@ -412,7 +412,7 @@ public static class TableCommands
 
         if (columns.Count == 0)
         {
-            Console.WriteLine("(empty spreadsheet — no columns yet)");
+            Console.WriteLine("(empty spreadsheet, no columns yet)");
             return;
         }
 

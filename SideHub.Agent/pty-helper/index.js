@@ -104,7 +104,7 @@ function startPty(config) {
 
   // Default to a login shell so .profile / .bashrc run. When the agent
   // provided a SideHub rcfile (only meaningful for bash), invoke bash as an
-  // interactive non-login shell with --rcfile pointing at that file — our
+  // interactive non-login shell with --rcfile pointing at that file: our
   // rcfile manually re-sources the standard init files and then re-prepends
   // the cli-wrappers dir to PATH so user PATH overrides can't shadow it.
   let shellArgs = ['-l'];

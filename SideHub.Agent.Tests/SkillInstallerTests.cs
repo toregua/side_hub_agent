@@ -48,7 +48,7 @@ public class SkillInstallerTests : IDisposable
 
     [Theory]
     [InlineData("acf124c0-8355-41bf-9f7c-c61ae45b453f", "acf124c0-8355-41bf-9f7c-c61ae45b453f")]
-    [InlineData("abc` — injected", "")]
+    [InlineData("abc`: injected", "")]
     [InlineData("id\nnext", "")]
     [InlineData(null, "")]
     public void Id_is_kept_only_when_it_looks_like_an_identifier(string? id, string expected)

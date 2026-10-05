@@ -61,14 +61,14 @@ The agent is a .NET 10 console application that:
 5. Auto-reconnection with exponential backoff ensures resilience; PTY output is buffered and replayed
 
 Key design decisions:
-- **Everything is a terminal** — runs and interactive sessions are PTYs the backend types into; there is
+- **Everything is a terminal**: runs and interactive sessions are PTYs the backend types into; there is
   no SDK proxy or structured protocol with the CLIs
-- **PTY via Node.js** — Terminal emulation delegates to a Node.js helper using `node-pty` (`pty-helper/`)
-- **One launch path** — `sidehub-cli launch` starts claude / codex / gemini / copilot the same way on
+- **PTY via Node.js**: Terminal emulation delegates to a Node.js helper using `node-pty` (`pty-helper/`)
+- **One launch path**: `sidehub-cli launch` starts claude / codex / gemini / copilot the same way on
   every OS and reports the session id through `NotifyFifo`
-- **Usage from local transcripts** — `Usage/` reads token counts from the CLIs' own files; only counts
+- **Usage from local transcripts**: `Usage/` reads token counts from the CLIs' own files; only counts
   are sent
-- **Log rotation** — Daemon mode uses rotating logs (10 MB default, 3 archives)
+- **Log rotation**: Daemon mode uses rotating logs (10 MB default, 3 archives)
 
 ## Building & testing
 
@@ -93,7 +93,7 @@ dotnet publish SideHub.Agent -c Release -r linux-x64 --self-contained -p:Publish
 
 - Follow existing patterns in the codebase
 - Use C# 13 / .NET 10 features where appropriate
-- Keep classes focused — one responsibility per file
+- Keep classes focused: one responsibility per file
 - Use `Console.WriteLine` with the `[AgentName]` prefix pattern for logging
 - Handle cancellation tokens properly for clean shutdown
 
@@ -119,7 +119,7 @@ Update README with troubleshooting section
 
 ## Pull Request guidelines
 
-- Keep PRs focused — one feature or fix per PR
+- Keep PRs focused: one feature or fix per PR
 - Update the README if your change affects usage or configuration
 - Ensure the project builds without warnings
 - Test on your target platform before submitting

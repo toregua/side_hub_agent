@@ -35,7 +35,7 @@ if (string.IsNullOrEmpty(apiUrl) || string.IsNullOrEmpty(agentToken) || string.I
 
 if (ApiUrlPolicy.RejectionReason(apiUrl) is { } apiUrlProblem)
 {
-    Console.Error.WriteLine($"Invalid SIDEHUB_API_URL: '{apiUrl}' — {apiUrlProblem}");
+    Console.Error.WriteLine($"Invalid SIDEHUB_API_URL: '{apiUrl}': {apiUrlProblem}");
     return 1;
 }
 
@@ -43,7 +43,7 @@ if (ApiUrlPolicy.RejectionReason(apiUrl) is { } apiUrlProblem)
 // backend-launched run; sh_pty_: session token of an interactive SideHub terminal.
 if (!agentToken.StartsWith("sh_agent_") && !agentToken.StartsWith("sh_run_") && !agentToken.StartsWith("sh_pty_"))
 {
-    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format — must start with 'sh_agent_', 'sh_run_' or 'sh_pty_'.");
+    Console.Error.WriteLine("Invalid SIDEHUB_AGENT_TOKEN format: must start with 'sh_agent_', 'sh_run_' or 'sh_pty_'.");
     return 1;
 }
 

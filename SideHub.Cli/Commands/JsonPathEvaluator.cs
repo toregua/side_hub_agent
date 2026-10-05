@@ -9,7 +9,7 @@ namespace SideHub.Cli.Commands;
 ///   ['field']      -> property (quoted)
 ///   [N]            -> array index
 ///   [*]            -> all array elements
-///   ..field        -> recursive descent (single level — looks at all descendants)
+///   ..field        -> recursive descent (single level; looks at all descendants)
 /// </summary>
 public static class JsonPathEvaluator
 {

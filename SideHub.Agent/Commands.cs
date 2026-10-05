@@ -368,7 +368,7 @@ public static class Commands
             if (manager.IsRunning())
             {
                 var pid = manager.ReadPid();
-                Console.WriteLine($"[SideHub] {instance.Directory} — already running (PID: {pid}), skipping");
+                Console.WriteLine($"[SideHub] {instance.Directory}: already running (PID: {pid}), skipping");
                 skipped++;
                 continue;
             }
@@ -398,7 +398,7 @@ public static class Commands
             var manager = new DaemonManager(instance.Directory);
             if (!manager.IsRunning())
             {
-                Console.WriteLine($"[SideHub] {instance.Directory} — not running");
+                Console.WriteLine($"[SideHub] {instance.Directory}: not running");
                 manager.RemovePidFile();
                 continue;
             }

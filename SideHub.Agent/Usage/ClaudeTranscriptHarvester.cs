@@ -8,7 +8,7 @@ namespace SideHub.Agent.Usage;
 /// (<c>&lt;projects&gt;/&lt;encoded cwd&gt;/&lt;cliSessionId&gt;.jsonl</c>), per session:
 /// <list type="bullet">
 /// <item>Once the CLI has exited, the session's last <c>cost-state</c> line holds Claude's own totals per
-/// model — what <c>/cost</c> shows, sub-agents and calls that never reach the transcript included.</item>
+/// model: what <c>/cost</c> shows, sub-agents and calls that never reach the transcript included.</item>
 /// <item>While the CLI is still running (step ended, CLI left open), there is no up-to-date
 /// <c>cost-state</c>: <c>message.usage</c> is summed per <c>message.model</c> over the session file and its
 /// sub-agent files (<c>&lt;cliSessionId&gt;/subagents/*.jsonl</c>). A streamed message is written several
@@ -184,8 +184,8 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
     }
 
     /// <summary>
-    /// Adds the file's assistant messages to <paramref name="messages"/> and returns its final cost —
-    /// the last <c>cost-state</c>, if no assistant message follows it — or null.
+    /// Adds the file's assistant messages to <paramref name="messages"/> and returns its final cost
+    /// (the last <c>cost-state</c>, if no assistant message follows it) or null.
     /// </summary>
     private static List<CostEntry>? ReadFile(string path, Dictionary<string, MessageUsage> messages)
     {

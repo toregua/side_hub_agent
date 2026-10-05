@@ -352,7 +352,7 @@ public class SideHubApiClient : IDisposable
 
     /// <summary>
     /// The backend PUT replaces every field, so the current task is read first and only the given
-    /// fields are overridden — otherwise omitted fields (repository, due date, description…) are wiped.
+    /// fields are overridden; otherwise omitted fields (repository, due date, description…) are wiped.
     /// </summary>
     public async Task<JsonElement> UpdateTaskAsync(string taskId, string? title, string? description, string? type, string? repositoryId = null)
     {

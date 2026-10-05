@@ -38,40 +38,40 @@ Environment variables are already configured in your session.
 ## Available commands
 
 ### Drive (workspace memory)
-- `sidehub-cli drive list` — List pages/folders in the Drive
-- `sidehub-cli drive read <pageId>` — Read the content of a page (text). For binary files, prints a hint to use `drive download` instead.
-- `sidehub-cli drive download <pageId> [--output <path>] [--stdout] [--url-only]` — Download a binary file (image/PDF/...) from the Drive. Defaults to the current directory using the original filename, then prints the absolute path. Use `--output <path>` to choose a destination, `--stdout` to stream raw bytes, or `--url-only` to print just the presigned URL.
-- `sidehub-cli drive search <query>` — Search pages by title
-- `sidehub-cli drive create --title "..." --content "..."` — Create a page
-- `sidehub-cli drive update <pageId> --title "..." --content "..."` — Update a page
+- `sidehub-cli drive list`: List pages/folders in the Drive
+- `sidehub-cli drive read <pageId>`: Read the content of a page (text). For binary files, prints a hint to use `drive download` instead.
+- `sidehub-cli drive download <pageId> [--output <path>] [--stdout] [--url-only]`: Download a binary file (image/PDF/...) from the Drive. Defaults to the current directory using the original filename, then prints the absolute path. Use `--output <path>` to choose a destination, `--stdout` to stream raw bytes, or `--url-only` to print just the presigned URL.
+- `sidehub-cli drive search <query>`: Search pages by title
+- `sidehub-cli drive create --title "..." --content "..."`: Create a page
+- `sidehub-cli drive update <pageId> --title "..." --content "..."`: Update a page
 
 ### Tasks
-- `sidehub-cli task list [--status <status>]` — List workspace tasks (filter by status)
-- `sidehub-cli task create --title "..." [--description "..."] [--type <type>] [--repository <id|name>]` — Create a task, optionally attached to a workspace repository
-- `sidehub-cli task update <taskId> [--title "..."] [--description "..."] [--type <type>] [--repository <id|name>]` — Update a task (fields not given are kept)
-- `sidehub-cli repository list` — List the workspace repositories (id, name, default branch)
-- `sidehub-cli task comment [<taskId>] --text "..."` — Comment on the current task
-- `sidehub-cli task blocker [<taskId>] --reason "..."` — Report a blocker on the current task
+- `sidehub-cli task list [--status <status>]`: List workspace tasks (filter by status)
+- `sidehub-cli task create --title "..." [--description "..."] [--type <type>] [--repository <id|name>]`: Create a task, optionally attached to a workspace repository
+- `sidehub-cli task update <taskId> [--title "..."] [--description "..."] [--type <type>] [--repository <id|name>]`: Update a task (fields not given are kept)
+- `sidehub-cli repository list`: List the workspace repositories (id, name, default branch)
+- `sidehub-cli task comment [<taskId>] --text "..."`: Comment on the current task
+- `sidehub-cli task blocker [<taskId>] --reason "..."`: Report a blocker on the current task
 
 ### Schedulers
-- `sidehub-cli scheduler list [--active | --paused]` — List scheduled prompts
-- `sidehub-cli scheduler get <id>` — Show scheduler details
-- `sidehub-cli scheduler create --title "..." --prompt "..." --cron "..." [--description "..."] [--provider <provider>]` — Create a scheduler (created **paused**: a human must activate it in Side Hub; cron must run at most every 15 min)
-- `sidehub-cli scheduler update <id> [--title "..."] [--prompt "..."] [--cron "..."] [--description "..."] [--provider <provider>]` — Update a scheduler
-- `sidehub-cli scheduler delete <id> [--yes]` — Delete a scheduler (use --yes to skip confirmation)
-- `sidehub-cli scheduler pause <id>` — Pause a scheduler
-- `sidehub-cli scheduler resume <id>` — Resume a paused scheduler (humans only — refused for agents)
-- `sidehub-cli scheduler trigger <id>` — Trigger immediate execution (create + trigger limited to 5 per hour per agent)
-- `sidehub-cli scheduler executions <id>` — Show execution history
+- `sidehub-cli scheduler list [--active | --paused]`: List scheduled prompts
+- `sidehub-cli scheduler get <id>`: Show scheduler details
+- `sidehub-cli scheduler create --title "..." --prompt "..." --cron "..." [--description "..."] [--provider <provider>]`: Create a scheduler (created **paused**: a human must activate it in Side Hub; cron must run at most every 15 min)
+- `sidehub-cli scheduler update <id> [--title "..."] [--prompt "..."] [--cron "..."] [--description "..."] [--provider <provider>]`: Update a scheduler
+- `sidehub-cli scheduler delete <id> [--yes]`: Delete a scheduler (use --yes to skip confirmation)
+- `sidehub-cli scheduler pause <id>`: Pause a scheduler
+- `sidehub-cli scheduler resume <id>`: Resume a paused scheduler (humans only, refused for agents)
+- `sidehub-cli scheduler trigger <id>`: Trigger immediate execution (create + trigger limited to 5 per hour per agent)
+- `sidehub-cli scheduler executions <id>`: Show execution history
 
 ### SQLite databases (shared structured memory)
 
 Drive items with the `.sqlite` / `.sqlite3` / `.db` extension are shared SQLite databases that multiple agents can read and write concurrently. Writes are serialized per database by the backend, so you can safely INSERT/UPDATE in parallel with other agents.
 
-- `sidehub-cli sqlite schema <itemId> [--json]` — Inspect tables, views, columns
-- `sidehub-cli sqlite query <itemId> --sql "SELECT ..." [--param V]* [--row-limit N] [--timeout SEC] [--json]` — Read-only query (caps at 1000 rows by default)
-- `sidehub-cli sqlite exec <itemId> --sql "INSERT/UPDATE/DELETE ..." [--param V]* [--allow-ddl] [--timeout SEC] [--json]` — Mutating statement (DDL rejected unless `--allow-ddl`)
-- `sidehub-cli sqlite create --title "name" [--schema "CREATE TABLE ..." | --schema-file <path>] [--parent <id>] [--json]` — Create an empty database with optional initial schema
+- `sidehub-cli sqlite schema <itemId> [--json]`: Inspect tables, views, columns
+- `sidehub-cli sqlite query <itemId> --sql "SELECT ..." [--param V]* [--row-limit N] [--timeout SEC] [--json]`: Read-only query (caps at 1000 rows by default)
+- `sidehub-cli sqlite exec <itemId> --sql "INSERT/UPDATE/DELETE ..." [--param V]* [--allow-ddl] [--timeout SEC] [--json]`: Mutating statement (DDL rejected unless `--allow-ddl`)
+- `sidehub-cli sqlite create --title "name" [--schema "CREATE TABLE ..." | --schema-file <path>] [--parent <id>] [--json]`: Create an empty database with optional initial schema
 
 Use positional `?` placeholders OR named `@p0`, `@p1`, … (one `--param` per value, in order).
 
@@ -85,10 +85,10 @@ Prefer SQLite over JSON when you'll query the data by predicates, when other age
 
 #### SQLite usage rules
 
-- Always `sqlite schema <id>` once before querying an unfamiliar database — column names matter
-- Write idempotent updates when possible (`INSERT … ON CONFLICT DO UPDATE`, `UPDATE … WHERE` with discriminators) — other agents may be writing too
-- Don't `DROP`/`ALTER` unless you really mean it — pass `--allow-ddl` explicitly and warn in your task comment
-- Don't use SQLite as a giant blob store — the file is downloaded fresh on every operation, so keep databases focused (< 10 MB is comfortable)
+- Always `sqlite schema <id>` once before querying an unfamiliar database: column names matter
+- Write idempotent updates when possible (`INSERT … ON CONFLICT DO UPDATE`, `UPDATE … WHERE` with discriminators): other agents may be writing too
+- Don't `DROP`/`ALTER` unless you really mean it: pass `--allow-ddl` explicitly and warn in your task comment
+- Don't use SQLite as a giant blob store: the file is downloaded fresh on every operation, so keep databases focused (< 10 MB is comfortable)
 
 ## Workspace memory (Drive)
 
@@ -98,11 +98,11 @@ knowledge that will help you and other agents work more effectively.
 {driveIndex}
 ## When to READ from Drive
 
-- **Before starting a task**: scan the index above — if a page title looks relevant
+- **Before starting a task**: scan the index above. If a page title looks relevant
   to your task, read it with `sidehub-cli drive read <id>`
 - **When you need context**: past decisions, architecture notes, previous results
 - **When the task references concepts** you don't fully understand
-- Do NOT read everything "just in case" — use the index to judge relevance first
+- Do NOT read everything "just in case": use the index to judge relevance first
 
 ## When to WRITE to Drive
 
@@ -119,9 +119,9 @@ knowledge that will help you and other agents work more effectively.
 - **Sub-tasks**: if you identify additional work, create tasks with `sidehub-cli task create`
 - Drive content in markdown
 - Comments should be concise (1-3 sentences)
-- **Expired token**: if `sidehub-cli` reports `Authentication failed (HTTP 401)`, the session token is expired or revoked — do not retry any `sidehub-cli` command, finish without it and mention the failure in your final answer
+- **Expired token**: if `sidehub-cli` reports `Authentication failed (HTTP 401)`, the session token is expired or revoked. Do not retry any `sidehub-cli` command, finish without it and mention the failure in your final answer
 
-If env var `SIDEHUB_WORKFLOW_EXECUTION_ID` is set, you are in workflow mode — follow these instructions:
+If env var `SIDEHUB_WORKFLOW_EXECUTION_ID` is set, you are in workflow mode. Follow these instructions:
 
 ## Workflow mode
 
@@ -146,12 +146,12 @@ Without one of those signals the workflow cannot advance and the step will
 time out (default 60 minutes; longer if configured).
 
 You are running unattended in permissionless mode. Do not ask for
-confirmation. Long operations like video rendering are fine — set the step
+confirmation. Long operations like video rendering are fine: set the step
 timeout accordingly when designing the workflow.
 
 Some actions may be controlled by the workflow's tool policy: a blocked
 action says why. If the reason says it waits for a human approval, stop
-there — SideHub resumes this session once someone has decided. If an action
+there; SideHub resumes this session once someone has decided. If an action
 is denied, do not retry it nor work around it: continue without it, or
 report it with `sidehub-cli workflow step-fail "<reason>"`.
 """;
@@ -202,7 +202,7 @@ report it with `sidehub-cli workflow step-fail "<reason>"`.
             sb.Append(line).Append('\n');
         sb.Append("```\n");
         if (total > lines.Count)
-            sb.Append($"\n{total - lines.Count} more item(s) not listed — use `sidehub-cli drive list` to see them.\n");
+            sb.Append($"\n{total - lines.Count} more item(s) not listed; use `sidehub-cli drive list` to see them.\n");
         sb.Append("\nUse `sidehub-cli drive read <id>` to load any page you need.\n");
         return sb.ToString();
     }
@@ -342,7 +342,7 @@ report it with `sidehub-cli workflow step-fail "<reason>"`.
             return;
         }
 
-        // Always overwrite — the drive index may have changed since last spawn
+        // Always overwrite: the drive index may have changed since last spawn
         WriteIfChanged(workingDirectory, relativePath, skillText);
         if (git is not null)
             await git.ExcludeAsync(filePath);
