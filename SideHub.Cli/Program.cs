@@ -8,6 +8,9 @@ if (args.Length > 0 && args[0] == "launch")
 // Run by a coding CLI's hooks to report its state to the agent: same, and it must never fail the CLI.
 if (args.Length > 0 && args[0] == CliStateCommand.Name)
     return CliStateCommand.Run(args[1..]);
+// Run by claude's PreToolUse hook when the run has a tool policy: it reads its own environment and always exits 0.
+if (args.Length == 2 && args[0] == PolicyCheckCommand.Domain && args[1] == PolicyCheckCommand.Action)
+    return await PolicyCheckCommand.RunAsync();
 
 var apiUrl = Environment.GetEnvironmentVariable("SIDEHUB_API_URL");
 var agentToken = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_TOKEN");

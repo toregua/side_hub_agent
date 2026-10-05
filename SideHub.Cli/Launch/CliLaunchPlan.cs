@@ -13,6 +13,9 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// <summary>MCP servers that could not be given to the CLI, to show in the terminal.</summary>
     public IReadOnlyList<string> Warnings { get; init; } = [];
 
+    /// <summary>Why the CLI must not be started (its run's tool policy cannot be enforced), null when it may.</summary>
+    public string? Refusal { get; init; }
+
     public static readonly IReadOnlySet<string> KnownClis = new HashSet<string>(StringComparer.Ordinal)
     {
         "claude", "codex", "gemini", "copilot",
@@ -44,8 +47,9 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// <param name="stateReporting">How the CLI's state is reported to the agent (see <see cref="CliStateHooks"/>),
     /// null to add no hooks.</param>
     /// <param name="mcp">The run's MCP servers (see <see cref="McpServers"/>), null for none.</param>
+    /// <param name="toolPolicy">The run's tool policy (see <see cref="PolicyCheckCommand"/>), null for none.</param>
     public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion,
-        Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null)
+        Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null, ToolPolicy? toolPolicy = null)
     {
         if (!KnownClis.Contains(cli))
             throw new ArgumentException($"Unknown CLI '{cli}'.", nameof(cli));
@@ -71,8 +75,10 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
             args.InsertRange(0, ["--session-id", sessionId]);
         }
 
-        if (startsConversation && stateReporting is not null)
-            AddStateHooks(cli, args, stateReporting);
+        // A command that starts no conversation runs no tool: the policy has nothing to check.
+        var refusal = startsConversation && toolPolicy is not null ? ToolPolicyRefusal(cli, args, toolPolicy) : null;
+        if (startsConversation && refusal is null)
+            AddHooks(cli, args, stateReporting, toolPolicy);
 
         var warnings = new List<string>();
         string? geminiSettings = null;
@@ -86,6 +92,7 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         {
             GeminiSystemSettings = geminiSettings,
             Warnings = warnings,
+            Refusal = refusal,
         };
     }
 
@@ -120,22 +127,45 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// <param name="CodexNotifyTaken">The user's codex config sets its own <c>notify</c>, which ours would replace.</param>
     public sealed record StateReporting(string Program, bool CodexNotifyTaken);
 
+    /// <param name="Matcher">The tools the policy covers: a regex over Claude tool names
+    /// (<c>$SIDEHUB_TOOL_POLICY_MATCHER</c>).</param>
+    /// <param name="Program">The <c>sidehub-cli</c> the policy hook runs (absolute path), null when it cannot be run
+    /// by path.</param>
+    public sealed record ToolPolicy(string Matcher, string? Program);
+
+    /// <summary>
+    /// Why a CLI with a tool policy cannot be started, null when the policy hook can be installed. The hook is what
+    /// enforces the policy: without it the CLI would run every tool unchecked, so the launch fails closed.
+    /// </summary>
+    private static string? ToolPolicyRefusal(string cli, List<string> args, ToolPolicy policy) =>
+        cli != "claude"
+            ? $"this run has a tool policy that only claude can enforce: {cli} is not started."
+        : policy.Program is null
+            ? "cannot install the tool policy hook: this sidehub-cli cannot be run by its path (started through dotnet?): claude is not started."
+        : SetsClaudeSettings(args)
+            ? "cannot install the tool policy hook: the arguments already pass --settings, which claude would keep instead of ours: claude is not started."
+        : null;
+
     /// <summary>
     /// Adds the hooks in front of the caller's arguments. Not when the caller already passes the same option:
-    /// claude keeps only the last <c>--settings</c>, codex's <c>notify</c> is a single program.
+    /// claude keeps only the last <c>--settings</c>, codex's <c>notify</c> is a single program. A tool policy is
+    /// only given here once its hook can be installed (see <see cref="ToolPolicyRefusal"/>).
     /// </summary>
-    private static void AddStateHooks(string cli, List<string> args, StateReporting reporting)
+    private static void AddHooks(string cli, List<string> args, StateReporting? reporting, ToolPolicy? policy)
     {
         switch (cli)
         {
-            case "claude" when !args.Any(a => SplitOption(a).Name == "--settings"):
-                args.InsertRange(0, ["--settings", CliStateHooks.ClaudeSettings(reporting.Program)]);
+            case "claude" when (reporting is not null || policy is not null) && !SetsClaudeSettings(args):
+                var program = reporting?.Program ?? policy!.Program!;
+                args.InsertRange(0, ["--settings", CliStateHooks.ClaudeSettings(program, reportState: reporting is not null, policy?.Matcher)]);
                 break;
-            case "codex" when !reporting.CodexNotifyTaken && !SetsCodexNotify(args):
+            case "codex" when reporting is { CodexNotifyTaken: false } && !SetsCodexNotify(args):
                 args.InsertRange(0, ["-c", CliStateHooks.CodexNotify(reporting.Program)]);
                 break;
         }
     }
+
+    private static bool SetsClaudeSettings(List<string> args) => args.Any(a => SplitOption(a).Name == "--settings");
 
     /// <summary>A <c>-c notify=…</c> / <c>--config notify=…</c> (or <c>--config=notify=…</c>) among the arguments.</summary>
     private static bool SetsCodexNotify(List<string> args)

@@ -148,6 +148,12 @@ time out (default 60 minutes; longer if configured).
 You are running unattended in permissionless mode. Do not ask for
 confirmation. Long operations like video rendering are fine — set the step
 timeout accordingly when designing the workflow.
+
+Some actions may be controlled by the workflow's tool policy: a blocked
+action says why. If the reason says it waits for a human approval, stop
+there — SideHub resumes this session once someone has decided. If an action
+is denied, do not retry it nor work around it: continue without it, or
+report it with `sidehub-cli workflow step-fail "<reason>"`.
 """;
     }
 

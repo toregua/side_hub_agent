@@ -17,6 +17,9 @@ namespace SideHub.Cli.Launch;
 /// once the user trusted them in <c>/hooks</c>: not usable from the command line.</item>
 /// </list>
 /// gemini and copilot read hooks from settings files only: they report no state.
+/// <para>
+/// A run's tool policy is enforced through the same claude <c>--settings</c> (see <see cref="PolicyCheckCommand"/>).
+/// </para>
 /// </summary>
 public static partial class CliStateHooks
 {
@@ -30,10 +33,13 @@ public static partial class CliStateHooks
     /// <summary>
     /// The <c>--settings</c> JSON for claude. UserPromptSubmit and PostToolUse: working (PostToolUse also ends a
     /// permission wait once the tool ran); Notification on a permission or input request, and PreToolUse of
-    /// AskUserQuestion: waiting-input; Stop: idle.
+    /// AskUserQuestion: waiting-input; Stop: idle. With a tool policy, a PreToolUse group also runs
+    /// <c>sidehub-cli policy check</c> (<see cref="PolicyCheckCommand"/>) on the tools it matches.
     /// </summary>
     /// <param name="program">This program's absolute path (<c>sidehub-cli</c>).</param>
-    public static string ClaudeSettings(string program)
+    /// <param name="reportState">Whether to add the state hooks (false: no agent to report to).</param>
+    /// <param name="toolPolicyMatcher">The run's tool policy (a regex over tool names), null for none.</param>
+    public static string ClaudeSettings(string program, bool reportState = true, string? toolPolicyMatcher = null)
     {
         object Hook(string state) => new
         {
@@ -42,21 +48,45 @@ public static partial class CliStateHooks
             args = new[] { CliStateCommand.Name, "claude", state },
             timeout = HookTimeoutSeconds,
         };
-        object[] Group(string state, string? matcher = null) => matcher is null
-            ? [new { hooks = new[] { Hook(state) } }]
-            : [new { matcher, hooks = new[] { Hook(state) } }];
+        object Group(string state, string? matcher = null) => matcher is null
+            ? new { hooks = new[] { Hook(state) } }
+            : new { matcher, hooks = new[] { Hook(state) } };
 
-        return JsonSerializer.Serialize(new
+        var hooks = new Dictionary<string, List<object>>();
+        void Add(string hookEvent, object group)
         {
-            hooks = new Dictionary<string, object[]>
+            if (!hooks.TryGetValue(hookEvent, out var groups))
+                hooks[hookEvent] = groups = [];
+            groups.Add(group);
+        }
+
+        if (reportState)
+        {
+            Add("UserPromptSubmit", Group(CliStateCommand.Working));
+            Add("PreToolUse", Group(CliStateCommand.WaitingInput, "AskUserQuestion"));
+            Add("PostToolUse", Group(CliStateCommand.Working));
+            Add("Notification", Group(CliStateCommand.WaitingInput, WaitingInputNotifications));
+            Add("Stop", Group(CliStateCommand.Idle));
+        }
+        if (toolPolicyMatcher is not null)
+        {
+            Add("PreToolUse", new
             {
-                ["UserPromptSubmit"] = Group(CliStateCommand.Working),
-                ["PreToolUse"] = Group(CliStateCommand.WaitingInput, "AskUserQuestion"),
-                ["PostToolUse"] = Group(CliStateCommand.Working),
-                ["Notification"] = Group(CliStateCommand.WaitingInput, WaitingInputNotifications),
-                ["Stop"] = Group(CliStateCommand.Idle),
-            },
-        });
+                matcher = toolPolicyMatcher,
+                hooks = new[]
+                {
+                    new
+                    {
+                        type = "command",
+                        command = program,
+                        args = new[] { PolicyCheckCommand.Domain, PolicyCheckCommand.Action },
+                        timeout = PolicyCheckCommand.HookTimeoutSeconds,
+                    },
+                },
+            });
+        }
+
+        return JsonSerializer.Serialize(new { hooks });
     }
 
     /// <summary>The <c>-c</c> value for codex: <c>notify=["&lt;program&gt;","cli-state","codex"]</c>, a TOML array

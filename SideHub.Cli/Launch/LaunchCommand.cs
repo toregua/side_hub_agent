@@ -41,7 +41,13 @@ public static class LaunchCommand
 
         var geminiVersion = cli == "gemini" ? RealCli.PackageVersion(target.ScriptPath, "@google/gemini-cli") : null;
         var warnings = new List<string>();
-        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli), McpSetup(cli, warnings));
+        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli), McpSetup(cli, warnings),
+            ToolPolicy());
+        if (plan.Refusal is { } refusal)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: {refusal}");
+            return 2;
+        }
         foreach (var warning in warnings.Concat(plan.Warnings))
             Console.Error.WriteLine($"sidehub-cli launch: {warning}");
 
@@ -97,14 +103,26 @@ public static class LaunchCommand
     /// tell the agent what the CLI is doing. Only in a SideHub terminal: elsewhere there is no agent to tell.</summary>
     private static CliLaunchPlan.StateReporting? StateReporting(string cli)
     {
-        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(AgentNotifier.ChannelVariable))
-            || Environment.ProcessPath is not { } program || !Path.IsPathFullyQualified(program)
-            // Run through `dotnet sidehub-cli.dll` (development), the process is dotnet itself.
-            || !Path.GetFileNameWithoutExtension(program).Equals("sidehub-cli", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(AgentNotifier.ChannelVariable)) || HookProgram() is not { } program)
             return null;
         var codexNotifyTaken = cli == "codex" && CliStateHooks.CodexConfigDefinesNotify(CliStateHooks.CodexConfigPath());
         return new CliLaunchPlan.StateReporting(program, codexNotifyTaken);
     }
+
+    /// <summary>The run's tool policy (<c>$SIDEHUB_TOOL_POLICY_MATCHER</c>, set by the backend for a workflow step),
+    /// null when it has none. Unlike the state hooks, it needs no agent channel: only this program.</summary>
+    private static CliLaunchPlan.ToolPolicy? ToolPolicy() =>
+        Environment.GetEnvironmentVariable(PolicyCheckCommand.MatcherVariable) is { Length: > 0 } matcher
+            ? new CliLaunchPlan.ToolPolicy(matcher, HookProgram())
+            : null;
+
+    /// <summary>This program's absolute path, for the CLI's hooks to run it; null when it cannot be run by path.</summary>
+    private static string? HookProgram() =>
+        Environment.ProcessPath is { } program && Path.IsPathFullyQualified(program)
+            // Run through `dotnet sidehub-cli.dll` (development), the process is dotnet itself.
+            && Path.GetFileNameWithoutExtension(program).Equals("sidehub-cli", StringComparison.OrdinalIgnoreCase)
+            ? program
+            : null;
 
     /// <summary>The run's MCP servers (<c>$SIDEHUB_PTY_MCP_SERVERS</c>, set by the agent), null when there are none.</summary>
     private static CliLaunchPlan.McpSetup? McpSetup(string cli, List<string> warnings)

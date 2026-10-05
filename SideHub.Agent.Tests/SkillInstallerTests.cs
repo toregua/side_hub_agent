@@ -140,6 +140,7 @@ public class SkillInstallerTests : IDisposable
         var codex = File.ReadAllText(Path.Combine(_repo, "AGENTS.override.md"));
         Assert.Contains("# Project rules\nUse tabs.", codex);
         Assert.Contains("# Side Hub Integration", codex);
+        Assert.Contains("may be controlled by the workflow's tool", codex);
     }
 
     [Fact]
