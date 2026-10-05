@@ -56,13 +56,11 @@ Environment variables are already configured in your session.
 ### Schedulers
 - `sidehub-cli scheduler list [--active | --paused]`: List scheduled prompts
 - `sidehub-cli scheduler get <id>`: Show scheduler details
-- `sidehub-cli scheduler create --title "..." --prompt "..." --cron "..." [--description "..."] [--provider <provider>]`: Create a scheduler (created **paused**: a human must activate it in Side Hub; cron must run at most every 15 min)
-- `sidehub-cli scheduler update <id> [--title "..."] [--prompt "..."] [--cron "..."] [--description "..."] [--provider <provider>]`: Update a scheduler
-- `sidehub-cli scheduler delete <id> [--yes]`: Delete a scheduler (use --yes to skip confirmation)
-- `sidehub-cli scheduler pause <id>`: Pause a scheduler
-- `sidehub-cli scheduler resume <id>`: Resume a paused scheduler (humans only, refused for agents)
-- `sidehub-cli scheduler trigger <id>`: Trigger immediate execution (create + trigger limited to 5 per hour per agent)
 - `sidehub-cli scheduler executions <id>`: Show execution history
+
+Read-only from this terminal: Side Hub refuses to create, update, delete, pause, resume or trigger a scheduler
+with a terminal or run token, so a prompt cannot schedule unattended sessions on its own. When a scheduler is
+needed, give the user its title, workflow or prompt, agent and cron (UTC) so they create it on the Schedulers page.
 
 ### SQLite databases (shared structured memory)
 
