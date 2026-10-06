@@ -17,6 +17,15 @@ public interface IUsageHarvester
 }
 
 /// <summary>
+/// Reads the last message a run's CLI wrote (the answer of a question run), from the same files as its usage.
+/// </summary>
+public interface IFinalMessageReader
+{
+    /// <summary>The text of the CLI's last message, or null when no session file or no such message was found.</summary>
+    string? ReadFinalMessage(RunUsageContext run);
+}
+
+/// <summary>
 /// Reads the usage of one CLI session, whoever started it (an interactive terminal): the whole session,
 /// cumulative, located by its id alone.
 /// </summary>

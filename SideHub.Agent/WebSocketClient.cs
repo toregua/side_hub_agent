@@ -64,8 +64,10 @@ public class WebSocketClient : IAsyncDisposable
     // and the heartbeat timer all send, so serialize them.
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly PendingFileWrites _pendingFileWrites = new();
-    // Token usage of backend-launched runs (run-* PTYs), reported as run.usage.
+    // Token usage of backend-launched runs (run-* PTYs), reported as run.usage (and the answer of question runs).
     private readonly RunUsageCollector _usageCollector;
+    // Where question runs read the repository, away from the developer's working copy.
+    private readonly QuestionCheckout _questionCheckout;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
     private Timer? _cliSessionUsageTimer;
@@ -120,7 +122,9 @@ public class WebSocketClient : IAsyncDisposable
         var pendingDirectory = Path.Combine(runDir, "pending-usage", config.AgentId ?? "default");
         _fifoAgentKey = config.AgentId ?? "default";
         _fifoDirectory = Path.Combine(runDir, "fifo", _fifoAgentKey);
-        _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync, Log);
+        _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync,
+            new PendingRunAnswerStore(Path.Combine(pendingDirectory, "answers")), TrySendAsync, Log);
+        _questionCheckout = new QuestionCheckout(_fifoAgentKey, Log);
         _cliSessionUsage = new CliSessionUsageCollector(
             sessionHarvesters, new PendingCliSessionUsageStore(Path.Combine(pendingDirectory, "cli-sessions")), TrySendAsync, Log);
         _diagnostics = DiagnosticReporter.ForConfig(config, Log);
@@ -168,7 +172,7 @@ public class WebSocketClient : IAsyncDisposable
     /// Also prepends the cli-wrappers dir so `claude` resolves to our wrapper that
     /// pre-mints a session UUID, and exposes SIDEHUB_PTY_NOTIFY_FIFO so the
     /// wrapper can post back the session id.</summary>
-    private IReadOnlyDictionary<string, string> BuildTerminalEnvironment(
+    private Dictionary<string, string> BuildTerminalEnvironment(
         string ptySessionId, IReadOnlyDictionary<string, string>? additionalEnv = null, IReadOnlyCollection<string>? secretKeys = null,
         IReadOnlyList<PtyMcpServer>? mcpServers = null)
     {
@@ -320,9 +324,10 @@ public class WebSocketClient : IAsyncDisposable
     }
 
     /// <summary>Tear down the FIFO and stop its reader task, plus any Claude
-    /// title watchers that were bound to this PTY.</summary>
+    /// title watchers that were bound to this PTY, and let a question run's checkout move again.</summary>
     private void CleanupNotifyFifo(string ptySessionId)
     {
+        _questionCheckout.Release(ptySessionId);
         if (_ptyFifoReaders.TryRemove(ptySessionId, out var cts))
         {
             try { cts.Cancel(); } catch { /* ignore */ }
@@ -1522,14 +1527,33 @@ public class WebSocketClient : IAsyncDisposable
             EnsureNotifyFifo(ptySessionId);
             var ptyEnv = BuildTerminalEnvironment(ptySessionId, message.AdditionalEnv, message.SecretKeys, message.McpServers);
 
+            // A question run reads a checkout of origin/<branch> prepared by the agent (never a path from the
+            // backend), not the developer's working copy. Without one, nothing starts: the backend sees no pty.started.
+            PreparedCheckout? question = null;
+            if (ptyEnv.GetValueOrDefault(QuestionCheckout.RunKindKey) == QuestionCheckout.QuestionKind)
+            {
+                question = await _questionCheckout.PrepareAsync(
+                    _workingDirectory, ptyEnv.GetValueOrDefault(QuestionCheckout.BaseBranchKey) ?? "", ptySessionId, ct);
+                if (question is null)
+                {
+                    Log($"PTY {ptySessionId} not started: its question checkout could not be prepared");
+                    CleanupNotifyFifo(ptySessionId);
+                    return;
+                }
+                cwd = question.Path;
+                ptyEnv[QuestionCheckout.CommitKey] = question.CommitSha;
+                Log($"PTY {ptySessionId} answers a question from {cwd} at {question.CommitSha}");
+            }
+
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
-            // CLI launched from this terminal discovers sidehub-cli automatically.
-            if (_config.AllowFileWrite)
+            // CLI launched from this terminal discovers sidehub-cli automatically. Not for a question run: its
+            // read-only CLI cannot run sidehub-cli, and the excludes would land in the developer's repository.
+            if (_config.AllowFileWrite && question is null)
             {
                 var apiUrl = DeriveApiUrl(_config.SidehubUrl!);
                 await SkillInstaller.EnsureSkillFilesAsync(cwd, apiUrl, _config.AgentToken!, _config.WorkspaceId!, Log);
             }
-            else
+            else if (!_config.AllowFileWrite)
             {
                 Log($"Skill files not written for PTY {ptySessionId}: file writes are disabled (allowFileWrite: false)");
             }
@@ -1565,7 +1589,7 @@ public class WebSocketClient : IAsyncDisposable
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }
                 if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is { } runId)
-                    _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId]);
+                    _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId], question);
                 StartFifoReader(ptySessionId, ct);
                 await SendAsync(session.StartedMessage(ptySessionId, reattached: false), ct);
                 Log($"PTY session {ptySessionId} started");

@@ -26,7 +26,7 @@ namespace SideHub.Agent.Usage;
 /// the cached part (as Claude does), reasoning as a subset of output.
 /// </para>
 /// </summary>
-public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester, ICliSessionUsageHarvester
+public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester, ICliSessionUsageHarvester, IFinalMessageReader
 {
     public const string SourceName = "codex-rollout";
 
@@ -61,6 +61,33 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
     /// rollout was found, or a rollout cannot be attributed with certainty.
     /// </summary>
     public IReadOnlyList<ModelUsageReport>? Harvest(RunUsageContext run)
+    {
+        if (OwnedRollouts(run) is not { Count: > 0 } owned)
+            return null;
+
+        var perModel = new Dictionary<string, TokenTotals>(StringComparer.Ordinal);
+        foreach (var (path, since) in owned)
+            ReadRollout(path, since, perModel);
+
+        return Reports(perModel);
+    }
+
+    /// <summary>
+    /// The last agent message of the run's most recently written rollout: the <c>last_agent_message</c> of its
+    /// <c>task_complete</c>, or the last <c>agent_message</c> when the turn did not complete.
+    /// </summary>
+    public string? ReadFinalMessage(RunUsageContext run) =>
+        OwnedRollouts(run)?
+            .Select(o => o.Path)
+            .OrderBy(File.GetLastWriteTimeUtc)
+            .Select(LastAgentMessage)
+            .LastOrDefault(message => message is not null);
+
+    /// <summary>
+    /// The rollouts started by the run's launches, each with when to count from (a resumed session's launch);
+    /// null when the run launched no codex or a rollout cannot be attributed with certainty.
+    /// </summary>
+    private List<(string Path, DateTimeOffset Since)>? OwnedRollouts(RunUsageContext run)
     {
         if (run.Launches.Count == 0)
             return null;
@@ -118,14 +145,7 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
             }
         }
 
-        if (owned.Count == 0)
-            return null;
-
-        var perModel = new Dictionary<string, TokenTotals>(StringComparer.Ordinal);
-        foreach (var (path, since) in owned.Values)
-            ReadRollout(path, since, perModel);
-
-        return Reports(perModel);
+        return owned.Values.ToList();
     }
 
     // Session id → its rollout: found by walking the day directories, which a periodic report must not redo.
@@ -317,6 +337,44 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
         }
         catch (IOException) { /* deleted or unreadable: count what we have */ }
         catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary><c>{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":…}}</c> or
+    /// <c>{"type":"event_msg","payload":{"type":"agent_message","message":…}}</c>, whichever comes last.</summary>
+    private static string? LastAgentMessage(string path)
+    {
+        string? last = null;
+        try
+        {
+            using var reader = TranscriptLines.Open(path);
+            foreach (var line in TranscriptLines.Read(reader))
+            {
+                if (!line.Contains("\"task_complete\"", StringComparison.Ordinal)
+                    && !line.Contains("\"agent_message\"", StringComparison.Ordinal))
+                    continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object
+                        || Str(root, "type") != "event_msg"
+                        || !root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+                        continue;
+                    var message = Str(payload, "type") switch
+                    {
+                        "task_complete" => Str(payload, "last_agent_message"),
+                        "agent_message" => Str(payload, "message"),
+                        _ => null,
+                    };
+                    if (!string.IsNullOrWhiteSpace(message))
+                        last = message;
+                }
+                catch (JsonException) { /* half-written line */ }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return last;
     }
 
     private static string? TryParseTurnModel(string line)

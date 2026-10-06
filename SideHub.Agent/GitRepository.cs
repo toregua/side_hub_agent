@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 
 namespace SideHub.Agent;
@@ -10,19 +9,7 @@ namespace SideHub.Agent;
 /// </summary>
 public sealed class GitRepository
 {
-    private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(5);
     private static readonly SemaphoreSlim ExcludeLock = new(1, 1);
-
-    /// <summary>Overrides for settings a repository's own config could use to run a command. The
-    /// directory is untrusted (a commit can ship an embedded bare repository whose config sets
-    /// <c>core.fsmonitor</c>, run by plain read-only queries); <c>-c</c> wins over every config file,
-    /// and <c>safe.bareRepository</c> is only honored from there (not from the repository).</summary>
-    private static readonly string[] SafeConfig =
-    [
-        "-c", "core.fsmonitor=false",
-        "-c", "safe.bareRepository=explicit",
-        "-c", "core.hooksPath=/dev/null",
-    ];
 
     public string TopLevel { get; }
     public string ExcludeFile { get; }
@@ -42,7 +29,7 @@ public sealed class GitRepository
         if (result is not { ExitCode: 0 })
             return null;
 
-        var lines = result.Value.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var lines = result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return lines.Length == 2 ? new GitRepository(lines[0], lines[1]) : null;
     }
 
@@ -86,56 +73,6 @@ public sealed class GitRepository
         }
     }
 
-    private static async Task<(int ExitCode, string Output)?> RunGitAsync(string workingDirectory, params string[] args)
-    {
-        // Never a bare "git": it would be looked up in the working directory (the repository) first.
-        if (ExecutableResolver.Resolve("git") is not { } gitPath)
-            return null;
-        try
-        {
-            var psi = new ProcessStartInfo(gitPath)
-            {
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                // git writes UTF-8 (commit messages, branch names); .NET would decode it with the
-                // console code page on Windows.
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-            foreach (var arg in SafeConfig.Concat(args))
-                psi.ArgumentList.Add(arg);
-            // The daemon's environment must not steer git either (GIT_DIR, GIT_CONFIG_PARAMETERS,
-            // GIT_CONFIG_COUNT/KEY/VALUE could point it elsewhere or undo the overrides above).
-            foreach (var name in psi.Environment.Keys.Where(k => k.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList())
-                psi.Environment.Remove(name);
-            // Read-only queries: never take the index lock away from the user's own git commands.
-            psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
-            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
-
-            using var process = Process.Start(psi);
-            if (process is null)
-                return null;
-
-            using var cts = new CancellationTokenSource(GitTimeout);
-            var stdout = process.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderr = process.StandardError.ReadToEndAsync(cts.Token);
-            try
-            {
-                await process.WaitForExitAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { /* already gone */ }
-                return null;
-            }
-            await stderr;
-            return (process.ExitCode, await stdout);
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    private static Task<GitCommand.Result?> RunGitAsync(string workingDirectory, params string[] args) =>
+        GitCommand.RunAsync(workingDirectory, GitCommand.DefaultTimeout, args);
 }

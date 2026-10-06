@@ -174,4 +174,28 @@ public class ClaudeTranscriptHarvesterTests : IDisposable
         Assert.Null(Harvester.Harvest(run));
         Assert.NotNull(Harvester.Harvest(run with { StartedAt = DateTimeOffset.UtcNow.AddHours(-3) }));
     }
+
+    [Fact]
+    public void ReadFinalMessage_JoinsTheTextBlocksOfTheLastAssistantMessage()
+    {
+        _claude.AddSession("-work-side-hub", SessionId, withSubagents: true, "answer.jsonl");
+
+        // Not the thinking, the earlier "Let me look", the tool result or the sub-agent's text.
+        Assert.Equal("## Answer\n\nLogin issues a **JWT**.\n\nSee `AuthService.cs`.", Harvester.ReadFinalMessage(Run(SessionId)));
+    }
+
+    [Fact]
+    public void ReadFinalMessage_SkipsLaterMessagesWithoutText()
+    {
+        // The fixture ends with assistant messages that carry no text (empty, synthetic, half-written).
+        _claude.AddSession("-work-side-hub", SessionId);
+
+        Assert.Equal("done", Harvester.ReadFinalMessage(Run(SessionId)));
+    }
+
+    [Fact]
+    public void ReadFinalMessage_IsNullWithoutTheRunsTranscript()
+    {
+        Assert.Null(Harvester.ReadFinalMessage(Run(SessionId)));
+    }
 }

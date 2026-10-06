@@ -343,6 +343,34 @@ public class RunUsageMessage
     public required IReadOnlyList<ModelUsageReport> Models { get; init; }
 }
 
+/// <summary>
+/// The final message of a question run (a read-only CLI answering a question about the repository from a
+/// dedicated checkout), sent once when the run ends.
+/// </summary>
+public class RunAnswerMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "run.answer";
+
+    [JsonPropertyName("runId")]
+    public required Guid RunId { get; init; }
+
+    /// <summary>The CLI's last message (markdown), capped; null when none was found (see <see cref="Error"/>).</summary>
+    [JsonPropertyName("text")]
+    public string? Text { get; init; }
+
+    /// <summary>The commit the checkout was at: what the answer describes.</summary>
+    [JsonPropertyName("commitSha")]
+    public string? CommitSha { get; init; }
+
+    [JsonPropertyName("commitDate")]
+    public DateTimeOffset? CommitDate { get; init; }
+
+    /// <summary>Why there is no text (e.g. "no-final-message"); null when there is.</summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+}
+
 public class ModelUsageReport
 {
     [JsonPropertyName("model")]

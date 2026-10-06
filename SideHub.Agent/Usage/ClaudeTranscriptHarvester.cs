@@ -16,7 +16,7 @@ namespace SideHub.Agent.Usage;
 /// with its largest counters. Slightly below <c>/cost</c>, which the exit report then replaces.</item>
 /// </list>
 /// </summary>
-public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarvester, ICliSessionUsageHarvester
+public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarvester, ICliSessionUsageHarvester, IFinalMessageReader
 {
     public const string SourceName = "claude-transcript";
 
@@ -25,13 +25,27 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
 
     public string Source => SourceName;
 
-    public IReadOnlyList<ModelUsageReport>? Harvest(RunUsageContext run) =>
+    public IReadOnlyList<ModelUsageReport>? Harvest(RunUsageContext run) => Summarize(RunSessions(run));
+
+    /// <summary>
+    /// The text blocks of the last assistant message that has any, in the run's most recently written session:
+    /// a headless run (<c>claude -p</c>) ends with its answer. Thinking and tool calls are not part of it.
+    /// </summary>
+    public string? ReadFinalMessage(RunUsageContext run) =>
+        RunSessions(run)
+            .Select(s => s.File)
+            .OrderBy(File.GetLastWriteTimeUtc)
+            .Select(LastAssistantText)
+            .LastOrDefault(text => text is not null);
+
+    /// <summary>The run's session files (file, session id).</summary>
+    private List<(string File, string SessionId)> RunSessions(RunUsageContext run) =>
         // The ids come from the notification FIFO and name files: only UUIDs, whatever the caller checked.
-        Summarize(run.CliSessionIds.Distinct().Where(FifoNotification.IsValidCliSessionId)
+        run.CliSessionIds.Distinct().Where(FifoNotification.IsValidCliSessionId)
             .Select(id => (File: FindSessionFile(run.Cwd, id), Id: id))
             .Where(s => s.File is not null && BelongsToRun(s.File, run))
             .Select(s => (s.File!, s.Id))
-            .ToList());
+            .ToList();
 
     /// <summary>
     /// An interactive session, resumed ones included: all of it, wherever it was started. Its id names the
@@ -217,6 +231,59 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
         catch (UnauthorizedAccessException) { }
 
         return cost is not null && costLine > lastAssistantLine ? cost : null;
+    }
+
+    /// <summary>
+    /// The text of the file's last main-chain assistant message with text. A message is written one content block
+    /// per line, all under its <c>message.id</c>: its text blocks are joined.
+    /// </summary>
+    private static string? LastAssistantText(string path)
+    {
+        string? lastId = null;
+        var texts = new List<string>();
+        try
+        {
+            using var reader = TranscriptLines.Open(path);
+            var lineNumber = 0;
+            foreach (var line in TranscriptLines.Read(reader))
+            {
+                lineNumber++;
+                if (!line.Contains("\"assistant\"", StringComparison.Ordinal) || !line.Contains("\"text\"", StringComparison.Ordinal))
+                    continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object
+                        || Str(root, "type") != "assistant"
+                        || (root.TryGetProperty("isSidechain", out var sidechain) && sidechain.ValueKind == JsonValueKind.True)
+                        || !root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object
+                        || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                        continue;
+
+                    var blocks = content.EnumerateArray()
+                        .Where(b => b.ValueKind == JsonValueKind.Object && Str(b, "type") == "text")
+                        .Select(b => Str(b, "text"))
+                        .Where(t => !string.IsNullOrWhiteSpace(t))
+                        .Select(t => t!)
+                        .ToList();
+                    if (blocks.Count == 0)
+                        continue;
+
+                    var id = Str(message, "id") ?? $"line:{lineNumber}";
+                    if (id != lastId)
+                    {
+                        lastId = id;
+                        texts.Clear();
+                    }
+                    texts.AddRange(blocks);
+                }
+                catch (JsonException) { /* half-written line */ }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return texts.Count > 0 ? string.Join("\n\n", texts) : null;
     }
 
     private static bool TryParseAssistant(string line, out string? messageId, out MessageUsage usage)

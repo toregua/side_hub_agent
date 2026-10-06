@@ -15,6 +15,17 @@ public sealed class PendingUsageStore(string directory) : PendingReportStore<Run
 }
 
 /// <summary>
+/// <c>run.answer</c> messages that could not be sent, one file per run (<c>{runId}.json</c>), replayed at the next
+/// connection.
+/// </summary>
+public sealed class PendingRunAnswerStore(string directory) : PendingReportStore<RunAnswerMessage>(directory)
+{
+    public void Delete(Guid runId) => Delete(runId.ToString());
+
+    protected override string KeyOf(RunAnswerMessage answer) => answer.RunId.ToString();
+}
+
+/// <summary>
 /// <c>cli-session.usage</c> snapshots that could not be sent, one file per CLI session (<c>{cliSessionId}.json</c>):
 /// a newer snapshot of the session replaces the queued one.
 /// </summary>

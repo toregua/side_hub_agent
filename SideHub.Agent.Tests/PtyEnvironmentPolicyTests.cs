@@ -66,6 +66,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [InlineData("SIDEHUB_CLI_WRAPPERS")]
     [InlineData("SIDEHUB_PTY_NOTIFY_FIFO")]
     [InlineData("SIDEHUB_WORKSPACE_ID")]
+    [InlineData("SIDEHUB_QUESTION_COMMIT")]
     [InlineData("SIDEHUB-BAD")]
     public void Sensitive_or_unknown_keys_are_rejected(string key)
     {
@@ -88,6 +89,20 @@ public class PtyEnvironmentPolicyTests : IDisposable
         }, out var rejected);
 
         Assert.Equal(4, env.Count);
+        Assert.Empty(rejected);
+    }
+
+    [Fact]
+    public void Question_run_keys_pass()
+    {
+        var env = Filter(new()
+        {
+            ["SIDEHUB_RUN_ID"] = "id",
+            [QuestionCheckout.RunKindKey] = QuestionCheckout.QuestionKind,
+            [QuestionCheckout.BaseBranchKey] = "main",
+        }, out var rejected);
+
+        Assert.Equal(3, env.Count);
         Assert.Empty(rejected);
     }
 

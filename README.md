@@ -111,7 +111,29 @@ Codex rollouts) and sends **only token counts per model** (input, output, cache 
   the PTY closes, and every 10 minutes while it changes.
 
 Reports that cannot be sent (backend unreachable) are queued in `.sidehub/run/pending-usage/` and
-replayed at the next connection. Transcripts themselves never leave the machine.
+replayed at the next connection. Transcripts themselves never leave the machine (except the final
+message of a question run, below).
+
+### Questions to a repository (`QuestionCheckout`)
+
+A question run is a read-only headless CLI run (`claude -p`, `codex exec`) answering a question about
+the repository. Its `pty.start` carries `SIDEHUB_RUN_KIND=question` and `SIDEHUB_BASE_BRANCH`. It never
+runs in the developer's working copy: before spawning the PTY, the agent prepares its own checkout,
+`~/.sidehub/qa/<agentId>/checkout`, a detached `git worktree` of the project moved to the tip of
+`origin/<branch>` (fetched first, the last fetched tip if the fetch fails), with untracked and ignored
+files removed, and starts the PTY there. In the developer's repository only `refs/remotes/origin/<branch>`
+and the worktree's metadata (`.git/worktrees/`) change: working tree, index, branches, HEAD and stash
+are left alone. While a question run is still in the checkout, the next one reads it as it is. If the
+checkout cannot be prepared, the PTY is not started (the backend marks the run `launch-failed`).
+
+When the run ends, the agent reads the CLI's last message from its transcript and sends it as
+`run.answer` (queued in `pending-usage/<agentId>/answers/` while the backend is unreachable).
+
+| Variable | Set by | Meaning |
+|---|---|---|
+| `SIDEHUB_RUN_KIND` | backend | `question` for a question run |
+| `SIDEHUB_BASE_BRANCH` | backend | Branch of `origin` the question is about (e.g. `main`) |
+| `SIDEHUB_QUESTION_COMMIT` | agent | Commit the checkout is at (the backend cannot set it) |
 
 ### One daemon per project
 
@@ -131,7 +153,7 @@ workflow callbacks, drive…). Disable file writes (`"allowFileWrite": false`) t
 | Connection info: agent id, version, OS shells, root folder path, installed CLI versions | Your source code and repositories¹ |
 | PTY lifecycle: started, exited (exit code), CLI session id and title | Your secrets, environment variables and credentials |
 | CLI state (`working` / `waiting-input` / `idle`) | Model calls: the CLIs talk to the providers directly, with your subscriptions or API keys |
-| Token counts per run and per CLI session | CLI transcripts and session files |
+| Token counts per run and per CLI session | CLI transcripts and session files (but the last message of a question run, its answer) |
 | The output of the terminals SideHub opens (cockpit terminals and runs) | The agent token (sent only to SideHub, as an authentication header) |
 | Output of one-shot `command.execute` commands, if enabled | |
 | Whatever a CLI explicitly sends with `sidehub-cli` (task updates, step results, drive notes) | |
@@ -374,6 +396,7 @@ To start the agent at boot, run it under a dedicated user with the templates in 
 | `pty.cli-session-started` / `pty.cli-session-titled` | Id and title of the CLI session running in a terminal |
 | `pty.cli-state` | `working` / `waiting-input` / `idle` |
 | `run.usage` / `cli-session.usage` | Token counts per model |
+| `run.answer` | Final message of a question run, with the commit it was asked against: `{"runId", "text", "commitSha", "commitDate", "error"}` (`text` null with an `error` such as `no-final-message` when none was found) |
 | `command.output` / `command.completed` / `command.failed` / `command.busy` | One-shot command results |
 
 The connection reconnects with exponential backoff (1 s → 30 s, reset after 60 s of stable connection)
@@ -415,6 +438,8 @@ side_hub_agent/
 │   ├── NotifyFifo.cs              # Terminal → agent channel (FIFO / named pipe)
 │   ├── CliStateTracker.cs         # working / waiting-input / idle per PTY
 │   ├── SkillInstaller.cs          # AGENTS.md / GEMINI.md / sidehub skill
+│   ├── QuestionCheckout.cs        # ~/.sidehub/qa/<agentId>/checkout for question runs
+│   ├── GitRepository.cs, GitCommand.cs # git CLI with hardened config and time limits
 │   ├── ShellPolicy.cs, PtyEnvironmentPolicy.cs, PathConfinement.cs, RootPolicy.cs …
 │   ├── CommandExecutor.cs         # One-shot commands
 │   ├── DaemonManager.cs, InstanceRegistry.cs, RotatingLogWriter.cs

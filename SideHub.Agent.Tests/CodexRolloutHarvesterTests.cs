@@ -229,4 +229,30 @@ public class CodexRolloutHarvesterTests : IDisposable
 
         Assert.Null(harvester.Harvest(Run([Launch("run-a", T0)])));
     }
+
+    [Fact]
+    public void ReadFinalMessage_IsTheLastAgentMessageOfTheCompletedTask()
+    {
+        _codex.AddRollout(T0.AddSeconds(2), Cwd, "answer.jsonl", source: "exec");
+
+        // task_complete wins over the earlier agent_message.
+        Assert.Equal("## Answer\n\nLogin issues a **JWT**.", Harvester.ReadFinalMessage(Run([Launch("run-a", T0)])));
+    }
+
+    [Fact]
+    public void ReadFinalMessage_FallsBackToTheLastAgentMessage()
+    {
+        _codex.AddRollout(T0.AddSeconds(2), Cwd);
+
+        Assert.Equal("<answer>", Harvester.ReadFinalMessage(Run([Launch("run-a", T0)])));
+    }
+
+    [Fact]
+    public void ReadFinalMessage_IsNullWithoutAMessageOrARollout()
+    {
+        _codex.AddRollout(T0.AddSeconds(2), Cwd, "short.jsonl");
+
+        Assert.Null(Harvester.ReadFinalMessage(Run([Launch("run-a", T0)])));
+        Assert.Null(Harvester.ReadFinalMessage(Run([Launch("run-b", T0.AddHours(1))])));
+    }
 }
