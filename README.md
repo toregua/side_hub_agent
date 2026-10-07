@@ -196,8 +196,8 @@ most 3 times), with a 5-second timeout: reporting never delays or blocks the age
 failures are only reported until the agent first connects: a later outage is not a broken install.
 `pty-helper` and the CLIs are checked once, in the background, after each start.
 
-The install scripts only report when they have a token: `install.sh --token` / `SIDEHUB_SETUP_TOKEN`,
-or `SIDEHUB_SETUP_TOKEN` for `install.ps1` (the setup commands copied from SideHub pass it).
+The install scripts only report when they have a token, from `SIDEHUB_SETUP_TOKEN` (or `install.sh --token`):
+the setup commands copied from SideHub set it.
 
 ## Installation
 
@@ -220,8 +220,16 @@ curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.75
 curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s -- --user   # no sudo
 ```
 
-With `--token <token>` (the command copied from SideHub), it then configures and starts the agent in
-the current folder (see [Configure](#configure)).
+With `SIDEHUB_SETUP_TOKEN` set (the command copied from SideHub), it then configures and starts the
+agent in the current folder (see [Configure](#configure)):
+
+```bash
+ curl -fsSL https://api.sidehub.io/agent/install.sh | SIDEHUB_SETUP_TOKEN=<token> bash
+```
+
+The token goes through the environment of `bash` only: `--token <token>` also works but puts it in the
+command line (visible in `ps`). The leading space keeps the line out of the shell history where it is
+set up to (`HISTCONTROL=ignorespace` in bash, `HIST_IGNORE_SPACE` in zsh).
 
 ### Windows (PowerShell)
 
@@ -247,7 +255,9 @@ attestation: see [Verifying a release](SECURITY.md#verifying-a-release).
 
 ### Configure
 
-1. In [SideHub](https://www.sidehub.io), go to **Agents** in your workspace and create an agent.
+1. In [SideHub](https://www.sidehub.io), go to **Agents** in your workspace and create an agent. The
+   token is shown once: to get it again, use **Install** on the agent, which regenerates it (the previous
+   token stops working and the agent is disconnected until it is set up with the new one).
 2. From your project folder, run the setup command shown by SideHub and paste the token:
 
    ```bash
@@ -281,7 +291,7 @@ whole machine.
 
 ```bash
 sidehub-agent start -d --allow-root
-curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s -- --token <token> --allow-root
+ curl -fsSL https://api.sidehub.io/agent/install.sh | SIDEHUB_SETUP_TOKEN=<token> SIDEHUB_ALLOW_ROOT=1 bash
 ```
 
 `install.sh` run as root without `--allow-root` installs the binaries but does not configure the agent.
