@@ -84,6 +84,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  task status <taskId> --status <status>");
     Console.Error.WriteLine("  task comment [<taskId>] --text \"...\"");
     Console.Error.WriteLine("  task blocker [<taskId>] --reason \"...\"");
+    Console.Error.WriteLine("  task done [<taskId>] [--summary \"...\"]");
     Console.Error.WriteLine("  task resolve-blocker <taskId>");
     Console.Error.WriteLine("  task drive-link-add <taskId> --item <driveItemId>");
     Console.Error.WriteLine("  task drive-link-remove <taskId> --item <driveItemId>");
@@ -122,7 +123,7 @@ var jsonOutput = restArgs.Contains("--json");
 // Defense-in-depth: block write commands in plan mode
 var writeActions = new HashSet<string>
 {
-    "create", "update", "comment", "blocker", "delete", "pause", "resume", "trigger",
+    "create", "update", "comment", "blocker", "done", "delete", "pause", "resume", "trigger",
     "append-row", "set-cell", "delete-row", "add-column",
     "move", "mkdir", "upload",
     "add-step", "update-step", "delete-step", "reorder-steps", "run",
@@ -173,6 +174,7 @@ try
         ("task", "status") => await TaskCommands.StatusAsync(client, restArgs, jsonOutput),
         ("task", "comment") => await TaskCommands.CommentAsync(client, restArgs, taskId, jsonOutput),
         ("task", "blocker") => await TaskCommands.BlockerAsync(client, restArgs, taskId, jsonOutput),
+        ("task", "done") => await TaskCommands.DoneAsync(client, restArgs, taskId, jsonOutput),
         ("task", "resolve-blocker") => await TaskCommands.ResolveBlockerAsync(client, restArgs, jsonOutput),
         ("task", "drive-link-add") => await TaskCommands.DriveLinkAddAsync(client, restArgs, jsonOutput),
         ("task", "drive-link-remove") => await TaskCommands.DriveLinkRemoveAsync(client, restArgs, jsonOutput),

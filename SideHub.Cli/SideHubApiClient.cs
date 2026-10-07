@@ -343,6 +343,15 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    public async Task<JsonElement> CompleteTaskAsync(string taskId, string? summary, string? commitSha)
+    {
+        var body = new { summary, commitSha };
+        var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/tasks/{taskId}/done", body);
+        await EnsureSuccessAsync(resp);
+        var content = await resp.Content.ReadAsStringAsync();
+        return string.IsNullOrWhiteSpace(content) ? default : JsonSerializer.Deserialize<JsonElement>(content);
+    }
+
     public async Task<JsonElement> GetTaskAsync(string taskId)
     {
         var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/tasks/{taskId}");

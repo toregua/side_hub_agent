@@ -110,6 +110,64 @@ public static class TaskCommands
         return 0;
     }
 
+    public const string UncommittedChangesMessage = "Uncommitted changes: commit your work first, then run task done again.";
+
+    public static async Task<int> DoneAsync(SideHubApiClient client, string[] args, string? envTaskId, bool json)
+    {
+        var (taskId, summary) = ParseDone(args, envTaskId);
+
+        if (string.IsNullOrEmpty(taskId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli task done [<taskId>] [--summary \"...\"]");
+            Console.Error.WriteLine("If taskId is omitted, SIDEHUB_TASK_ID is used.");
+            return 1;
+        }
+
+        // SIDEHUB_TASK_COMMIT=1: the task queue asked for one commit per task, so the next task starts on a clean tree.
+        var directory = Directory.GetCurrentDirectory();
+        var commitRequired = Environment.GetEnvironmentVariable("SIDEHUB_TASK_COMMIT") == "1";
+        if (await DoneRefusalAsync(directory, commitRequired) is { } refusal)
+        {
+            Console.Error.WriteLine(refusal);
+            return 1;
+        }
+
+        var commitSha = await GitWorkTree.HeadAsync(directory);
+        var result = await client.CompleteTaskAsync(taskId, summary, commitSha);
+
+        if (json)
+        {
+            Console.WriteLine(result.ValueKind == JsonValueKind.Undefined
+                ? $"{{\"done\":\"{taskId}\"}}"
+                : SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        Console.WriteLine(commitSha is null ? $"Task done: {taskId}" : $"Task done: {taskId} (commit {commitSha[..Math.Min(7, commitSha.Length)]})");
+        return 0;
+    }
+
+    /// <summary>The task (first positional argument, else <paramref name="envTaskId"/>) and the optional summary.
+    /// Option values are skipped, so a summary is never taken for the task id.</summary>
+    public static (string? TaskId, string? Summary) ParseDone(string[] args, string? envTaskId)
+    {
+        string? taskId = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--summary")
+                i++; // its value
+            else if (!args[i].StartsWith("--"))
+                taskId ??= args[i];
+        }
+        var summary = GetOption(args, "--summary");
+        return (taskId ?? envTaskId, string.IsNullOrWhiteSpace(summary) ? null : summary);
+    }
+
+    /// <summary>Why <c>task done</c> must not complete the task yet, or null. Only when a commit is required and
+    /// <paramref name="directory"/> is a work tree with changes: outside a repository, or when git fails, it goes on.</summary>
+    public static async Task<string?> DoneRefusalAsync(string directory, bool commitRequired) =>
+        commitRequired && await GitWorkTree.HasUncommittedChangesAsync(directory) == true ? UncommittedChangesMessage : null;
+
     public static async Task<int> GetAsync(SideHubApiClient client, string[] args, bool json)
     {
         var taskId = args.FirstOrDefault(a => !a.StartsWith("--"));

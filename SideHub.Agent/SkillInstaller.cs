@@ -52,6 +52,7 @@ Environment variables are already configured in your session.
 - `sidehub-cli repository list`: List the workspace repositories (id, name, default branch)
 - `sidehub-cli task comment [<taskId>] --text "..."`: Comment on the current task
 - `sidehub-cli task blocker [<taskId>] --reason "..."`: Report a blocker on the current task
+- `sidehub-cli task done [<taskId>] [--summary "..."]`: Mark the current task as finished (when you were asked to, at the very end of the task)
 
 ### Schedulers
 - `sidehub-cli scheduler list [--active | --paused]`: List scheduled prompts
@@ -114,6 +115,7 @@ knowledge that will help you and other agents work more effectively.
 
 - **Progress**: report your progress via `sidehub-cli task comment` at each key step
 - **Blocked**: if you are stuck, use `sidehub-cli task blocker` instead of spinning in loops
+- **Done**: run `sidehub-cli task done` only when your instructions ask for it, once the work is really finished
 - **Sub-tasks**: if you identify additional work, create tasks with `sidehub-cli task create`
 - Drive content in markdown
 - Comments should be concise (1-3 sentences)
