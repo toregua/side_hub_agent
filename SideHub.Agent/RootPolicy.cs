@@ -31,7 +31,7 @@ public static class RootPolicy
             return null;
 
         return "Refusing to run as root: the SideHub backend drives this agent's terminals, so as root it would control the whole machine.\n" +
-               "[SideHub] Run it as a dedicated unprivileged user (see contrib/systemd and contrib/launchd for service templates),\n" +
+               "[SideHub] Run it as an unprivileged user that owns the project (`sidehub-agent service install` then starts it at boot),\n" +
                $"[SideHub] or pass {AllowFlag} (or set {AllowEnvVar}=1) if you really mean it.";
     }
 

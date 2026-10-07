@@ -8,9 +8,11 @@ set -e
 #   SIDEHUB_SETUP_TOKEN (or --token <token>, visible in ps)  run from the project folder: after installing,
 #   configure this folder for the agent and start it
 #   --allow-root  configure and start it even as root (refused by default: the backend would control the machine)
+#   --user        install in ~/.local (no sudo); also the fallback when /usr/local isn't writable and sudo is missing
 #
-#   SIDEHUB_INSTALL_DIR  install folder (default /usr/local/lib/sidehub-agent); an existing folder is only
-#   replaced if it holds a previous agent install
+#   SIDEHUB_INSTALL_DIR  install folder (default /usr/local/lib/sidehub-agent, ~/.local/lib/sidehub-agent with --user);
+#   an existing folder is only replaced if it holds a previous agent install
+#   SIDEHUB_BIN_DIR      where the sidehub-agent and sidehub-cli links go (default /usr/local/bin, ~/.local/bin with --user)
 #
 # The archive is checked against the release's checksums.sha256, downloaded from GitHub Releases
 # (SIDEHUB_GITHUB_REPO, default toregua/side_hub_agent); a missing or mismatching checksum aborts the install.
@@ -24,12 +26,17 @@ SIDEHUB_API="${SIDEHUB_API%/api}"
 # Checksums come straight from GitHub Releases, not through the SideHub API proxy that serves the archive:
 # a compromised proxy cannot hand out both a tampered archive and a matching checksum.
 GITHUB_REPO="${SIDEHUB_GITHUB_REPO:-toregua/side_hub_agent}"
-INSTALL_DIR="${SIDEHUB_INSTALL_DIR:-/usr/local/lib/sidehub-agent}"
+# Resolved by resolve_install_target: system-wide (sudo when needed) or in the user's home
+INSTALL_DIR=""
+BIN_DIR=""
+BIN_LINK=""
+CLI_BIN_LINK=""
+SUDO=""
 # Written in every install folder: proves a folder is ours before it is wiped on reinstall
 INSTALL_MARKER=".sidehub-agent-install"
-BIN_LINK="/usr/local/bin/sidehub-agent"
 PROJECT_DIR="$(pwd)"
-CLI_BIN_LINK="/usr/local/bin/sidehub-cli"
+# pty-helper's node-pty needs it (the onboarding asks for it too)
+MIN_NODE_MAJOR=18
 
 # Release signing key (RSA, PKCS#1 v1.5 / SHA-256 over checksums.sha256), the private half is the
 # RELEASE_SIGNING_KEY secret of the release workflow. Keep in sync with install.ps1 (ReleaseSigningKeyTests).
@@ -98,34 +105,82 @@ version_gt() {
     return 1
 }
 
-# Check Node.js
+# Check Node.js, and its version: pty-helper does not start on an older one
 check_nodejs() {
     if ! command -v node &> /dev/null; then
         echo "❌ Node.js is required but not installed."
-        echo "   Install it from https://nodejs.org or via your package manager."
+        echo "   Install Node.js ${MIN_NODE_MAJOR} or later from https://nodejs.org or via your package manager."
         exit 1
     fi
-    echo "✓ Node.js $(node --version) found"
+    local version major
+    version=$(node --version 2>/dev/null || true)
+    major="${version#v}"
+    major="${major%%.*}"
+    if ! [[ "$major" =~ ^[0-9]+$ ]] || [ "$major" -lt "$MIN_NODE_MAJOR" ]; then
+        FAIL_DETAIL="node ${version:-unknown} found, ${MIN_NODE_MAJOR} or later required"
+        echo "❌ Node.js ${version:-(unknown version)} is too old: SideHub Agent needs Node.js ${MIN_NODE_MAJOR} or later."
+        echo "   Update it from https://nodejs.org, via your package manager or nvm (nvm install --lts)."
+        exit 1
+    fi
+    echo "✓ Node.js $version found"
 }
 
-# Detect platform
+# Detect platform. Prints "<os>-<arch>"; errors go to stderr, since stdout is captured by the caller.
 detect_platform() {
-    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
-    local arch=$(uname -m)
+    local os arch
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch=$(uname -m)
 
     case "$os" in
         darwin) os="osx" ;;
         linux) os="linux" ;;
-        *) echo "OS non supporté: $os" && exit 1 ;;
+        *) echo "❌ Unsupported OS: $os (SideHub Agent runs on Linux, macOS and Windows)" >&2; return 1 ;;
     esac
 
     case "$arch" in
         x86_64|amd64) arch="x64" ;;
         arm64|aarch64) arch="arm64" ;;
-        *) echo "Architecture non supportée: $arch" && exit 1 ;;
+        *) echo "❌ Unsupported architecture: $arch (x64 and arm64 only)" >&2; return 1 ;;
     esac
 
     echo "${os}-${arch}"
+}
+
+# Whether the current user can create $1: the nearest existing folder on its path is writable
+can_create() {
+    local dir="$1"
+    while [ ! -e "$dir" ]; do dir=$(dirname "$dir"); done
+    [ -w "$dir" ]
+}
+
+# System-wide in /usr/local (through sudo when it isn't writable), or in ~/.local with --user. Without sudo, and
+# with no folder chosen by the user, fall back to ~/.local rather than fail.
+resolve_install_target() {
+    local user_install="$1"
+    local default_lib="/usr/local/lib/sidehub-agent" default_bin="/usr/local/bin"
+    if [ -n "$user_install" ]; then
+        default_lib="$HOME/.local/lib/sidehub-agent"
+        default_bin="$HOME/.local/bin"
+    fi
+    INSTALL_DIR="${SIDEHUB_INSTALL_DIR:-$default_lib}"
+    BIN_DIR="${SIDEHUB_BIN_DIR:-$default_bin}"
+
+    SUDO=""
+    if ! can_create "$INSTALL_DIR" || ! can_create "$BIN_DIR"; then
+        if command -v sudo &> /dev/null; then
+            SUDO="sudo"
+        elif [ -z "$user_install" ] && [ -z "${SIDEHUB_INSTALL_DIR:-}" ] && [ -z "${SIDEHUB_BIN_DIR:-}" ]; then
+            echo "ℹ️  /usr/local isn't writable and sudo isn't available: installing in ~/.local instead."
+            resolve_install_target user
+            return
+        else
+            echo "❌ Can't write to $INSTALL_DIR or $BIN_DIR, and sudo isn't available."
+            echo "   Install in your home folder instead: add --user (bash -s -- --user ...)."
+            return 1
+        fi
+    fi
+    BIN_LINK="$BIN_DIR/sidehub-agent"
+    CLI_BIN_LINK="$BIN_DIR/sidehub-cli"
 }
 
 # Resolve the latest release tag from GitHub (redirect of /releases/latest to /releases/tag/<tag>)
@@ -158,38 +213,38 @@ verify_signature() {
     local status
     status=$(curl -sSL -o "$sig_file" -w '%{http_code}' "$sig_url") || status="000"
     if [ "$status" = "404" ] && ! version_gt "${tag#v}" "$LAST_UNSIGNED_VERSION"; then
-        echo "⚠️  $tag est antérieure aux releases signées : seul le checksum SHA256 est vérifié."
+        echo "⚠️  $tag predates signed releases: only the SHA256 checksum is verified."
         return 0
     fi
     if [ "$status" != "200" ]; then
-        echo "❌ Signature des checksums introuvable ($sig_url, HTTP $status)"
+        echo "❌ Checksums signature not found ($sig_url, HTTP $status)"
         return 1
     fi
 
     if ! command -v openssl &> /dev/null; then
-        echo "❌ openssl est requis pour vérifier la signature de la release"
+        echo "❌ openssl is required to verify the release signature"
         return 1
     fi
     printf '%s\n' "$RELEASE_SIGNING_PUBKEY" > "$pubkey_file"
     if ! openssl dgst -sha256 -verify "$pubkey_file" -signature "$sig_file" "$checksums_file" > /dev/null 2>&1; then
-        echo "❌ Signature invalide pour checksums.sha256 ($tag) : release non publiée par SideHub"
+        echo "❌ Invalid signature for checksums.sha256 ($tag): release not published by SideHub"
         return 1
     fi
-    echo "✓ Signature de la release vérifiée ($tag)"
+    echo "✓ Release signature verified ($tag)"
 }
 
 # Refuse to wipe a folder that is not a previous agent install (a mistyped SIDEHUB_INSTALL_DIR, /usr/local/lib…)
 check_install_dir() {
     case "$INSTALL_DIR" in
         /*) ;;
-        *) echo "❌ SIDEHUB_INSTALL_DIR doit être un chemin absolu : $INSTALL_DIR"; return 1 ;;
+        *) echo "❌ The install folder must be an absolute path: $INSTALL_DIR"; return 1 ;;
     esac
     case "$INSTALL_DIR" in
-        */../*|*/..|*/./*|*/.) echo "❌ SIDEHUB_INSTALL_DIR ne doit pas contenir . ou .. : $INSTALL_DIR"; return 1 ;;
+        */../*|*/..|*/./*|*/.) echo "❌ The install folder must not contain . or ..: $INSTALL_DIR"; return 1 ;;
     esac
     [ -e "$INSTALL_DIR" ] || return 0
     if [ -L "$INSTALL_DIR" ] || [ ! -d "$INSTALL_DIR" ]; then
-        echo "❌ $INSTALL_DIR existe et n'est pas un dossier"
+        echo "❌ $INSTALL_DIR exists and is not a folder"
         return 1
     fi
     # Empty, ours (marker), or an install from before the marker (agent binary + pty-helper)
@@ -197,8 +252,8 @@ check_install_dir() {
         || { [ -f "$INSTALL_DIR/sidehub-agent" ] && [ -d "$INSTALL_DIR/pty-helper" ]; }; then
         return 0
     fi
-    echo "❌ $INSTALL_DIR n'est pas vide et ne contient pas d'installation de SideHub Agent : abandon"
-    echo "   Choisissez un autre dossier (SIDEHUB_INSTALL_DIR) ou videz-le vous-même."
+    echo "❌ $INSTALL_DIR is not empty and holds no SideHub Agent install: aborting."
+    echo "   Pick another folder (SIDEHUB_INSTALL_DIR) or empty it yourself."
     return 1
 }
 
@@ -210,7 +265,7 @@ verify_checksum() {
 
     stage install-download-failed "checksums.sha256 download from GitHub failed ($tag)"
     if ! curl -fsSL "$checksums_url" -o "$checksums_file"; then
-        echo "❌ Impossible de télécharger les checksums depuis $checksums_url"
+        echo "❌ Unable to download the checksums from $checksums_url"
         return 1
     fi
 
@@ -221,33 +276,34 @@ verify_checksum() {
     local expected
     expected=$(awk -v name="$asset_name" '{ f = $2; sub(/^\*/, "", f); if (f == name) { print tolower($1); exit } }' "$checksums_file")
     if [ -z "$expected" ]; then
-        echo "❌ Aucun checksum pour $asset_name dans checksums.sha256 ($tag)"
+        echo "❌ No checksum for $asset_name in checksums.sha256 ($tag)"
         return 1
     fi
 
     local actual
     if ! actual=$(sha256_of "$archive_file"); then
-        echo "❌ sha256sum ou shasum est requis pour vérifier l'archive"
+        echo "❌ sha256sum or shasum is required to verify the archive"
         return 1
     fi
 
     if [ "$actual" != "$expected" ]; then
-        echo "❌ Checksum invalide pour $asset_name : attendu $expected, obtenu $actual"
+        echo "❌ Checksum mismatch for $asset_name: expected $expected, got $actual"
         return 1
     fi
 
-    echo "✓ Checksum SHA256 vérifié ($asset_name, $tag)"
+    echo "✓ SHA256 checksum verified ($asset_name, $tag)"
 }
 
 # Download and install
 install() {
     local version="latest"
     local token="${SIDEHUB_SETUP_TOKEN:-}"
-    local allow_root=""
+    local allow_root="" user_install=""
     case "${SIDEHUB_ALLOW_ROOT:-}" in 1|true|TRUE|True) allow_root="--allow-root" ;; esac
     while [ $# -gt 0 ]; do
         case "$1" in
             --allow-root) allow_root="--allow-root"; shift ;;
+            --user) user_install="user"; shift ;;
             --token) token="$2"; shift 2 ;;
             --token=*) token="${1#--token=}"; shift ;;
             *) version="$1"; shift ;;
@@ -258,15 +314,16 @@ install() {
     stage install-node-missing "node not found in PATH"
     check_nodejs
 
-    stage install-failed "unsupported platform"
-    local platform=$(detect_platform)
+    stage install-failed "unsupported platform: $(uname -s)-$(uname -m)"
+    local platform
+    platform=$(detect_platform) || exit 1
 
     # Pin "latest" to a tag so the archive and its checksum come from the same release
     local tag
     stage install-download-failed "couldn't resolve the latest release from GitHub"
     if [ "$version" = "latest" ]; then
         if ! tag=$(resolve_latest_tag); then
-            echo "❌ Impossible de déterminer la dernière version depuis https://github.com/${GITHUB_REPO}/releases"
+            echo "❌ Unable to resolve the latest version from https://github.com/${GITHUB_REPO}/releases"
             exit 1
         fi
     else
@@ -275,16 +332,19 @@ install() {
     # The tag goes into URLs and messages: a plain version only
     stage install-failed "invalid or too old version requested"
     if ! [[ "$tag" =~ ^v[0-9]+(\.[0-9]+){1,3}$ ]]; then
-        echo "❌ Version invalide : $version (attendu : 1.0.61 ou v1.0.61)"
+        echo "❌ Invalid version: $version (expected 1.0.61 or v1.0.61)"
         exit 1
     fi
     if version_gt "$MIN_VERSION" "${tag#v}"; then
-        echo "❌ $tag n'est plus installable : les versions antérieures à v${MIN_VERSION} installent leurs"
-        echo "   dépendances Node.js depuis le registre npm à l'installation. Installez v${MIN_VERSION} ou plus récent."
+        echo "❌ $tag can no longer be installed: releases before v${MIN_VERSION} install their Node.js"
+        echo "   dependencies from the npm registry at install time. Install v${MIN_VERSION} or later."
         exit 1
     fi
 
     TAG="$tag"
+
+    stage install-permission-denied "install folder not writable and sudo missing"
+    resolve_install_target "$user_install" || exit 1
 
     stage install-failed "install folder exists and holds something else than an agent install"
     check_install_dir || exit 1
@@ -293,9 +353,9 @@ install() {
     local url="${SIDEHUB_API}/agent/download/${platform}/${tag}"
 
     if [ "$version" = "latest" ]; then
-        echo "📦 Téléchargement de SideHub Agent ${tag} (dernière version, ${platform})..."
+        echo "📦 Downloading SideHub Agent ${tag} (latest, ${platform})..."
     else
-        echo "📦 Téléchargement de SideHub Agent ${tag} (${platform})..."
+        echo "📦 Downloading SideHub Agent ${tag} (${platform})..."
     fi
 
     # Global (not local) so the EXIT trap still sees it once install() has returned
@@ -305,88 +365,90 @@ install() {
 
     stage install-download-failed "archive download failed (${SIDEHUB_API}/agent/download/${platform}/${tag})"
     if ! curl -fsSL "$url" -o "$archive_file"; then
-        echo "Erreur: Impossible de télécharger depuis $url"
+        echo "❌ Unable to download from $url"
         exit 1
     fi
 
     if ! verify_checksum "$archive_file" "$asset_name" "$tag" "$TMP_DIR"; then
-        echo "   Installation annulée : l'archive n'a pas été extraite."
+        echo "   Installation aborted: the archive was not extracted."
         exit 1
     fi
 
     stage install-failed "archive extraction failed, or pty-helper dependencies missing from it"
-    echo "📁 Extraction..."
+    echo "📁 Extracting..."
     mkdir -p "$extract_dir"
     tar -xzf "$archive_file" -C "$extract_dir"
 
     # node_modules ships prebuilt in the verified archive (npm ci from the lockfile, in the release CI):
     # the install never runs npm.
     if [ ! -d "$extract_dir/pty-helper/node_modules/node-pty" ]; then
-        echo "❌ L'archive $tag ne contient pas les dépendances Node.js de pty-helper : abandon"
+        echo "❌ The $tag archive does not bundle pty-helper's Node.js dependencies: aborting."
         exit 1
     fi
-    echo "✓ Dépendances Node.js incluses dans l'archive"
+    echo "✓ Node.js dependencies bundled in the archive"
     touch "$extract_dir/$INSTALL_MARKER"
 
-    stage install-permission-denied "couldn't write the install folder or the links in /usr/local/bin"
-    echo "🔧 Installation dans ${INSTALL_DIR}..."
-    if [ -w "$(dirname "$INSTALL_DIR")" ]; then
-        rm -rf "$INSTALL_DIR"
-        mkdir -p "$INSTALL_DIR"
-        cp -R "$extract_dir/." "$INSTALL_DIR/"
-        # /usr/local/bin can be missing on a fresh Apple Silicon Mac (Homebrew lives in /opt/homebrew)
-        mkdir -p "$(dirname "$BIN_LINK")"
-        rm -f "$BIN_LINK"
-        ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
-        if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
-            rm -f "$CLI_BIN_LINK"
-            ln -s "$INSTALL_DIR/sidehub-cli" "$CLI_BIN_LINK"
-        fi
-    else
-        sudo rm -rf "$INSTALL_DIR"
-        sudo mkdir -p "$INSTALL_DIR"
-        sudo cp -R "$extract_dir/." "$INSTALL_DIR/"
-        sudo mkdir -p "$(dirname "$BIN_LINK")"
-        sudo rm -f "$BIN_LINK"
-        sudo ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
-        if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
-            sudo rm -f "$CLI_BIN_LINK"
-            sudo ln -s "$INSTALL_DIR/sidehub-cli" "$CLI_BIN_LINK"
-        fi
+    stage install-permission-denied "couldn't write the install folder or the links in the bin folder"
+    echo "🔧 Installing to ${INSTALL_DIR}${SUDO:+ (with sudo)}..."
+    # $SUDO is empty when both folders are writable: the commands then run as is
+    $SUDO rm -rf "$INSTALL_DIR"
+    $SUDO mkdir -p "$INSTALL_DIR"
+    $SUDO cp -R "$extract_dir/." "$INSTALL_DIR/"
+    # /usr/local/bin can be missing on a fresh Apple Silicon Mac (Homebrew lives in /opt/homebrew)
+    $SUDO mkdir -p "$BIN_DIR"
+    $SUDO rm -f "$BIN_LINK"
+    $SUDO ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
+    if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
+        $SUDO rm -f "$CLI_BIN_LINK"
+        $SUDO ln -s "$INSTALL_DIR/sidehub-cli" "$CLI_BIN_LINK"
     fi
 
     echo ""
-    echo "✅ SideHub Agent ${tag} installé avec succès!"
+    echo "✅ SideHub Agent ${tag} installed successfully!"
     echo ""
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *)
+            echo "⚠️  $BIN_DIR is not in your PATH: add it to use sidehub-agent from any folder, e.g."
+            echo "     echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc   (or ~/.zshrc), then open a new terminal"
+            echo ""
+            ;;
+    esac
 
     if [ -n "$token" ] && [ "$(id -u)" -eq 0 ] && [ -z "$allow_root" ]; then
         # `curl … | sudo bash` with a token: installing system-wide needs root, running the agent must not.
         stage root-refused "install.sh run as root without --allow-root: agent installed, not configured"
-        echo "⛔ Agent non configuré : ce script tourne en root, et l'agent refuse de tourner en root"
-        echo "   (le backend SideHub pilote ses terminaux : en root, il contrôlerait toute la machine)."
+        echo "⛔ Agent installed but not configured: this script runs as root, and the agent refuses to run as root"
+        echo "   (SideHub drives its terminals: as root, it would control the whole machine)."
         echo ""
-        echo "   Depuis le dossier du projet, en tant qu'utilisateur non privilégié :"
-        echo "     sidehub-agent setup --token-stdin   (puis collez le jeton copié depuis SideHub)"
-        echo "   Service systemd (utilisateur dédié) : ${INSTALL_DIR}/contrib/systemd/sidehub-agent@.service"
-        echo "   Pour forcer malgré tout : relancez avec --allow-root (ou SIDEHUB_ALLOW_ROOT=1)."
+        echo "   Recommended, an unprivileged user that owns the project:"
+        echo "     adduser sidehub                     # once (useradd -m -s /bin/bash sidehub on some distros)"
+        echo "     loginctl enable-linger sidehub      # its services start at boot, without a login"
+        echo "     su - sidehub                        # then, as sidehub (claude / codex installed and logged in for it):"
+        echo "     git clone <your repository> && cd <it>"
+        echo "     sidehub-agent setup --token-stdin   # then paste the token copied from SideHub"
+        echo "     sidehub-agent service install       # start it again after a reboot"
+        echo ""
+        echo "   Or keep root anyway (SideHub then controls this machine): run the same command again"
+        echo "   with --allow-root after the token (or SIDEHUB_ALLOW_ROOT=1)."
         exit 1
     fi
 
     if [ -n "$token" ]; then
         # Configure the folder the command was run from (the project), then start the agent in the background.
         cd "$PROJECT_DIR"
-        echo "🔗 Configuration de l'agent dans ${PROJECT_DIR}..."
+        echo "🔗 Configuring the agent in ${PROJECT_DIR}..."
         # Token through the environment, not argv: argv is visible to every user in ps.
         stage install-setup-failed "sidehub-agent setup failed after the install"
         SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup $allow_root
         echo ""
-        echo "Commandes utiles : sidehub-agent status · sidehub-agent logs · sidehub-agent stop"
+        echo "To start it again after a reboot: sidehub-agent service install $allow_root"
+        echo "Useful commands: sidehub-agent status · sidehub-agent logs · sidehub-agent stop"
     else
-        echo "Pour commencer, depuis le dossier de votre projet :"
-        echo "  sidehub-agent setup --token-stdin   (puis collez le jeton copié depuis SideHub)"
-        echo "  (en tant qu'utilisateur non privilégié : l'agent refuse de tourner en root)"
-        echo ""
-        echo "Modèles de service (systemd, launchd) : ${INSTALL_DIR}/contrib/"
+        echo "To get started, from your project folder:"
+        echo "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"
+        echo "  (as an unprivileged user: the agent refuses to run as root)"
+        echo "  sidehub-agent service install       (start it again after a reboot)"
         echo ""
     fi
 }

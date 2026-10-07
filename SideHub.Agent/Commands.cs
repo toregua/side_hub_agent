@@ -16,12 +16,41 @@ public static class Commands
             return 1;
         }
 
+        if (daemon && AgentService.IsSupervised(baseDirectory))
+            return StartService(baseDirectory);
+
         if (daemon)
         {
             return StartDaemon(baseDirectory, manager);
         }
 
         return await RunForeground(baseDirectory, ct);
+    }
+
+    private static int StartService(string baseDirectory)
+    {
+        if (!AgentService.Start(baseDirectory))
+        {
+            Console.WriteLine("[SideHub] Error: the service didn't start (`sidehub-agent service status`)");
+            return 1;
+        }
+        Console.WriteLine("[SideHub] Agent started by its service");
+        Console.WriteLine("[SideHub] Use 'sidehub-agent logs' to view logs");
+        return 0;
+    }
+
+    /// <summary>
+    /// Stops this folder's agent; through its service when one runs it (systemd and launchd would restart a killed
+    /// agent). Returns false when it was running and couldn't be stopped.
+    /// </summary>
+    private static bool StopInstance(string baseDirectory, DaemonManager manager)
+    {
+        if (AgentService.IsSupervised(baseDirectory) && AgentService.Stop(baseDirectory))
+        {
+            manager.RemovePidFile();
+            return true;
+        }
+        return !manager.IsRunning() || manager.StopDaemon();
     }
 
     private static int StartDaemon(string baseDirectory, DaemonManager manager)
@@ -268,6 +297,18 @@ public static class Commands
     {
         var manager = new DaemonManager(baseDirectory);
 
+        if (AgentService.IsSupervised(baseDirectory) && manager.IsRunning())
+        {
+            Console.WriteLine($"[SideHub] Stopping agent through its service (PID: {manager.ReadPid()})...");
+            if (StopInstance(baseDirectory, manager))
+            {
+                Console.WriteLine("[SideHub] Agent stopped (it starts again at the next boot; `sidehub-agent service uninstall` to stop that)");
+                return 0;
+            }
+            Console.WriteLine("[SideHub] Failed to stop agent");
+            return 1;
+        }
+
         if (!manager.IsRunning())
         {
             Console.WriteLine("[SideHub] No agent is running");
@@ -331,6 +372,18 @@ public static class Commands
     public static int Restart(string baseDirectory, bool daemon, CancellationToken ct)
     {
         var manager = new DaemonManager(baseDirectory);
+
+        if (daemon && AgentService.IsSupervised(baseDirectory))
+        {
+            Console.WriteLine($"[SideHub] Restarting agent in {baseDirectory} through its service...");
+            if (AgentService.Restart(baseDirectory))
+            {
+                Console.WriteLine("[SideHub] Agent restarted");
+                return 0;
+            }
+            Console.WriteLine("[SideHub] Error: the service didn't restart (`sidehub-agent service status`)");
+            return 1;
+        }
 
         if (manager.IsRunning())
         {
@@ -405,7 +458,7 @@ public static class Commands
 
             var pid = manager.ReadPid();
             Console.WriteLine($"[SideHub] Stopping {instance.Directory} (PID: {pid})...");
-            if (manager.StopDaemon())
+            if (StopInstance(instance.Directory, manager))
             {
                 stopped++;
             }
@@ -444,7 +497,7 @@ public static class Commands
             {
                 var pid = manager.ReadPid();
                 Console.WriteLine($"[SideHub]   Stopping {instance.Directory} (PID: {pid})...");
-                manager.StopDaemon();
+                StopInstance(instance.Directory, manager);
             }
         }
 
@@ -500,7 +553,7 @@ public static class Commands
         Console.WriteLine("    --token-stdin Read the agent's token (copied from SideHub) from stdin");
         Console.WriteLine("    --token <t>   Pass the token as an argument (visible in ps and shell history)");
         Console.WriteLine("                  Without either, the token is read from SIDEHUB_SETUP_TOKEN");
-        Console.WriteLine("    --no-start    Only write .sidehub/agent.json");
+        Console.WriteLine("    --no-start    Only write .sidehub/agent.json (otherwise start, or restart the running agent)");
         Console.WriteLine("  start           Start the agent (default)");
         Console.WriteLine("    -d, --daemon  Run in background");
         Console.WriteLine("    --all         Operate on all registered instances");
@@ -509,6 +562,8 @@ public static class Commands
         Console.WriteLine("  restart         Stop then start the agent");
         Console.WriteLine("    -d, --daemon  Run in background");
         Console.WriteLine("    --all         Restart all registered instances");
+        Console.WriteLine("  service install Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)");
+        Console.WriteLine("  service uninstall / service status");
         Console.WriteLine("  logs            Show agent logs");
         Console.WriteLine("    -f, --follow  Follow log output (default)");
         Console.WriteLine("    --no-follow   Don't follow, just print current logs");
@@ -523,6 +578,7 @@ public static class Commands
         Console.WriteLine("  sidehub-agent setup --token-stdin  # Paste the token, then Enter: configure and start");
         Console.WriteLine("  sidehub-agent              # Start in foreground");
         Console.WriteLine("  sidehub-agent start -d     # Start in background");
+        Console.WriteLine("  sidehub-agent service install  # Start it again after a reboot");
         Console.WriteLine("  sidehub-agent restart --all -d  # Restart all agents");
         Console.WriteLine("  sidehub-agent status --all # Show all instances");
         Console.WriteLine("  sidehub-agent logs         # View and follow logs");

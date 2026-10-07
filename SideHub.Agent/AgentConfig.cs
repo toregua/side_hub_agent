@@ -6,7 +6,7 @@ namespace SideHub.Agent;
 
 public class AgentConfig
 {
-    private const string ConfigFolder = ".sidehub";
+    public const string ConfigFolder = ".sidehub";
 
     [JsonPropertyName("sidehubUrl")]
     public string? SidehubUrl { get; init; }

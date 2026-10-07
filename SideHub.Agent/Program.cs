@@ -61,6 +61,7 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
         "restart" => await HandleRestart(args, baseDirectory, ct),
         "logs" => await HandleLogs(args, baseDirectory),
         "status" => HandleStatus(args, baseDirectory),
+        "service" => AgentService.Run(args, baseDirectory),
         "help" or "--help" or "-h" => ShowHelp(),
         "--foreground-daemon" => await HandleForegroundDaemon(args, baseDirectory, ct),
         _ => await HandleStart(args, baseDirectory, ct) // Default: treat unknown as start with possible flags
@@ -93,7 +94,8 @@ static async Task<int> HandleStart(string[] args, string baseDirectory, Cancella
 }
 
 /// <summary>setup [--token &lt;token&gt; | --token-stdin] [--api &lt;url&gt;] [--no-start]: write .sidehub config here,
-/// then start in the background. Without a flag the token comes from SIDEHUB_SETUP_TOKEN.</summary>
+/// then start in the background (restart the agent already running here). Without a flag the token comes from
+/// SIDEHUB_SETUP_TOKEN.</summary>
 static async Task<int> HandleSetup(string[] args, string baseDirectory, CancellationToken ct)
 {
     string? Value(string flag)
@@ -113,7 +115,10 @@ static async Task<int> HandleSetup(string[] args, string baseDirectory, Cancella
     DaemonEnvironmentPolicy.ClearSetupToken();
     var code = await AgentSetup.Run(baseDirectory, token, Value("--api"), ct);
     if (code != 0 || args.Contains("--no-start")) return code;
-    return await Commands.Start(baseDirectory, daemon: true, ct);
+    // Run again in a folder whose agent is running (a second install, a new token): it must load the new config
+    return new DaemonManager(baseDirectory).IsRunning() || AgentService.IsSupervised(baseDirectory)
+        ? Commands.Restart(baseDirectory, daemon: true, ct)
+        : await Commands.Start(baseDirectory, daemon: true, ct);
 }
 
 static int HandleStop(string[] args, string baseDirectory)

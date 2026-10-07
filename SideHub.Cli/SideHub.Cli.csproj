@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>sidehub-cli</AssemblyName>
+    <!-- No libicu needed: minimal Linux images (Alpine, distroless, slim containers) lack it and the runtime would
+         abort at startup. Everything culture-sensitive here formats with the invariant culture anyway. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
 </Project>

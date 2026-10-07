@@ -1,8 +1,9 @@
 # SideHub Agent Installer for Windows
 # Requires: Node.js (for PTY terminal support)
 #
-#   SIDEHUB_SETUP_TOKEN  the agent token (optional): only used here to report a failed install to SideHub, then read
-#                        by `sidehub-agent setup`
+#   SIDEHUB_SETUP_TOKEN  the agent token (optional): after installing, configure the current folder (the project) for
+#                        the agent and start it (`sidehub-agent setup`). A failed install is reported to SideHub with it.
+#                        Cleared from the session when the script ends, whether it succeeded or not.
 #   SIDEHUB_INSTALL_DIR  install folder (default %LOCALAPPDATA%\Programs\sidehub-agent); an existing folder
 #   is only replaced if it holds a previous agent install
 #
@@ -41,6 +42,10 @@ $MinVersion = [version]"1.0.59"
 $SideHubFailReason = "install-failed"
 $SideHubFailDetail = ""
 $SideHubFailTag = ""
+# The folder the command was run from: the project `sidehub-agent setup` configures
+$SideHubProjectDir = (Get-Location -PSProvider FileSystem).ProviderPath
+# pty-helper's node-pty needs it (the onboarding asks for it too)
+$MinNodeMajor = 18
 
 # The stage being run: what is reported if the install throws from here on
 function Set-InstallStage {
@@ -69,12 +74,17 @@ function Send-InstallFailureReport {
 # Check Node.js
 function Test-NodeJs {
     try {
-        $nodeVersion = & node --version 2>$null
-        Write-Host "Node.js $nodeVersion found" -ForegroundColor Green
-        return $true
+        $nodeVersion = "$(& node --version 2>$null)".Trim()
     } catch {
-        throw "Node.js is required but not installed. Install it from https://nodejs.org"
+        throw "Node.js is required but not installed. Install Node.js $MinNodeMajor or later from https://nodejs.org"
     }
+    $major = 0
+    if (-not ($nodeVersion -match '^v(\d+)\.' -and [int]::TryParse($Matches[1], [ref]$major)) -or $major -lt $MinNodeMajor) {
+        $script:SideHubFailDetail = "node $nodeVersion found, $MinNodeMajor or later required"
+        throw "Node.js $nodeVersion is too old: SideHub Agent needs Node.js $MinNodeMajor or later (https://nodejs.org)."
+    }
+    Write-Host "Node.js $nodeVersion found" -ForegroundColor Green
+    return $true
 }
 
 function Get-Platform {
@@ -374,21 +384,43 @@ function Install-SideHubAgent {
         $starter.WaitForExit()
     }
 
-    # Add to PATH if not already present
+    # Add to PATH if not already present (this session too, so sidehub-agent works right away)
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$InstallDir*") {
+    $pathChanged = $userPath -notlike "*$InstallDir*"
+    if ($pathChanged) {
         Write-Host "Adding to user PATH..."
         [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
-        $env:Path = "$env:Path;$InstallDir"
     }
+    if ($env:Path -notlike "*$InstallDir*") { $env:Path = "$env:Path;$InstallDir" }
 
     Write-Host ""
     Write-Host "SideHub Agent $tag installed successfully!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "To get started, from your project folder:"
-    Write-Host "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"
-    Write-Host ""
-    Write-Host "Note: Restart your terminal to update the PATH."
+
+    if ("$env:SIDEHUB_SETUP_TOKEN".Trim()) {
+        Write-Host "Configuring the agent in $SideHubProjectDir..."
+        Set-InstallStage "install-setup-failed" "sidehub-agent setup failed after the install"
+        # Start-Process, not "& ...": the daemon setup starts would inherit the output pipe and hold the script (see
+        # the restart above). setup reads the token from SIDEHUB_SETUP_TOKEN, inherited.
+        $setup = Start-Process -FilePath (Join-Path $InstallDir "sidehub-agent.exe") -ArgumentList "setup" `
+            -WorkingDirectory $SideHubProjectDir -NoNewWindow -PassThru
+        $null = $setup.Handle # without it, ExitCode stays empty once the process has exited
+        $setup.WaitForExit()
+        if ($setup.ExitCode -ne 0) {
+            throw "sidehub-agent setup failed (exit code $($setup.ExitCode)): see the messages above."
+        }
+        Write-Host ""
+        Write-Host "To start it again each time you log on: sidehub-agent service install"
+        Write-Host "Useful commands: sidehub-agent status, sidehub-agent logs, sidehub-agent stop"
+    } else {
+        Write-Host "To get started, from your project folder:"
+        Write-Host "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"
+        Write-Host "  sidehub-agent service install       (start it again each time you log on)"
+    }
+    if ($pathChanged) {
+        Write-Host ""
+        Write-Host "sidehub-agent is on the PATH of this terminal; open a new one for the other terminals already open."
+    }
 }
 
 try {
@@ -396,4 +428,7 @@ try {
 } catch {
     Send-InstallFailureReport
     throw
+} finally {
+    # The agent token must not outlive the install in the user's session, whatever happened
+    Remove-Item Env:SIDEHUB_SETUP_TOKEN -ErrorAction SilentlyContinue
 }

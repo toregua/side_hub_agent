@@ -201,8 +201,8 @@ or `SIDEHUB_SETUP_TOKEN` for `install.ps1` (the setup commands copied from SideH
 
 ## Installation
 
-Requires [Node.js](https://nodejs.org) (for the PTY helper) and the CLIs you want to use (`claude`,
-`codex`, `gemini`, `copilot`) on the `PATH`.
+Requires [Node.js](https://nodejs.org) 18 or later (for the PTY helper) and the CLIs you want to use
+(`claude`, `codex`, `gemini`, `copilot`) on the `PATH`.
 
 ### Linux / macOS
 
@@ -211,11 +211,17 @@ curl -fsSL https://api.sidehub.io/agent/install.sh | bash
 ```
 
 Installs the latest release in `/usr/local/lib/sidehub-agent/` and links `sidehub-agent` / `sidehub-cli`
-into `/usr/local/bin/`. To install a specific version:
+into `/usr/local/bin/`, through `sudo` when those folders aren't writable. Without `sudo`, or with
+`--user`, it installs in `~/.local/lib/sidehub-agent/` and `~/.local/bin/` instead. To install a
+specific version:
 
 ```bash
 curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.75
+curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s -- --user   # no sudo
 ```
+
+With `--token <token>` (the command copied from SideHub), it then configures and starts the agent in
+the current folder (see [Configure](#configure)).
 
 ### Windows (PowerShell)
 
@@ -223,12 +229,15 @@ curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s v1.0.75
 irm https://api.sidehub.io/agent/install.ps1 | iex
 ```
 
-Installs in `%LOCALAPPDATA%\Programs\sidehub-agent`.
+Installs in `%LOCALAPPDATA%\Programs\sidehub-agent`. With `SIDEHUB_SETUP_TOKEN` set (the command copied
+from SideHub sets it), it then configures and starts the agent in the current folder, and clears the
+variable from the session whether the install succeeded or not.
 
 ### What the scripts check
 
 Set `SIDEHUB_INSTALL_DIR` to install elsewhere (an existing folder that does not hold a previous agent
-install is refused). Versions before `v1.0.59` can no longer be installed with the scripts.
+install is refused), and `SIDEHUB_BIN_DIR` for the links (`install.sh`). Versions before `v1.0.59` can
+no longer be installed with the scripts. Node.js older than 18 is refused.
 
 The scripts verify the signature of the release's `checksums.sha256` (fetched from GitHub Releases)
 against the key embedded in the script, then the archive against it, and abort on any mismatch. The
@@ -248,19 +257,34 @@ attestation: see [Verifying a release](SECURITY.md#verifying-a-release).
 
    `setup` asks SideHub which agent the token belongs to, keeps the token in your user configuration
    folder (see [Agent token](#agent-token)), writes `.sidehub/agent.json` (`0600`, kept out of git), and
-   starts the agent in the background. Add `--no-start` to only write the files.
+   starts the agent in the background. Add `--no-start` to only write the files. Run again in a folder
+   whose agent is running (another agent, a new token), it restarts that agent with the new config.
+3. To start it again after a reboot: `sidehub-agent service install` (see
+   [Running as a service](#running-as-a-service)).
 
 ### Root
 
-`setup`, `start` and `restart` refuse to run as `root`. Run the agent as a dedicated unprivileged user
-(see [Running as a service](#running-as-a-service)). If you really mean it, pass `--allow-root` (or set
-`SIDEHUB_ALLOW_ROOT=1`):
+`setup`, `start`, `restart` and `service` refuse to run as `root`. On a server where you log in as root,
+create an unprivileged user that owns the project:
+
+```bash
+adduser sidehub                     # useradd -m -s /bin/bash sidehub on some distros
+loginctl enable-linger sidehub      # its services start at boot, without a login
+su - sidehub                        # then, as sidehub (claude / codex installed and logged in for it):
+git clone <your repository> && cd <it>
+sidehub-agent setup --token-stdin
+sidehub-agent service install
+```
+
+If you really mean it, pass `--allow-root` (or set `SIDEHUB_ALLOW_ROOT=1`): SideHub then controls the
+whole machine.
 
 ```bash
 sidehub-agent start -d --allow-root
+curl -fsSL https://api.sidehub.io/agent/install.sh | bash -s -- --token <token> --allow-root
 ```
 
-`install.sh` run with `sudo` installs the binaries but does not configure the agent.
+`install.sh` run as root without `--allow-root` installs the binaries but does not configure the agent.
 
 ### Update
 
@@ -355,17 +379,38 @@ Commands:
   restart           Stop then start the agent (-d, --all)
   logs              Show agent logs (--no-follow to print and exit)
   status            Show agent status (--all: every instance)
+  service install   Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)
+  service uninstall / service status
   help              Show help
 
 Options:
-  --allow-root      Allow setup/start/restart as root (refused by default)
+  --allow-root      Allow setup/start/restart/service as root (refused by default)
 ```
 
 Logs are in `.sidehub/run/sidehub-agent.log` (rotated at 10 MB, 3 archives).
 
 ### Running as a service
 
-To start the agent at boot, run it under a dedicated user with the templates in [`contrib/`](contrib/)
+From the project folder, once `setup` has run:
+
+```bash
+sidehub-agent service install     # uninstall / status
+```
+
+It starts this folder's agent again after a reboot, for the current user, without root:
+
+| OS | What it installs | Starts | Restarts after a crash |
+|---|---|---|---|
+| Linux | systemd user unit `~/.config/systemd/user/sidehub-agent-<folder>-<hash>.service`, and enables lingering (`loginctl enable-linger`; if your distribution refuses it without root, it prints the `sudo` command) | at boot | yes |
+| macOS | LaunchAgent `~/Library/LaunchAgents/io.sidehub.agent.<folder>-<hash>.plist` | at login | yes |
+| Windows | scheduled task `SideHub Agent <folder>-<hash>` running `sidehub-agent start -d` | at logon | no |
+
+The unit and the LaunchAgent run the agent with the `PATH` of the shell that installed them (so `claude`
+from nvm or `~/.local/bin` resolves): run `service install` again after moving a CLI. They write the
+usual log and PID files, so `status` and `logs` work as before, and `start`, `stop` and `restart` go
+through systemd / launchd (a plain kill would be undone by the restart policy).
+
+For a hardened setup under a dedicated system user, use the templates in [`contrib/`](contrib/)
 (also installed in `/usr/local/lib/sidehub-agent/contrib/`):
 
 - **systemd**: [`contrib/systemd/sidehub-agent@.service`](contrib/systemd/sidehub-agent@.service), one
@@ -470,6 +515,10 @@ side_hub_agent/
 ```
 
 ## Troubleshooting
+
+**Agent offline in SideHub**: SideHub shows the last failure the agent reported on its card. On the
+machine, `sidehub-agent status` in the project folder; if it isn't running, `sidehub-agent start -d`.
+Offline after every reboot: `sidehub-agent service install` (see [Running as a service](#running-as-a-service)).
 
 **Agent won't connect**: check the token (see [Agent token](#agent-token); a `401` at the handshake
 means it matches no agent: copy the setup command again from SideHub), that `sidehubUrl` uses `wss://`, and that
