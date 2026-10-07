@@ -28,6 +28,7 @@ if [ -w "$(dirname "$INSTALL_DIR")" ]; then
     cp -r "$AGENT_DIR/pty-helper" "$INSTALL_DIR/"
 
     # Create symlink
+    mkdir -p "$(dirname "$BIN_LINK")"
     rm -f "$BIN_LINK"
     ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
 else
@@ -37,6 +38,7 @@ else
     sudo cp -r "$AGENT_DIR/pty-helper" "$INSTALL_DIR/"
 
     # Create symlink
+    sudo mkdir -p "$(dirname "$BIN_LINK")"
     sudo rm -f "$BIN_LINK"
     sudo ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
 fi

@@ -334,6 +334,8 @@ install() {
         rm -rf "$INSTALL_DIR"
         mkdir -p "$INSTALL_DIR"
         cp -R "$extract_dir/." "$INSTALL_DIR/"
+        # /usr/local/bin can be missing on a fresh Apple Silicon Mac (Homebrew lives in /opt/homebrew)
+        mkdir -p "$(dirname "$BIN_LINK")"
         rm -f "$BIN_LINK"
         ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
         if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
@@ -344,6 +346,7 @@ install() {
         sudo rm -rf "$INSTALL_DIR"
         sudo mkdir -p "$INSTALL_DIR"
         sudo cp -R "$extract_dir/." "$INSTALL_DIR/"
+        sudo mkdir -p "$(dirname "$BIN_LINK")"
         sudo rm -f "$BIN_LINK"
         sudo ln -s "$INSTALL_DIR/sidehub-agent" "$BIN_LINK"
         if [ -f "$INSTALL_DIR/sidehub-cli" ]; then
