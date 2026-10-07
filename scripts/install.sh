@@ -23,8 +23,9 @@ set -e
 SIDEHUB_API="${SIDEHUB_API:-https://api.sidehub.io}"
 SIDEHUB_API="${SIDEHUB_API%/}"
 SIDEHUB_API="${SIDEHUB_API%/api}"
-# Checksums come straight from GitHub Releases, not through the SideHub API proxy that serves the archive:
-# a compromised proxy cannot hand out both a tampered archive and a matching checksum.
+# Checksums come straight from GitHub Releases, not through the SideHub API that hands out the archive (a redirect
+# to the release asset):
+# a compromised API cannot hand out both a tampered archive and a matching checksum.
 GITHUB_REPO="${SIDEHUB_GITHUB_REPO:-toregua/side_hub_agent}"
 # Resolved by resolve_install_target: system-wide (sudo when needed) or in the user's home
 INSTALL_DIR=""

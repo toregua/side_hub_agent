@@ -21,8 +21,9 @@ $SideHubApi = $SideHubApi.TrimEnd('/') -replace '/api$', ''
 $InstallDir = if ($env:SIDEHUB_INSTALL_DIR) { $env:SIDEHUB_INSTALL_DIR } else { "$env:LOCALAPPDATA\Programs\sidehub-agent" }
 # Written in every install folder: proves a folder is ours before it is wiped on reinstall
 $InstallMarker = ".sidehub-agent-install"
-# Checksums come straight from GitHub Releases, not through the SideHub API proxy that serves the archive:
-# a compromised proxy cannot hand out both a tampered archive and a matching checksum.
+# Checksums come straight from GitHub Releases, not through the SideHub API that hands out the archive (a redirect
+# to the release asset):
+# a compromised API cannot hand out both a tampered archive and a matching checksum.
 $GitHubRepo = if ($env:SIDEHUB_GITHUB_REPO) { $env:SIDEHUB_GITHUB_REPO } else { "toregua/side_hub_agent" }
 
 # Release signing key (RSA, PKCS#1 v1.5 / SHA-256 over checksums.sha256), the private half is the
@@ -96,14 +97,17 @@ function Get-Platform {
     return "win-$arch"
 }
 
+# Through the SideHub API (cached there), not the anonymous GitHub API: 60 requests an hour per IP, quickly
+# exhausted behind a shared office IP. A wrong tag from it gains nothing: the archive must still match the
+# signed checksums of that release, and versions below $MinVersion are refused.
 function Get-LatestTag {
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest" -UseBasicParsing
+        $release = Invoke-RestMethod -Uri "$SideHubApi/agent/releases/latest" -UseBasicParsing
     } catch {
-        Write-Host "GitHub API call failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "SideHub API call failed: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
-    if ($release.tag_name -match '^v\d') { return $release.tag_name }
+    if ($release.tag -match '^v\d') { return $release.tag }
     return $null
 }
 
@@ -289,11 +293,11 @@ function Install-SideHubAgent {
     $platform = Get-Platform
 
     # Pin "latest" to a tag so the archive and its checksum come from the same release
-    Set-InstallStage "install-download-failed" "couldn't resolve the latest release from GitHub"
+    Set-InstallStage "install-download-failed" "couldn't resolve the latest release from SideHub"
     if ($Version -eq "latest") {
         $tag = Get-LatestTag
         if (-not $tag) {
-            throw "Unable to resolve the latest version from https://github.com/$GitHubRepo/releases"
+            throw "Unable to resolve the latest version from $SideHubApi/agent/releases/latest"
         }
     } else {
         $tag = "v" + $Version.TrimStart('v')
