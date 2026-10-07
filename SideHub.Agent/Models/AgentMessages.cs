@@ -34,6 +34,17 @@ public class AgentConnectedMessage
     /// </summary>
     [JsonPropertyName("cliVersions")]
     public IReadOnlyDictionary<string, string>? CliVersions { get; init; }
+
+    /// <summary>
+    /// Whether each installed CLI is logged in ("claude": false = a run would stop on its login screen). A CLI whose
+    /// state is unknown is absent; null while not probed yet, like <see cref="CliVersions"/>.
+    /// </summary>
+    [JsonPropertyName("cliAuth")]
+    public IReadOnlyDictionary<string, bool>? CliAuth { get; init; }
+
+    /// <summary>The branch <c>origin/HEAD</c> of the agent's repository points to; null when unknown.</summary>
+    [JsonPropertyName("defaultBranch")]
+    public string? DefaultBranch { get; init; }
 }
 
 public class AgentHeartbeatMessage

@@ -41,6 +41,19 @@ public sealed class GitRepository
         return result is not { ExitCode: 1 };
     }
 
+    /// <summary>The branch <c>origin/HEAD</c> points to (set by <c>git clone</c>), e.g. <c>main</c> or <c>master</c>; null
+    /// without an origin, or when the clone never recorded it.</summary>
+    public async Task<string?> RemoteDefaultBranchAsync()
+    {
+        var result = await RunGitAsync(TopLevel, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD");
+        if (result is not { ExitCode: 0 })
+            return null;
+        var reference = result.Output.Trim();
+        return reference.StartsWith("origin/", StringComparison.Ordinal) && reference.Length > "origin/".Length
+            ? reference["origin/".Length..]
+            : null;
+    }
+
     /// <summary>Adds <paramref name="path"/> (anchored to the repository root) to
     /// <c>.git/info/exclude</c> unless it is already listed. The only write the agent makes under
     /// <c>.git/</c> (protected for <see cref="FileWritePolicy"/>): it goes through

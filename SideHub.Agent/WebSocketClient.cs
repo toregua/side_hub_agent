@@ -873,7 +873,7 @@ public class WebSocketClient : IAsyncDisposable
         var cliVersions = VersionInfo.CachedCliVersions;
         Log($"Agent version: {VersionInfo.AgentVersion}, CLIs: " + (cliVersions is null
             ? "probing"
-            : $"[{string.Join(", ", cliVersions.Select(v => $"{v.Key} {v.Value}"))}]"));
+            : $"[{string.Join(", ", cliVersions.Select(v => $"{v.Key} {v.Value}{LoginLabel(v.Key)}"))}]"));
 
         var message = new AgentConnectedMessage
         {
@@ -884,7 +884,9 @@ public class WebSocketClient : IAsyncDisposable
             AvailableShells = availableShells,
             RootPath = _workingDirectory,
             AgentVersion = VersionInfo.AgentVersion,
-            CliVersions = cliVersions
+            CliVersions = cliVersions,
+            CliAuth = VersionInfo.CachedCliAuth,
+            DefaultBranch = await ReadDefaultBranchAsync(),
         };
         await SendAsync(message, ct);
 
@@ -896,6 +898,37 @@ public class WebSocketClient : IAsyncDisposable
                 await SendConnectedMessageAsync(ct);
             });
     }
+
+    private static string LoginLabel(string cli) => VersionInfo.CachedCliAuth?.TryGetValue(cli, out var loggedIn) == true
+        ? loggedIn ? " (logged in)" : " (not logged in)"
+        : "";
+
+    /// <summary>The default branch of the repository the agent serves (its <c>origin/HEAD</c>), null when unknown.</summary>
+    private async Task<string?> ReadDefaultBranchAsync()
+    {
+        try
+        {
+            return await GitRepository.OpenAsync(_workingDirectory) is { } repository
+                ? await repository.RemoteDefaultBranchAsync()
+                : null;
+        }
+        catch (Exception ex)
+        {
+            Log($"Default branch not read: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A terminal closed: a CLI that was not logged in may be now (the user ran <c>/login</c> or <c>codex login</c> in
+    /// it). Probed again only in that case, and reported when it changed.
+    /// </summary>
+    private void RefreshCliAuthAfterTerminal(CancellationToken ct) =>
+        RunInBackground("CLI login probe", async () =>
+        {
+            if (await VersionInfo.RefreshCliAuthAsync(ct))
+                await SendConnectedMessageAsync(ct);
+        });
 
     private void StartHeartbeat(CancellationToken ct)
     {
@@ -1573,8 +1606,13 @@ public class WebSocketClient : IAsyncDisposable
                         _ptySessions.TryRemove(ptySessionId, out _);
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
                         CleanupNotifyFifo(ptySessionId);
-                        await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId }, ct);
+                        // A run's last lines say why it failed (not logged in, command not found…); never logged here.
+                        var lastOutput = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null
+                            ? TerminalText.LastLines(executor.GetBufferedOutput())
+                            : null;
+                        await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput }, ct);
                         HarvestFinalUsage(ptySessionId, "exit");
+                        RefreshCliAuthAfterTerminal(ct);
                     },
                     columns,
                     rows,

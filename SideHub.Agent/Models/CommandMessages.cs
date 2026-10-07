@@ -223,6 +223,13 @@ public class PtyExitedMessage
 
     [JsonPropertyName("ptySessionId")]
     public string? PtySessionId { get; init; }
+
+    /// <summary>
+    /// For a run (<c>run-*</c>): the last lines the terminal showed, as plain text with secrets masked, so a failed
+    /// run says why (CLI not logged in, missing command…). Null otherwise. Ignored by older backends.
+    /// </summary>
+    [JsonPropertyName("lastOutput")]
+    public string? LastOutput { get; init; }
 }
 
 public class PtyHistoryMessage

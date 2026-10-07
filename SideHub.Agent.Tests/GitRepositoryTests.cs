@@ -66,6 +66,34 @@ public class GitRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task The_remote_default_branch_comes_from_origin_HEAD()
+    {
+        if (!GitAvailable)
+            return;
+
+        var dir = Directory.CreateTempSubdirectory("sidehub-clone-");
+        try
+        {
+            var origin = Path.Combine(dir.FullName, "origin");
+            var clone = Path.Combine(dir.FullName, "clone");
+            Directory.CreateDirectory(origin);
+            Git(origin, "init", "-q", "-b", "trunk");
+            Git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
+            Git(dir.FullName, "clone", "-q", origin, clone);
+
+            var cloned = await GitRepository.OpenAsync(clone);
+            var withoutRemote = await GitRepository.OpenAsync(origin);
+
+            Assert.Equal("trunk", await cloned!.RemoteDefaultBranchAsync());
+            Assert.Null(await withoutRemote!.RemoteDefaultBranchAsync());
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
     private static void Git(string cwd, params string[] args)
     {
         var psi = new ProcessStartInfo(ExecutableResolver.Resolve("git")!) { WorkingDirectory = cwd };
