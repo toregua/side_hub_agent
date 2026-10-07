@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using SideHub.Cli;
 
 namespace SideHub.Agent;
 
@@ -167,7 +168,9 @@ report it with `sidehub-cli workflow step-fail "<reason>"`.
     {
         try
         {
-            using var http = new HttpClient { BaseAddress = new Uri(apiUrl.TrimEnd('/') + "/") };
+            // X-Agent-Token goes on every request: redirects are only followed within the API's origin.
+            var handler = new SameOriginRedirectHandler(new SocketsHttpHandler { AllowAutoRedirect = false });
+            using var http = new HttpClient(handler) { BaseAddress = new Uri(apiUrl.TrimEnd('/') + "/") };
             http.DefaultRequestHeaders.Add("X-Agent-Token", agentToken);
             http.Timeout = TimeSpan.FromSeconds(5);
 

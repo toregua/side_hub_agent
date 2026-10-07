@@ -13,6 +13,11 @@
     <Version>0.0.0-dev</Version>
   </PropertyGroup>
 
+  <!-- Same redirect policy as sidehub-cli for the requests carrying X-Agent-Token (setup, drive index). -->
+  <ItemGroup>
+    <Compile Include="..\SideHub.Cli\SameOriginRedirectHandler.cs" Link="SameOriginRedirectHandler.cs" />
+  </ItemGroup>
+
   <!-- Include pty-helper Node.js files. node_modules is installed from the lockfile with npm ci
        (production deps, no install scripts): bundled in the release archive by the CI, or by install-local.sh. -->
   <ItemGroup>

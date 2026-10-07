@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using SideHub.Cli;
 
 namespace SideHub.Agent;
 
@@ -59,7 +60,11 @@ public static class AgentSetup
         SetupInfo? info;
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            // X-Agent-Token is sent: redirects are only followed within the API's origin.
+            using var http = new HttpClient(new SameOriginRedirectHandler(new SocketsHttpHandler { AllowAutoRedirect = false }))
+            {
+                Timeout = TimeSpan.FromSeconds(20),
+            };
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{apiBase}/agent/setup");
             request.Headers.Add("X-Agent-Token", token.Trim());
             using var response = await http.SendAsync(request, ct);

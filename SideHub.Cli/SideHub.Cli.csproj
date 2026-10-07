@@ -11,4 +11,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SideHub.Agent.Tests" />
+  </ItemGroup>
+
 </Project>

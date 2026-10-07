@@ -6,9 +6,9 @@ namespace SideHub.Cli;
 /// Follows redirects only to the origin (scheme, host, port) the request was sent to. The API client sends
 /// X-Agent-Token on every request, and HttpClient's own redirect handling only strips Authorization: a 3xx to another
 /// host would hand it the token. A redirect elsewhere is returned as is, and fails like any other non-2xx response.
-/// The inner handler must not follow redirects itself.
+/// The inner handler must not follow redirects itself. Also compiled into sidehub-agent (linked source), hence internal.
 /// </summary>
-public sealed class SameOriginRedirectHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+internal sealed class SameOriginRedirectHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
 {
     private const int MaxRedirects = 10;
 
