@@ -137,6 +137,10 @@ is committed to the repository. Each release ships:
 - `checksums.sha256`: SHA-256 of every archive;
 - `checksums.sha256.sig`: RSA signature (PKCS#1 v1.5, SHA-256) of `checksums.sha256` by the
   release signing key, whose public half is embedded in `install.sh` / `install.ps1`;
+- on Windows, `sidehub-agent.exe`, `sidehub-cli.exe` and node-pty's native modules carry an
+  Authenticode signature (Azure Artifact Signing, timestamped) once Windows signing is set up
+  (see below), so SmartScreen and Smart App Control see a known publisher. node-pty's `conpty`
+  files keep Microsoft's own signature. Check with `Get-AuthenticodeSignature .\sidehub-agent.exe`;
 - a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
   (Sigstore, signed with the workflow's OIDC identity) for each archive and for
   `checksums.sha256`, proving it was built by this repository's release workflow from the
@@ -178,6 +182,28 @@ python3 -c "import base64,subprocess as s;h=s.check_output(['openssl','rsa','-in
 
 then store `release-signing-key.pem` as the `RELEASE_SIGNING_KEY` secret and keep it offline. Releases
 signed with the previous key stay installable only with scripts that still embed it.
+
+**Windows code signing.** The release workflow signs the Windows executables with
+[Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) when the
+`ARTIFACT_SIGNING_ENDPOINT` repository variable is set; until then they ship unsigned and the run
+shows a warning. Once it is set, a missing secret or a signature that does not verify (signed,
+timestamped, chained to a trusted root) fails the release. To set it up:
+
+1. In Azure, create an Artifact Signing account, complete the identity validation (check the
+   eligibility of individuals and organizations by country) and create a *Public Trust* certificate
+   profile.
+2. Register an application (service principal) with a client secret, and give it the
+   *Artifact Signing Certificate Profile Signer* role on the certificate profile only.
+3. In the repository (*Settings → Secrets and variables → Actions*):
+   - variables: `ARTIFACT_SIGNING_ENDPOINT` (the account's region endpoint, e.g.
+     `https://weu.codesigning.azure.net/`), `ARTIFACT_SIGNING_ACCOUNT`,
+     `ARTIFACT_SIGNING_CERTIFICATE_PROFILE`;
+   - secrets: `ARTIFACT_SIGNING_TENANT_ID`, `ARTIFACT_SIGNING_CLIENT_ID`,
+     `ARTIFACT_SIGNING_CLIENT_SECRET`.
+
+The client secret expires (24 months at most): renew it before then, or releases fail. Signatures are
+timestamped, so executables already released stay valid after the short-lived signing certificate
+expires.
 
 **Immutable releases.** Enable *Settings → General → Releases → Enable release immutability* on the
 repository: once published, a release's assets can no longer be replaced or deleted. The release

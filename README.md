@@ -251,7 +251,8 @@ The scripts verify the signature of the release's `checksums.sha256` (fetched fr
 against the key embedded in the script, then the archive against it, and abort on any mismatch. The
 archive ships `pty-helper`'s Node.js dependencies prebuilt (`npm ci` from the lockfile in the release
 CI): nothing is fetched from npm at install time. Each release also carries a build provenance
-attestation: see [Verifying a release](SECURITY.md#verifying-a-release).
+attestation, and the Windows executables an Authenticode signature: see
+[Verifying a release](SECURITY.md#verifying-a-release).
 
 ### Configure
 

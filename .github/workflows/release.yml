@@ -104,6 +104,73 @@ jobs:
           # Only this platform's native prebuild is needed
           find node_modules/node-pty/prebuilds -mindepth 1 -maxdepth 1 ! -name "$prebuild" -exec rm -rf {} +
 
+      # Authenticode signature (Azure Artifact Signing) of what Windows runs from the archive, so SmartScreen and
+      # Smart App Control see a known publisher instead of an unknown executable. Turned on by the
+      # ARTIFACT_SIGNING_ENDPOINT repository variable (see SECURITY.md); without it, Windows executables ship
+      # unsigned with a warning. Once on, a missing secret or a signature that does not verify fails the release.
+      - name: List files to sign (Windows)
+        id: authenticode
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          SIGNING_CLIENT_SECRET: ${{ secrets.ARTIFACT_SIGNING_CLIENT_SECRET }}
+        run: |
+          if (-not $env:SIGNING_ENDPOINT) {
+            Write-Output "::warning::ARTIFACT_SIGNING_ENDPOINT is not set: Windows executables are not Authenticode-signed (see SECURITY.md)"
+            exit 0
+          }
+          if (-not $env:SIGNING_CLIENT_SECRET) {
+            Write-Output "::error::ARTIFACT_SIGNING_CLIENT_SECRET secret is not set: refusing to publish unsigned Windows executables (see SECURITY.md)"
+            exit 1
+          }
+          # The agent and the CLI, plus node-pty's native modules that ship unsigned. Files that already carry a
+          # valid signature (conpty, signed by Microsoft) keep it.
+          $files = @((Resolve-Path publish\sidehub-agent.exe).Path, (Resolve-Path publish-cli\sidehub-cli.exe).Path)
+          $files += Get-ChildItem publish\pty-helper\node_modules -Recurse -File -Include *.exe,*.dll,*.node |
+            Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' } |
+            ForEach-Object FullName
+          $files | ForEach-Object { Write-Output "To sign: $_" }
+          "files=$($files -join ',')" >> $env:GITHUB_OUTPUT
+
+      - name: Sign files (Windows)
+        if: steps.authenticode.outputs.files != ''
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.ARTIFACT_SIGNING_TENANT_ID }}
+          azure-client-id: ${{ secrets.ARTIFACT_SIGNING_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.ARTIFACT_SIGNING_CLIENT_SECRET }}
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ steps.authenticode.outputs.files }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: SideHub Agent
+          description-url: https://github.com/${{ github.repository }}
+
+      - name: Verify signatures (Windows)
+        if: steps.authenticode.outputs.files != ''
+        shell: pwsh
+        env:
+          FILES: ${{ steps.authenticode.outputs.files }}
+        run: |
+          $failed = $false
+          foreach ($file in $env:FILES -split ',') {
+            $sig = Get-AuthenticodeSignature $file
+            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) {
+              Write-Output "::error::$file is not validly signed and timestamped ($($sig.Status): $($sig.StatusMessage))"
+              $failed = $true
+            } else {
+              Write-Output "$file signed by $($sig.SignerCertificate.Subject)"
+            }
+          }
+          if ($failed) { exit 1 }
+          # A signed single-file bundle must still start
+          & publish\sidehub-agent.exe help | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::signed sidehub-agent.exe does not start"; exit 1 }
+
       - name: Create tar.gz archive (Unix)
         if: runner.os != 'Windows'
         run: |
