@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace SideHub.Agent;
@@ -19,8 +20,12 @@ public class AgentConfig
     [JsonPropertyName("repositoryId")]
     public string? RepositoryId { get; init; }
 
+    /// <summary>
+    /// Read from the <see cref="AgentTokenStore"/>, outside the project. Configs written before it held the token
+    /// inline: <see cref="Load"/> moves it to the store and removes it from the file.
+    /// </summary>
     [JsonPropertyName("agentToken")]
-    public string? AgentToken { get; init; }
+    public string? AgentToken { get; set; }
 
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; init; }
@@ -46,6 +51,9 @@ public class AgentConfig
     [JsonIgnore]
     public string? ConfigFilePath { get; private set; }
 
+    /// <summary>Where the token is expected, for the error when it is missing.</summary>
+    private string? _tokenPath;
+
     /// <summary>
     /// Loads every <c>.sidehub/*.json</c> the agent may trust. A config decides which backend the agent obeys, and
     /// the backend runs commands in its PTYs: a config arriving through a commit (<c>sidehubUrl</c> pointing to an
@@ -53,7 +61,8 @@ public class AgentConfig
     /// symbolic links and files belonging to another user are ignored, with one warning each. Throws when no
     /// config is left.
     /// </summary>
-    public static async Task<List<AgentConfig>> LoadAllAsync(string baseDirectory, Action<string>? warn = null)
+    public static async Task<List<AgentConfig>> LoadAllAsync(
+        string baseDirectory, Action<string>? warn = null, AgentTokenStore? tokens = null)
     {
         var configDir = Path.Combine(baseDirectory, ConfigFolder);
 
@@ -91,7 +100,7 @@ public class AgentConfig
                 continue;
             }
 
-            configs.Add(Load(file));
+            configs.Add(Load(file, tokens, warn));
         }
 
         if (configs.Count == 0)
@@ -104,8 +113,8 @@ public class AgentConfig
     }
 
     /// <summary>
-    /// Tightens .sidehub/ to 0700 and every config holding a token to 0600, so other users of the machine can't read
-    /// the token (older versions wrote them with the umask, usually 0644). Returns one warning per file corrected.
+    /// Tightens .sidehub/ to 0700 and every config to 0600, so other users of the machine can't read them (older
+    /// versions wrote them with the umask, usually 0644, with the token inline). Returns one warning per file corrected.
     /// </summary>
     public static List<string> RestrictPermissions(string baseDirectory, IEnumerable<AgentConfig> configs)
     {
@@ -122,23 +131,24 @@ public class AgentConfig
             warnings.Add($"couldn't restrict {configDir} to its owner: {ex.Message}");
         }
 
-        foreach (var path in configs.Where(c => !string.IsNullOrEmpty(c.AgentToken)).Select(c => c.ConfigFilePath))
+        foreach (var path in configs.Select(c => c.ConfigFilePath))
         {
             if (path is null || !PrivateFiles.IsExposed(path)) continue;
             try
             {
                 PrivateFiles.RestrictFile(path);
-                warnings.Add($"{path} holds the agent token and was readable by other users, restricted to its owner (0600)");
+                warnings.Add($"{path} was readable by other users, restricted to its owner (0600)");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                warnings.Add($"{path} holds the agent token and is readable by other users (chmod 600 it): {ex.Message}");
+                warnings.Add($"{path} is readable by other users (chmod 600 it): {ex.Message}");
             }
         }
         return warnings;
     }
 
-    public static AgentConfig Load(string path)
+    /// <param name="tokens">Where the token is read from (and moved to): <see cref="AgentTokenStore.ForCurrentUser"/> by default.</param>
+    public static AgentConfig Load(string path, AgentTokenStore? tokens = null, Action<string>? warn = null)
     {
         if (!File.Exists(path))
         {
@@ -154,8 +164,37 @@ public class AgentConfig
         }
 
         config.ConfigFilePath = path;
+        if (!string.IsNullOrWhiteSpace(config.AgentId))
+        {
+            tokens ??= AgentTokenStore.ForCurrentUser();
+            if (!string.IsNullOrWhiteSpace(config.AgentToken))
+                MoveTokenToStore(path, config.AgentId, config.AgentToken, tokens, warn);
+            else
+                config.AgentToken = tokens.Read(config.AgentId);
+            config._tokenPath = tokens.PathFor(config.AgentId);
+        }
         config.Validate();
         return config;
+    }
+
+    /// <summary>
+    /// A config written before the token store: the token goes to the store, then out of the file. When the file
+    /// can't be rewritten, the agent still runs with the token it read, and says so.
+    /// </summary>
+    private static void MoveTokenToStore(string path, string agentId, string token, AgentTokenStore tokens, Action<string>? warn)
+    {
+        tokens.Save(agentId, token);
+        try
+        {
+            var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            json.Remove("agentToken");
+            PrivateFiles.WriteAllText(path, json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
+            warn?.Invoke($"Moved the agent token out of {path}, to {tokens.PathFor(agentId)}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            warn?.Invoke($"The agent token was copied to {tokens.PathFor(agentId)} but couldn't be removed from {path} ({ex.Message}): delete its \"agentToken\" line");
+        }
     }
 
     public void Validate()
@@ -191,7 +230,9 @@ public class AgentConfig
         // repositoryId is optional (agents are now at workspace level)
 
         if (string.IsNullOrWhiteSpace(AgentToken))
-            errors.Add("agentToken is required");
+            errors.Add(_tokenPath is null
+                ? "agentToken is required"
+                : $"no agent token in {_tokenPath}: run `sidehub-agent setup` again with the command copied from SideHub");
 
         if (string.IsNullOrWhiteSpace(WorkingDirectory))
             errors.Add("workingDirectory is required");

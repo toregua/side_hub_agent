@@ -17,6 +17,7 @@ public class UntrustedSidehubFilesTests : IDisposable
     private readonly string _outside = Directory.CreateTempSubdirectory("sidehub-target-").FullName;
     private string SidehubDir => Path.Combine(_dir, ".sidehub");
     private string RunDir => Path.Combine(SidehubDir, "run");
+    private AgentTokenStore Tokens => new(Path.Combine(_outside, "tokens"));
 
     public void Dispose()
     {
@@ -25,11 +26,11 @@ public class UntrustedSidehubFilesTests : IDisposable
     }
 
     private static AgentSetup.SetupInfo Info(string name) =>
-        new(name, "wss://api.sidehub.io/ws/agent", $"agent-{name}", "w1", null, ["shell"]);
+        new(name, "wss://api.sidehub.io/ws/agent", $"agent-{Path.GetFileNameWithoutExtension(name)}", "w1", null, ["shell"]);
 
     private string WriteConfig(string fileName)
     {
-        var path = AgentSetup.WriteConfig(_dir, Info(fileName), "sh_agent_x");
+        var path = AgentSetup.WriteConfig(_dir, Info(fileName), "sh_agent_x", Tokens);
         var target = Path.Combine(SidehubDir, fileName);
         if (path != target) File.Move(path, target);
         return target;
@@ -59,7 +60,7 @@ public class UntrustedSidehubFilesTests : IDisposable
         var local = WriteConfig("agent.json");
         var warnings = new List<string>();
 
-        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add);
+        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add, Tokens);
 
         Assert.Equal(local, Assert.Single(configs).ConfigFilePath);
         Assert.Contains(tracked, Assert.Single(warnings));
@@ -73,7 +74,7 @@ public class UntrustedSidehubFilesTests : IDisposable
         Git("init", "-q");
         Git("add", "-f", WriteConfig("evil.json"));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => AgentConfig.LoadAllAsync(_dir));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => AgentConfig.LoadAllAsync(_dir, tokens: Tokens));
     }
 
     [Fact]
@@ -85,7 +86,7 @@ public class UntrustedSidehubFilesTests : IDisposable
         File.CreateSymbolicLink(link, real);
         var warnings = new List<string>();
 
-        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add);
+        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add, Tokens);
 
         Assert.Equal(real, Assert.Single(configs).ConfigFilePath);
         Assert.Contains("symbolic link", Assert.Single(warnings));
@@ -100,7 +101,7 @@ public class UntrustedSidehubFilesTests : IDisposable
         WriteConfig("agent.json");
         var warnings = new List<string>();
 
-        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add);
+        var configs = await AgentConfig.LoadAllAsync(_dir, warnings.Add, Tokens);
 
         Assert.Single(configs);
         Assert.Contains("another user", Assert.Single(warnings));

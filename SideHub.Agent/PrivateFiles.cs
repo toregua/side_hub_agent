@@ -3,10 +3,10 @@ using System.Runtime.Versioning;
 namespace SideHub.Agent;
 
 /// <summary>
-/// Files only the agent's user may read: the configs (they hold the agent token), the logs, the PID file and the
-/// pending usage reports. Files are 0600 and folders 0700, set at creation (no window where the umask applies) and
-/// re-applied to files left by older versions. No-op on Windows, where ACLs are inherited from the profile.
-/// <para>They live in the project's <c>.sidehub/</c> folder, which a commit can fill: a link committed there (say
+/// Files only the agent's user may read: the configs, the logs, the PID file, the pending usage reports and the
+/// agent tokens (in the user's configuration folder, see <see cref="AgentTokenStore"/>). Files are 0600 and folders
+/// 0700, set at creation (no window where the umask applies) and re-applied to files left by older versions. No-op on Windows, where ACLs are inherited from the profile.
+/// <para>Most live in the project's <c>.sidehub/</c> folder, which a commit can fill: a link committed there (say
 /// <c>.sidehub/run/sidehub-agent.log -> ~/.bashrc</c>) would make the agent truncate, append to or chmod the target.
 /// So no entry from <c>.sidehub/</c> down to the file may be a symbolic link or belong to another user; the operation
 /// throws instead. Once those folders are checked and 0700, no one else can plant an entry in them.</para>

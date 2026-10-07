@@ -96,10 +96,12 @@ silently do. They are not a security boundary against a compromised backend.
 - Code execution by the backend through a PTY (`pty.input`): always possible.
 - Access to anything the agent's OS user can read or write, including outside
   `workingDirectory`.
-- The agent token stored in `.sidehub/*.json`: anyone who can read it can impersonate the
-  agent. Keep it out of version control (`.sidehub/` should be git-ignored) and readable by
-  the agent user only. Terminals run as that same user, so a process in a terminal can still
-  read the file directly.
+- The agent token, stored outside the project in `~/.config/sidehub/tokens/`
+  (`%LOCALAPPDATA%\SideHub\tokens\` on Windows), `0600`: anyone who can read it can
+  impersonate the agent. It is kept out of the work tree so a CLI in a terminal does not find
+  it next to the code, but terminals run as the agent's user, so a process there can still read
+  it. SideHub bounds what the token can do: it acts on its own agent only, and never drives or
+  reads terminals (exec, terminal input and output are reserved to users).
 - Network egress from the shells and CLIs the agent runs.
 
 ## Hardening options (`agent.json`)

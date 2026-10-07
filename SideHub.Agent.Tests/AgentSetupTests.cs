@@ -6,6 +6,7 @@ namespace SideHub.Agent.Tests;
 public class AgentSetupTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("sidehub-setup-").FullName;
+    private AgentTokenStore Tokens => new(Path.Combine(_dir, "user-config", "tokens"));
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
@@ -13,32 +14,36 @@ public class AgentSetupTests : IDisposable
         new(name, "wss://api.sidehub.io/ws/agent", id, "w1", "r1", ["shell", "claude-code"]);
 
     [Fact]
-    public void Writes_agent_json_with_the_token_and_repository()
+    public void Writes_agent_json_with_the_repository_and_the_token_out_of_the_project()
     {
-        var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x");
+        var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x", Tokens);
 
         Assert.Equal(Path.Combine(_dir, ".sidehub", "agent.json"), path);
         var json = JsonNode.Parse(File.ReadAllText(path))!;
-        Assert.Equal("sh_agent_x", json["agentToken"]!.GetValue<string>());
+        Assert.Null(json["agentToken"]);
+        Assert.DoesNotContain("sh_agent_x", File.ReadAllText(path));
         Assert.Equal("r1", json["repositoryId"]!.GetValue<string>());
-        Assert.Equal("a1", AgentConfig.Load(path).AgentId);
+        Assert.Equal("sh_agent_x", Tokens.Read("a1"));
+        var config = AgentConfig.Load(path, Tokens);
+        Assert.Equal("a1", config.AgentId);
+        Assert.Equal("sh_agent_x", config.AgentToken);
     }
 
     [Fact]
     public void Running_setup_again_rewrites_the_same_file()
     {
-        AgentSetup.WriteConfig(_dir, Info(), "old");
-        var path = AgentSetup.WriteConfig(_dir, Info(), "new");
+        AgentSetup.WriteConfig(_dir, Info(), "old", Tokens);
+        var path = AgentSetup.WriteConfig(_dir, Info(), "new", Tokens);
 
         Assert.Single(Directory.GetFiles(Path.Combine(_dir, ".sidehub")));
-        Assert.Equal("new", JsonNode.Parse(File.ReadAllText(path))!["agentToken"]!.GetValue<string>());
+        Assert.Equal("new", AgentConfig.Load(path, Tokens).AgentToken);
     }
 
     [Fact]
     public void A_second_agent_gets_its_own_file()
     {
-        AgentSetup.WriteConfig(_dir, Info("a1"), "t1");
-        var path = AgentSetup.WriteConfig(_dir, Info("a2", "Rose d'Or VPS"), "t2");
+        AgentSetup.WriteConfig(_dir, Info("a1"), "t1", Tokens);
+        var path = AgentSetup.WriteConfig(_dir, Info("a2", "Rose d'Or VPS"), "t2", Tokens);
 
         Assert.Equal(Path.Combine(_dir, ".sidehub", "rose-d-or-vps.json"), path);
         Assert.Equal(2, Directory.GetFiles(Path.Combine(_dir, ".sidehub")).Length);

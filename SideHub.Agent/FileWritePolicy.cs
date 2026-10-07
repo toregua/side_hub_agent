@@ -8,7 +8,7 @@ namespace SideHub.Agent;
 /// Where a file written into the working directory may land, whether the backend sent it
 /// (<c>file.write</c>, terminal attachments) or the agent generates it (skill files): a file inside
 /// the agent's working directory once symlinks are resolved, never under <c>.git/</c> (hooks = code
-/// execution) or <c>.sidehub/</c> (agent config and token), never one of the files tools load as
+/// execution) or <c>.sidehub/</c> (agent config, logs), never one of the files tools load as
 /// code or command configuration (<see cref="ProtectedFiles"/>), and never larger than
 /// <see cref="MaxFileBytes"/>. The write itself goes through <see cref="OpenWrite"/>, which follows
 /// no link, so a link planted between the check and the write cannot redirect it.

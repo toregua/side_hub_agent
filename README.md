@@ -246,8 +246,9 @@ attestation: see [Verifying a release](SECURITY.md#verifying-a-release).
    sidehub-agent setup --token-stdin
    ```
 
-   `setup` asks SideHub which agent the token belongs to, writes `.sidehub/agent.json` (`0600`, kept out
-   of git), and starts the agent in the background. Add `--no-start` to only write the file.
+   `setup` asks SideHub which agent the token belongs to, keeps the token in your user configuration
+   folder (see [Agent token](#agent-token)), writes `.sidehub/agent.json` (`0600`, kept out of git), and
+   starts the agent in the background. Add `--no-start` to only write the files.
 
 ### Root
 
@@ -287,7 +288,6 @@ Each `.json` file in `.sidehub/` defines one agent; all are started in parallel 
   "sidehubUrl": "wss://api.sidehub.io/ws/agent",
   "agentId": "<agent-uuid>",
   "workspaceId": "<workspace-uuid>",
-  "agentToken": "sh_agent_<token>",
   "workingDirectory": ".",
   "capabilities": ["shell", "claude-code"]
 }
@@ -299,14 +299,26 @@ Each `.json` file in `.sidehub/` defines one agent; all are started in parallel 
 | `sidehubUrl` | Yes | `wss://api.sidehub.io/ws/agent` (`ws://` is only accepted for `localhost`) |
 | `agentId` | Yes | Agent UUID (from SideHub) |
 | `workspaceId` | Yes | Workspace UUID (from SideHub) |
-| `agentToken` | Yes | Agent token (prefix `sh_agent_`) |
 | `workingDirectory` | Yes | Folder PTYs start in and are confined to (`.` or an absolute path) |
 | `capabilities` | Yes | Labels reported to SideHub at connection (`setup` writes `["shell", "claude-code"]`) |
 | `allowCommandExecute` | No | Allow one-shot `command.execute` from the backend (default `true`) |
 | `allowFileWrite` | No | Allow the backend to write files under `workingDirectory`, such as terminal image uploads and skill files (default `true`) |
 
 The agent ignores configs tracked by git, symbolic links and files owned by another user (a config
-decides which backend the agent obeys), and tightens `.sidehub/` to `0700` and token files to `0600`.
+decides which backend the agent obeys), and tightens `.sidehub/` to `0700` and configs to `0600`.
+
+### Agent token
+
+The token is not in `.sidehub/`, which sits in the project, the working directory of every terminal. It
+is kept in one file per agent, `0600` in a `0700` folder:
+
+| OS | Location |
+|---|---|
+| Linux, macOS | `~/.config/sidehub/tokens/<agentId>.token` (`$XDG_CONFIG_HOME/sidehub/tokens/` when set) |
+| Windows | `%LOCALAPPDATA%\SideHub\tokens\<agentId>.token` |
+
+A config written by an older version still holds an `agentToken` field: at startup the agent moves it to
+that file and removes it from the config.
 
 ## Security
 
@@ -429,6 +441,7 @@ side_hub_agent/
 │   ├── Program.cs, Commands.cs    # CLI: setup, start, stop, restart, logs, status
 │   ├── AgentSetup.cs              # `setup`: fetch the agent's config from its token
 │   ├── AgentConfig.cs             # Load and validate .sidehub/*.json
+│   ├── AgentTokenStore.cs         # Agent tokens, out of the project (~/.config/sidehub/tokens/)
 │   ├── AgentRunner.cs             # One runner per config
 │   ├── DiagnosticReporter.cs      # Failure reports (install / start / connection) to SideHub
 │   ├── StartupChecks.cs           # pty-helper and CLI checks, once per start
@@ -458,8 +471,8 @@ side_hub_agent/
 
 ## Troubleshooting
 
-**Agent won't connect**: check the token in `.sidehub/*.json` (a `401` at the handshake means it
-matches no agent: copy the setup command again from SideHub), that `sidehubUrl` uses `wss://`, and that
+**Agent won't connect**: check the token (see [Agent token](#agent-token); a `401` at the handshake
+means it matches no agent: copy the setup command again from SideHub), that `sidehubUrl` uses `wss://`, and that
 outbound HTTPS/WebSocket traffic to `api.sidehub.io` is allowed.
 
 **"Configuration directory not found"**: run `sidehub-agent` from the project folder that holds

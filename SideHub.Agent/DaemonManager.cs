@@ -24,7 +24,7 @@ public class DaemonManager
         _logFile = Path.Combine(_runDirectory, "sidehub-agent.log");
     }
 
-    /// <summary>Creates .sidehub/run/, and tightens it and .sidehub/ to 0700 (they hold the token, logs and PID).</summary>
+    /// <summary>Creates .sidehub/run/, and tightens it and .sidehub/ to 0700 (they hold the configs, logs and PID).</summary>
     public void EnsureRunDirectory()
     {
         PrivateFiles.CreateDirectory(_configDirectory);

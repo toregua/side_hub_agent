@@ -9,6 +9,7 @@ namespace SideHub.Agent;
 /// <summary>
 /// `sidehub-agent setup --token &lt;token&gt;`: asks SideHub which agent the token belongs to, writes
 /// .sidehub/&lt;file&gt;.json in the current folder (the project), keeps it out of git, then the caller starts the agent.
+/// The token itself goes to the <see cref="AgentTokenStore"/>, outside the project.
 /// </summary>
 public static class AgentSetup
 {
@@ -84,8 +85,9 @@ public static class AgentSetup
 
         var path = WriteConfig(baseDirectory, info, token.Trim());
         Console.WriteLine($"[SideHub] Agent \"{info.Name}\" configured in {path}");
+        Console.WriteLine($"[SideHub] Token kept in {AgentTokenStore.ForCurrentUser().PathFor(info.AgentId)}");
         if (await IgnoreInGitAsync(baseDirectory))
-            Console.WriteLine("[SideHub] Added .sidehub/ to .git/info/exclude (the file holds the agent's token)");
+            Console.WriteLine("[SideHub] Added .sidehub/ to .git/info/exclude (it holds the agent's configuration and logs)");
         return 0;
     }
 
@@ -114,10 +116,13 @@ public static class AgentSetup
 
     /// <summary>
     /// Writes the config next to the others: agent.json, or the file already holding this agent, or a file named
-    /// after the agent when agent.json belongs to another one. Returns the path written.
+    /// after the agent when agent.json belongs to another one. The token goes to <paramref name="tokens"/>
+    /// (<see cref="AgentTokenStore.ForCurrentUser"/> by default), never into the config. Returns the path written.
     /// </summary>
-    public static string WriteConfig(string baseDirectory, SetupInfo info, string token)
+    public static string WriteConfig(string baseDirectory, SetupInfo info, string token, AgentTokenStore? tokens = null)
     {
+        (tokens ?? AgentTokenStore.ForCurrentUser()).Save(info.AgentId, token);
+
         var dir = Path.Combine(baseDirectory, ".sidehub");
         PrivateFiles.CreateDirectory(dir);
 
@@ -131,7 +136,6 @@ public static class AgentSetup
             ["sidehubUrl"] = info.SidehubUrl,
             ["agentId"] = info.AgentId,
             ["workspaceId"] = info.WorkspaceId,
-            ["agentToken"] = token,
             ["workingDirectory"] = ".",
             ["capabilities"] = new JsonArray((info.Capabilities ?? ["shell", "claude-code"]).Select(c => (JsonNode?)c).ToArray()),
         };
@@ -156,7 +160,7 @@ public static class AgentSetup
         }
         catch (IOException ex)
         {
-            Console.WriteLine($"[SideHub] Warning: couldn't add .sidehub/ to {repository.ExcludeFile} ({ex.Message}): keep it out of your commits, it holds the agent's token.");
+            Console.WriteLine($"[SideHub] Warning: couldn't add .sidehub/ to {repository.ExcludeFile} ({ex.Message}): keep it out of your commits.");
             return false;
         }
     }

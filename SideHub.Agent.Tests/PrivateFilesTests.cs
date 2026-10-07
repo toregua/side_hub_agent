@@ -18,6 +18,8 @@ public class PrivateFilesTests : IDisposable
     private readonly string _dir = Directory.CreateTempSubdirectory("sidehub-perms-").FullName;
     private string SidehubDir => Path.Combine(_dir, ".sidehub");
     private string RunDir => Path.Combine(SidehubDir, "run");
+    private string TokensDir => Path.Combine(_dir, "user-config", "sidehub", "tokens");
+    private AgentTokenStore Tokens => new(TokensDir);
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
@@ -31,21 +33,32 @@ public class PrivateFilesTests : IDisposable
     {
         if (OperatingSystem.IsWindows()) return;
 
-        var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x");
+        var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x", Tokens);
 
         Assert.Equal(Rw, Mode(path));
         Assert.Equal(Rwx, Mode(SidehubDir));
     }
 
     [Fact]
+    public void Setup_writes_the_token_0600_in_a_0700_folder()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x", Tokens);
+
+        Assert.Equal(Rw, Mode(Tokens.PathFor("a1")));
+        Assert.Equal(Rwx, Mode(TokensDir));
+    }
+
+    [Fact]
     public void Setup_tightens_a_config_and_folder_left_world_readable()
     {
         if (OperatingSystem.IsWindows()) return;
-        var path = AgentSetup.WriteConfig(_dir, Info(), "old");
+        var path = AgentSetup.WriteConfig(_dir, Info(), "old", Tokens);
         File.SetUnixFileMode(path, WorldReadable);
         File.SetUnixFileMode(SidehubDir, WorldListable);
 
-        AgentSetup.WriteConfig(_dir, Info(), "new");
+        AgentSetup.WriteConfig(_dir, Info(), "new", Tokens);
 
         Assert.Equal(Rw, Mode(path));
         Assert.Equal(Rwx, Mode(SidehubDir));
@@ -55,17 +68,17 @@ public class PrivateFilesTests : IDisposable
     public async Task Startup_restricts_an_exposed_config_and_warns_once()
     {
         if (OperatingSystem.IsWindows()) return;
-        var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x");
+        var path = AgentSetup.WriteConfig(_dir, Info(), "sh_agent_x", Tokens);
         File.SetUnixFileMode(path, WorldReadable);
         File.SetUnixFileMode(SidehubDir, WorldListable);
 
-        var warnings = AgentConfig.RestrictPermissions(_dir, await AgentConfig.LoadAllAsync(_dir));
+        var warnings = AgentConfig.RestrictPermissions(_dir, await AgentConfig.LoadAllAsync(_dir, tokens: Tokens));
 
         Assert.Equal(2, warnings.Count);
         Assert.Contains(warnings, w => w.Contains(path) && w.Contains("0600"));
         Assert.Equal(Rw, Mode(path));
         Assert.Equal(Rwx, Mode(SidehubDir));
-        Assert.Empty(AgentConfig.RestrictPermissions(_dir, await AgentConfig.LoadAllAsync(_dir)));
+        Assert.Empty(AgentConfig.RestrictPermissions(_dir, await AgentConfig.LoadAllAsync(_dir, tokens: Tokens)));
     }
 
     [Fact]
