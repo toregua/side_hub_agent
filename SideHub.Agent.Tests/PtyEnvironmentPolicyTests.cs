@@ -65,6 +65,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [InlineData("SIDEHUB_API_URL")]
     [InlineData("SIDEHUB_CLI_WRAPPERS")]
     [InlineData("SIDEHUB_PTY_NOTIFY_FIFO")]
+    [InlineData("SIDEHUB_PTY_NOTIFY_SECRET")]
     [InlineData("SIDEHUB_WORKSPACE_ID")]
     [InlineData("SIDEHUB_QUESTION_COMMIT")]
     [InlineData("SIDEHUB-BAD")]

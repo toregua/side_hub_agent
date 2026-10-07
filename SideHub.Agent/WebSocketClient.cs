@@ -27,6 +27,8 @@ public class WebSocketClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     // Background tasks reading the CLI-session notification FIFO for each PTY.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
+    // Secret each PTY's notification lines must carry (NotifyFifo.SecretVariable), minted at spawn
+    private readonly ConcurrentDictionary<string, string> _ptyNotifySecrets = new();
     // Real-path cwd of each PTY session, needed to locate Claude's project JSONL
     // for the ai-title watcher.
     private readonly ConcurrentDictionary<string, string> _ptyCwd = new();
@@ -192,6 +194,7 @@ public class WebSocketClient : IAsyncDisposable
         {
             ["SIDEHUB_PTY_SESSION_ID"] = ptySessionId,
             ["SIDEHUB_PTY_NOTIFY_FIFO"] = GetFifoPath(ptySessionId),
+            [NotifyFifo.SecretVariable] = _ptyNotifySecrets.GetOrAdd(ptySessionId, _ => NotifyFifo.NewSecret()),
             ["PATH"] = fullPath,
             ["SIDEHUB_API_URL"] = DeriveApiUrl(_config.SidehubUrl!),
             ["SIDEHUB_WORKSPACE_ID"] = _config.WorkspaceId!,
@@ -312,11 +315,12 @@ public class WebSocketClient : IAsyncDisposable
         }
     }
 
-    /// <summary>Create the notification FIFO before the PTY starts. Best-effort:
+    /// <summary>Create the notification FIFO before the PTY starts, with a new secret. Best-effort:
     /// if mkfifo isn't available, we log and skip: the CLI wrapper will simply
     /// no-op its notification and the existing session behavior is preserved.</summary>
     private void EnsureNotifyFifo(string ptySessionId)
     {
+        _ptyNotifySecrets[ptySessionId] = NotifyFifo.NewSecret();
         if (OperatingSystem.IsWindows())
             return; // The named pipe is created by its reader (StartFifoReader).
         if (!NotifyFifo.TryCreate(_fifoDirectory, ptySessionId, out var fifoPath, out var error))
@@ -334,6 +338,7 @@ public class WebSocketClient : IAsyncDisposable
             cts.Dispose();
         }
         _ptyCwd.TryRemove(ptySessionId, out _);
+        _ptyNotifySecrets.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
         _cliStates.Clear(ptySessionId);
         StopClaudeTitleWatchers(ptySessionId);
@@ -436,7 +441,9 @@ public class WebSocketClient : IAsyncDisposable
 
     private async Task HandleFifoLineAsync(string ptySessionId, string line, CancellationToken ct)
     {
-        var notification = FifoNotification.Parse(line, out var rejection);
+        // No secret known (the PTY is being torn down): nothing is accepted
+        var secret = _ptyNotifySecrets.GetValueOrDefault(ptySessionId, "");
+        var notification = FifoNotification.Parse(line, secret, out var rejection);
         if (notification is null)
         {
             // Never log the line itself: it is whatever a process of the terminal wrote.

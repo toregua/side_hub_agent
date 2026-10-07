@@ -211,6 +211,10 @@ public class CliLaunchTests : IDisposable
     }
 
     [Fact]
+    public void Sidehub_cli_reads_the_secret_the_agent_gives_the_terminal() =>
+        Assert.Equal(NotifyFifo.SecretVariable, AgentNotifier.SecretVariable);
+
+    [Fact]
     public async Task Notifications_reach_the_agent_through_a_named_pipe()
     {
         // Windows has no FIFO: the agent listens on a pipe (emulated by .NET on Unix) with the same options.
@@ -220,8 +224,11 @@ public class CliLaunchTests : IDisposable
             System.IO.Pipes.PipeOptions.Asynchronous | System.IO.Pipes.PipeOptions.CurrentUserOnly);
         var connected = server.WaitForConnectionAsync();
 
+        var secret = NotifyFifo.NewSecret();
         var previous = Environment.GetEnvironmentVariable(AgentNotifier.ChannelVariable);
+        var previousSecret = Environment.GetEnvironmentVariable(AgentNotifier.SecretVariable);
         Environment.SetEnvironmentVariable(AgentNotifier.ChannelVariable, NotifyFifo.PipePrefix + name);
+        Environment.SetEnvironmentVariable(AgentNotifier.SecretVariable, secret);
         try
         {
             AgentNotifier.SessionStarted("copilot", Existing);
@@ -229,11 +236,12 @@ public class CliLaunchTests : IDisposable
         finally
         {
             Environment.SetEnvironmentVariable(AgentNotifier.ChannelVariable, previous);
+            Environment.SetEnvironmentVariable(AgentNotifier.SecretVariable, previousSecret);
         }
 
         await connected;
         using var reader = new StreamReader(server);
-        var notification = FifoNotification.Parse((await reader.ReadLineAsync())!, out _);
+        var notification = FifoNotification.Parse((await reader.ReadLineAsync())!, secret, out _);
         Assert.Equal(new FifoNotification.CliSessionStarted("copilot", Existing), notification);
     }
 

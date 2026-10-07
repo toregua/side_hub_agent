@@ -6,13 +6,34 @@ public class FifoNotificationTests
 {
     private const string SessionId = "8c1e7a52-0d3b-4f6e-9a21-5b7c3d9e0f14";
 
-    private static FifoNotification? Parse(string line) => FifoNotification.Parse(line, out _);
+    private const string Secret = "4f1c0d2e9b8a7c6d5e4f3a2b1c0d9e8f";
 
-    private static string Rejection(string line)
+    private static FifoNotification? Parse(string line) => FifoNotification.Parse(WithSecret(line), Secret, out _);
+
+    private static string Rejection(string line) => RawRejection(WithSecret(line));
+
+    private static string RawRejection(string line)
     {
-        Assert.Null(FifoNotification.Parse(line, out var rejection));
+        Assert.Null(FifoNotification.Parse(line, Secret, out var rejection));
         return Assert.IsType<string>(rejection);
     }
+
+    /// <summary>The line as sidehub-cli writes it: a JSON object also carries the PTY's secret.</summary>
+    private static string WithSecret(string line) => line.StartsWith('{')
+        ? $$"""{"secret":"{{Secret}}"{{(line[1..].StartsWith('}') ? "" : ",")}}{{line[1..]}}"""
+        : line;
+
+    [Theory]
+    [InlineData("""{"event":"run-step-ended"}""")]
+    [InlineData("""{"event":"run-step-ended","secret":""}""")]
+    [InlineData("""{"event":"run-step-ended","secret":"4f1c0d2e9b8a7c6d5e4f3a2b1c0d9e8e"}""")]
+    [InlineData("""{"event":"run-step-ended","secret":42}""")]
+    public void A_line_without_the_secret_of_its_pty_is_rejected(string line) =>
+        Assert.Equal("missing or wrong secret", RawRejection(line));
+
+    [Fact]
+    public void Without_a_secret_to_expect_nothing_is_accepted() =>
+        Assert.Null(FifoNotification.Parse("""{"event":"run-step-ended","secret":""}""", "", out _));
 
     [Fact]
     public void What_the_wrappers_write_is_accepted()

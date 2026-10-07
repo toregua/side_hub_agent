@@ -24,13 +24,14 @@ public static partial class PtyEnvironmentPolicy
         "OTEL_SERVICE_NAME",
     };
 
-    /// <summary>SIDEHUB_* keys owned by the agent: they point at the API, the notify FIFO, the
-    /// wrappers and the bash rcfile, so overriding them would redirect the token or run code; or they
+    /// <summary>SIDEHUB_* keys owned by the agent: they point at the API, the notify FIFO (and hold its
+    /// secret), the wrappers and the bash rcfile, so overriding them would redirect the token or run code; or they
     /// state what the agent checked out (the commit a question run reads).</summary>
     private static readonly HashSet<string> AgentOwnedKeys = new(StringComparer.Ordinal)
     {
         "SIDEHUB_PTY_SESSION_ID",
         "SIDEHUB_PTY_NOTIFY_FIFO",
+        NotifyFifo.SecretVariable,
         "SIDEHUB_CLI_WRAPPERS",
         "SIDEHUB_BASHRC",
         "SIDEHUB_API_URL",

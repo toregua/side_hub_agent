@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 namespace SideHub.Agent;
@@ -9,9 +10,19 @@ namespace SideHub.Agent;
 /// another user could create the predictable path first and feed the agent forged events. The folder is refused when it,
 /// or a folder up to <c>.sidehub/</c>, is a link or belongs to another user (see <see cref="PrivateFiles"/>). The PTY session id comes
 /// from the backend and is part of the path, so only <see cref="IsValidPtySessionId"/> ids may reach it.
+/// Every PTY of the user can open every FIFO of that folder (same user, and the folder can be listed): each line must
+/// carry the secret of its own PTY (<see cref="SecretVariable"/>), only given to that PTY's environment, so another
+/// terminal can't write forged events (a CLI session id pointing at a transcript it wrote, a run step it didn't end).
+/// The same applies to the Windows named pipe.
 /// </summary>
 public static partial class NotifyFifo
 {
+    /// <summary>The PTY's notification secret, which <c>sidehub-cli</c> joins to every line it writes.</summary>
+    public const string SecretVariable = "SIDEHUB_PTY_NOTIFY_SECRET";
+
+    /// <summary>A fresh secret for one PTY: 256 random bits, in hex.</summary>
+    public static string NewSecret() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+
     private const uint FifoMode = 0b110_000_000; // 0600
 
     [GeneratedRegex(@"^[A-Za-z0-9_-]{1,128}\z")] // \z, not $: $ also matches before a trailing newline

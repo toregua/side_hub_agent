@@ -1,10 +1,13 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace SideHub.Agent;
 
 /// <summary>
-/// A line read from a PTY's notification FIFO (see <see cref="NotifyFifo"/>), validated. Any process of the terminal
-/// can write to the FIFO (its path is in the PTY env), so every field is untrusted: the CLI session id ends up in file
+/// A line read from a PTY's notification FIFO (see <see cref="NotifyFifo"/>), validated. It must carry the PTY's
+/// secret (<see cref="NotifyFifo.SecretVariable"/>), and any process of the terminal has it (it is in the PTY env),
+/// so every field is untrusted: the CLI session id ends up in file
 /// paths (<c>&lt;cliSessionId&gt;.jsonl</c>), the pid in <c>/proc</c> lookups, the cwd in rollout matching. Only the
 /// shapes the wrappers and <c>sidehub-cli</c> write are accepted.
 /// </summary>
@@ -63,10 +66,10 @@ public abstract record FifoNotification
     }
 
     /// <summary>
-    /// Parses a FIFO line. Returns null with the reason in <paramref name="rejection"/> when the line is not one of
-    /// the known events or a field is invalid; the reason never quotes the line.
+    /// Parses a FIFO line. Returns null with the reason in <paramref name="rejection"/> when the line lacks the PTY's
+    /// <paramref name="secret"/>, is not one of the known events or a field is invalid; the reason never quotes the line.
     /// </summary>
-    public static FifoNotification? Parse(string line, out string? rejection)
+    public static FifoNotification? Parse(string line, string secret, out string? rejection)
     {
         rejection = null;
         if (line.Length > MaxLineLength)
@@ -82,6 +85,11 @@ public abstract record FifoNotification
             if (root.ValueKind != JsonValueKind.Object)
             {
                 rejection = "not a JSON object";
+                return null;
+            }
+            if (!HasSecret(root, secret))
+            {
+                rejection = "missing or wrong secret";
                 return null;
             }
 
@@ -167,6 +175,11 @@ public abstract record FifoNotification
             return null;
         }
     }
+
+    private static bool HasSecret(JsonElement root, string secret) =>
+        secret.Length > 0
+        && String(root, "secret") is { } sent
+        && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(sent), Encoding.UTF8.GetBytes(secret));
 
     /// <summary>An optional <c>cliSessionId</c>: absent or null is accepted (null), anything else must be a valid id.</summary>
     private static bool TryOptionalCliSessionId(JsonElement root, out string? cliSessionId)
