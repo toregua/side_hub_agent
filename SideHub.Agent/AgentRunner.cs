@@ -1,3 +1,5 @@
+using SideHub.Agent.Update;
+
 namespace SideHub.Agent;
 
 public class AgentRunner
@@ -5,11 +7,13 @@ public class AgentRunner
     private readonly AgentConfig _config;
     private readonly string _baseDirectory;
     private readonly string _displayName;
+    private readonly UpdateCoordinator? _updates;
 
-    public AgentRunner(AgentConfig config, string baseDirectory)
+    public AgentRunner(AgentConfig config, string baseDirectory, UpdateCoordinator? updates = null)
     {
         _config = config;
         _baseDirectory = baseDirectory;
+        _updates = updates;
         _displayName = config.GetDisplayName();
     }
 
@@ -30,7 +34,7 @@ public class AgentRunner
 
         var executor = new CommandExecutor(workingDir);
         var runDirectory = Path.Combine(_baseDirectory, ".sidehub", "run");
-        await using var client = new WebSocketClient(_config, executor, workingDir, _displayName, runDirectory);
+        await using var client = new WebSocketClient(_config, executor, workingDir, _displayName, runDirectory, _updates);
 
         await client.RunAsync(ct);
 

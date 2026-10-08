@@ -97,6 +97,17 @@ public class IncomingMessage
     [JsonPropertyName("requestId")]
     public string? RequestId { get; init; }
 
+    /// <summary>agent.update: the release to install ("1.0.91") and its tag ("v1.0.91").</summary>
+    [JsonPropertyName("version")]
+    public string? Version { get; init; }
+
+    [JsonPropertyName("tag")]
+    public string? Tag { get; init; }
+
+    /// <summary>agent.update: "when-idle" (default) or "now".</summary>
+    [JsonPropertyName("mode")]
+    public string? Mode { get; init; }
+
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; init; }
 

@@ -4,11 +4,12 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using SideHub.Agent.Models;
+using SideHub.Agent.Update;
 using SideHub.Agent.Usage;
 
 namespace SideHub.Agent;
 
-public class WebSocketClient : IAsyncDisposable
+public class WebSocketClient : IAsyncDisposable, IUpdateClient
 {
     private readonly AgentConfig _config;
     private readonly CommandExecutor _executor;
@@ -24,6 +25,8 @@ public class WebSocketClient : IAsyncDisposable
     // Multi-PTY: keyed by ptySessionId
     private readonly ConcurrentDictionary<string, PtySession> _ptySessions = new();
     private readonly ConcurrentDictionary<string, DateTime> _ptyLastActivity = new();
+    // Last output of each PTY: a terminal still printing (a codex turn, a build) is busy for the updates
+    private readonly ConcurrentDictionary<string, DateTime> _ptyLastOutput = new();
     private readonly ConcurrentDictionary<string, int> _ptyImageCounters = new();
     // Background tasks reading the CLI-session notification FIFO for each PTY.
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
@@ -90,9 +93,15 @@ public class WebSocketClient : IAsyncDisposable
     /// <summary>Connected at least once since the process started: later failures are outages, not a broken install.</summary>
     private bool _everConnected;
     private readonly DiagnosticReporter? _diagnostics;
+    // Shared by the agents of this process; null when the agent runs without one (tests)
+    private readonly UpdateCoordinator? _updates;
+
+    /// <summary>A terminal with input or output more recent than this keeps an update waiting.</summary>
+    public static readonly TimeSpan TerminalActivityWindow = TimeSpan.FromMinutes(10);
 
     /// <param name="runDirectory">The agent's .sidehub/run directory; defaults to the working directory's.</param>
-    public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null, string? runDirectory = null)
+    public WebSocketClient(AgentConfig config, CommandExecutor executor, string workingDirectory, string? displayName = null, string? runDirectory = null,
+        UpdateCoordinator? updates = null)
     {
         _config = config;
         _executor = executor;
@@ -130,6 +139,8 @@ public class WebSocketClient : IAsyncDisposable
         _cliSessionUsage = new CliSessionUsageCollector(
             sessionHarvesters, new PendingCliSessionUsageStore(Path.Combine(pendingDirectory, "cli-sessions")), TrySendAsync, Log);
         _diagnostics = DiagnosticReporter.ForConfig(config, Log);
+        _updates = updates;
+        _updates?.Attach(this);
     }
 
     private void Log(string message) => Console.WriteLine($"[{_displayName}] {message}");
@@ -791,6 +802,8 @@ public class WebSocketClient : IAsyncDisposable
                 await ReportAlivePtySessionsAsync(ct);
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
+                if (_updates is not null)
+                    RunInBackground("update outcome", _updates.OnConnectedAsync);
                 StartHeartbeat(ct);
                 StartPtyReaper();
 
@@ -894,6 +907,10 @@ public class WebSocketClient : IAsyncDisposable
             CliVersions = cliVersions,
             CliAuth = VersionInfo.CachedCliAuth,
             DefaultBranch = await ReadDefaultBranchAsync(),
+            InstallId = SelfUpdate.InstallId(SelfUpdate.Support.InstallDirectory ?? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)),
+            Os = SelfUpdate.Os,
+            Arch = SelfUpdate.Arch,
+            SelfUpdate = (_updates?.Support ?? SelfUpdate.Support).Message(),
         };
         await SendAsync(message, ct);
 
@@ -992,6 +1009,7 @@ public class WebSocketClient : IAsyncDisposable
                         if (_ptySessions.TryRemove(sid, out var session))
                         {
                             _ptyLastActivity.TryRemove(sid, out DateTime _);
+                            _ptyLastOutput.TryRemove(sid, out DateTime _);
                             Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
                             try { await session.Executor.DisposeAsync(); } catch { }
                             CleanupNotifyFifo(sid);
@@ -1109,6 +1127,17 @@ public class WebSocketClient : IAsyncDisposable
                 case "terminal.attachment.enqueue":
                     await HandleTerminalAttachmentAsync(message, ct);
                     break;
+                case "agent.update":
+                    RunInBackground("agent.update", () => HandleAgentUpdateAsync(message, ct));
+                    break;
+                case "agent.update.now":
+                    if (_updates is not null)
+                        RunInBackground("agent.update.now", () => _updates.NowAsync(message.RequestId));
+                    break;
+                case "agent.update.cancel":
+                    if (_updates is not null)
+                        RunInBackground("agent.update.cancel", () => _updates.CancelAsync(this, message.RequestId, ct));
+                    break;
                 case "agent.heartbeat.ack":
                     _missedHeartbeatAcks = 0;
                     break;
@@ -1127,6 +1156,45 @@ public class WebSocketClient : IAsyncDisposable
         {
             Log($"Invalid JSON received: {ex.Message}");
         }
+    }
+
+    private Task HandleAgentUpdateAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (_updates is not null)
+            return _updates.RequestAsync(this, message.RequestId, message.Version, message.Tag, message.Mode, ct);
+        if (string.IsNullOrEmpty(message.RequestId) || string.IsNullOrEmpty(message.Version))
+            return Task.CompletedTask;
+        return SendAsync(new AgentUpdateStatusMessage
+        {
+            RequestId = message.RequestId, Version = message.Version, State = UpdateStates.Failed, Error = UpdateErrors.NotInstalled,
+        }, ct);
+    }
+
+    bool IUpdateClient.IsConnected => _ws?.State == WebSocketState.Open;
+
+    Task<bool> IUpdateClient.SendUpdateStatusAsync(AgentUpdateStatusMessage message, CancellationToken ct) => TrySendAsync(message, ct);
+
+    /// <summary>
+    /// What an update would cut here: a run (backend-driven PTY), a CLI turn in progress, a command, a file being
+    /// written, or a terminal used in the last <see cref="TerminalActivityWindow"/>. A terminal left alone longer, or
+    /// a CLI waiting for an answer that long, does not hold the update.
+    /// </summary>
+    public IReadOnlyList<string> BusyReasons()
+    {
+        var reasons = new List<string>();
+        var live = _ptySessions.Where(s => s.Value.Executor.IsRunning).Select(s => s.Key).ToList();
+        if (live.Any(IsBackendManagedPtySession))
+            reasons.Add("run");
+        if (live.Any(sid => _cliStates.Current(sid)?.State == CliStates.Working))
+            reasons.Add("cli-working");
+        if (_executor.IsBusy)
+            reasons.Add("command");
+        if (_pendingFileWrites.Count > 0)
+            reasons.Add("file-write");
+        var recent = DateTime.UtcNow - TerminalActivityWindow;
+        if (live.Any(sid => _ptyLastActivity.GetValueOrDefault(sid) > recent || _ptyLastOutput.GetValueOrDefault(sid) > recent))
+            reasons.Add("terminal-activity");
+        return reasons;
     }
 
     private void RunInBackground(string label, Func<Task> work)
@@ -1538,6 +1606,12 @@ public class WebSocketClient : IAsyncDisposable
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
         var ptySessionId = message.PtySessionId;
+        // The updater is about to stop this agent: a terminal started now would be cut at once
+        if (_updates?.IsApplying == true)
+        {
+            Log($"PTY {ptySessionId} not started: the agent is being updated");
+            return;
+        }
 
         // Multi-session mode (ptySessionId provided)
         if (!string.IsNullOrEmpty(ptySessionId))
@@ -1606,12 +1680,17 @@ public class WebSocketClient : IAsyncDisposable
                 var startedAt = DateTime.UtcNow;
                 await executor.StartAsync(
                     shellPath,
-                    async output => await SendAsync(new PtyOutputMessage { Data = output, PtySessionId = ptySessionId }, ct),
+                    async output =>
+                    {
+                        _ptyLastOutput[ptySessionId] = DateTime.UtcNow;
+                        await SendAsync(new PtyOutputMessage { Data = output, PtySessionId = ptySessionId }, ct);
+                    },
                     async exitCode =>
                     {
                         Log($"PTY {ptySessionId} exited with code {exitCode}");
                         _ptySessions.TryRemove(ptySessionId, out _);
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
+                        _ptyLastOutput.TryRemove(ptySessionId, out _);
                         CleanupNotifyFifo(ptySessionId);
                         // A run's last lines say why it failed (not logged in, command not found…); never logged here.
                         var lastOutput = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null
@@ -1777,6 +1856,7 @@ public class WebSocketClient : IAsyncDisposable
             if (_ptySessions.TryRemove(ptySessionId, out var session))
             {
                 _ptyLastActivity.TryRemove(ptySessionId, out _);
+                _ptyLastOutput.TryRemove(ptySessionId, out _);
                 Log($"Stopping PTY session {ptySessionId}");
                 try { await session.Executor.DisposeAsync(); }
                 catch (Exception ex) { Log($"Error stopping PTY {ptySessionId}: {ex.Message}"); }
@@ -1918,6 +1998,7 @@ public class WebSocketClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _updates?.Detach(this);
         StopHeartbeat();
         _cliSessionUsageTimer?.Dispose();
         _cliSessionUsageTimer = null;
@@ -1930,6 +2011,7 @@ public class WebSocketClient : IAsyncDisposable
         }
         _ptySessions.Clear();
         _ptyLastActivity.Clear();
+        _ptyLastOutput.Clear();
         _ptyCwd.Clear();
         _ptyCliSessions.Clear();
         _cliStates.ClearAll();

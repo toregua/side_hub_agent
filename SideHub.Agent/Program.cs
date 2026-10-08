@@ -62,6 +62,8 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
         "logs" => await HandleLogs(args, baseDirectory),
         "status" => HandleStatus(args, baseDirectory),
         "service" => AgentService.Run(args, baseDirectory),
+        "version" or "--version" => ShowVersion(),
+        "update" when args.Length > 1 && args[1] == "apply" => await SideHub.Agent.Update.UpdateApplier.RunAsync(ct),
         "help" or "--help" or "-h" => ShowHelp(),
         "--foreground-daemon" => await HandleForegroundDaemon(args, baseDirectory, ct),
         _ => await HandleStart(args, baseDirectory, ct) // Default: treat unknown as start with possible flags
@@ -152,6 +154,12 @@ static async Task<int> HandleLogs(string[] args, string baseDirectory)
 {
     var follow = !args.Contains("--no-follow"); // Follow by default
     return await Commands.Logs(baseDirectory, follow);
+}
+
+static int ShowVersion()
+{
+    Console.WriteLine(VersionInfo.AgentVersion);
+    return 0;
 }
 
 static int ShowHelp()

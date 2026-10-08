@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using SideHub.Agent.Update;
 
 namespace SideHub.Agent;
 
@@ -143,9 +144,13 @@ public static class Commands
 
         Console.WriteLine($"[SideHub] Found {configs.Count} agent(s) in .sidehub/");
 
+        // One per process: the agents of this folder share the install, and so its updates
+        using var updates = new UpdateCoordinator(baseDirectory, message => Console.WriteLine($"[SideHub] {message}"));
+        updates.Start(ct);
+
         var tasks = configs.Select(config =>
         {
-            var runner = new AgentRunner(config, baseDirectory);
+            var runner = new AgentRunner(config, baseDirectory, updates);
             return runner.RunAsync(ct);
         }).ToList();
 
@@ -162,6 +167,8 @@ public static class Commands
 
         // Write our PID to the file
         PrivateFiles.WriteAllText(pidFile, Environment.ProcessId.ToString());
+        // Started by its service too, not only by `start -d`: `--all` commands and updates must find it
+        InstanceRegistry.Register(baseDirectory);
 
         // Redirect console output to log file with automatic rotation
         using var logWriter = new RotatingLogWriter(logFile);
@@ -569,6 +576,7 @@ public static class Commands
         Console.WriteLine("    --no-follow   Don't follow, just print current logs");
         Console.WriteLine("  status          Show agent status");
         Console.WriteLine("    --all         Show all registered instances");
+        Console.WriteLine("  version         Print the agent's version");
         Console.WriteLine("  help            Show this help");
         Console.WriteLine();
         Console.WriteLine("Options:");

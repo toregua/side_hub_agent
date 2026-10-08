@@ -16,7 +16,7 @@ public static class RootPolicy
     /// daemon). Everything else is guarded, including unknown commands, which run as <c>start</c>.</summary>
     private static readonly HashSet<string> UnguardedCommands = new(StringComparer.Ordinal)
     {
-        "stop", "status", "logs", "help", "--help", "-h",
+        "stop", "status", "logs", "help", "--help", "-h", "version", "--version",
     };
 
     public static bool IsGuarded(string command) => !UnguardedCommands.Contains(command);

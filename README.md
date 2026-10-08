@@ -313,6 +313,35 @@ On Windows, `install.ps1` stops the agents running from the install folder and r
 
 > Restarting stops every PTY session opened through SideHub on this machine.
 
+#### From SideHub, in one click (1.0.90+, Linux and macOS)
+
+From 1.0.90, an agent can update itself when an owner or admin clicks "Update" in SideHub
+(`agent.update`). It reports in `agent.connected.selfUpdate` whether it can: it must run from an install
+folder (`.sidehub-agent-install`) that it can write, as well as the folder above (an install made with
+`sudo` for another user cannot, and keeps the command above). Windows comes later.
+
+1. **Download and check.** The release is downloaded straight from GitHub (this repository, compiled in; the
+   backend only names a version, never a URL), then checked like the install scripts do: signed
+   `checksums.sha256`, then the archive's hash. Only a newer version is accepted. It is extracted next to the
+   install folder (`<install>.staging-<version>`) and its `sidehub-agent version` must answer.
+2. **Wait until the machine is idle** (by default): no run, no CLI at work, no command or file transfer, no
+   terminal input or output for 10 minutes, in any daemon of the same install. The daemons share their state
+   through `~/.sidehub/update/` (`pending.json`) and `<project>/.sidehub/run/activity.json`. "Now" skips
+   the wait.
+3. **Apply.** The first daemon that sees the machine idle takes `~/.sidehub/update/apply.lock` and starts
+   the updater (`sidehub-agent update apply`, a copy of the new binary in `~/.sidehub/update/updater/`),
+   detached from the daemons: a transient `systemd-run --user` unit under a systemd service, a background job
+   otherwise. It stops every daemon of the install (SIGINT, through its service if any, killed after 25 s),
+   renames the install folder to `<install>.previous` and the staged one in its place, and starts the daemons
+   again the way they ran (service or `start -d`).
+4. **Check, or roll back.** Each daemon writes `.sidehub/run/health.json` once its startup checks pass
+   (pty-helper first). The update succeeds when all of them run the new version, healthy, and still run 20 s
+   later; otherwise the previous release is put back (the failed one stays as `<install>.failed-<version>`)
+   and the daemons restart on it. The backend connection is not required: a SideHub outage never rolls back.
+
+The outcome is written to `~/.sidehub/update/state.json` and reported to SideHub by the first daemon that
+reconnects. The updater logs to `~/.sidehub/update/update.log`.
+
 ## Configuration
 
 Each `.json` file in `.sidehub/` defines one agent; all are started in parallel by the folder's daemon.
@@ -369,6 +398,7 @@ What the agent enforces:
 - PTY working directories and file writes are confined to `workingDirectory`
 - `command.execute` and file writes can be disabled with `"allowCommandExecute": false` / `"allowFileWrite": false`
 - refuses to run as `root` unless `--allow-root` is given
+- `agent.update` installs only a newer release of this repository, signed by the release key; the backend picks neither the URL nor the content
 
 Run the agent as a dedicated unprivileged user, keep `.sidehub/*.json` out of version control, and use a
 container or VM if the machine holds anything you would not hand to the backend. See
@@ -392,6 +422,7 @@ Commands:
   status            Show agent status (--all: every instance)
   service install   Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)
   service uninstall / service status
+  version           Print the agent's version
   help              Show help
 
 Options:
@@ -453,12 +484,14 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 | `pty.history.request` | Replay a terminal's buffered output |
 | `command.execute` | One-shot command (can be disabled) |
 | `file.write.start` / `.chunk` / `.end`, `terminal.attachment.enqueue` | File upload into `workingDirectory`, e.g. an image pasted in a terminal (can be disabled) |
+| `agent.update` / `agent.update.now` / `agent.update.cancel` | Update to a release (`requestId`, `version`, `tag`, `mode`: `when-idle` or `now`), stop waiting, cancel (see Update) |
 
 **Agent → backend**
 
 | Message | Purpose |
 |---|---|
-| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions) and keep-alive every 15 s |
+| `agent.connected` / `agent.heartbeat` | Connection (version, shells, CLI versions, `installId`, `os`, `arch`, `selfUpdate`) and keep-alive every 15 s |
+| `agent.update-status` | Progress of an update: `downloading`, `waiting-idle` (with `busyReasons`), `applying`, `succeeded`, `rolled-back`, `failed`, `canceled` |
 | `pty.started` / `pty.exited` | Terminal spawned (with its real start time) / process ended (exit code) |
 | `pty.output` / `pty.history` | Terminal output, live / replayed |
 | `pty.cli-session-started` / `pty.cli-session-titled` | Id and title of the CLI session running in a terminal |

@@ -58,6 +58,18 @@ public static partial class AgentService
         ? Exec("launchctl", "kill", "SIGINT", LaunchdTarget(baseDirectory)).Ok
         : Exec("systemctl", "--user", "stop", UnitName(baseDirectory)).Ok;
 
+    /// <summary>
+    /// Runs a command as a transient systemd user unit, outside the cgroup of the service that launches it: stopping
+    /// that service does not kill it (the updater). <c>KillMode=process</c>: the daemons it starts outlive it.
+    /// </summary>
+    public static bool RunTransient(string unitName, IReadOnlyList<string> command, IEnumerable<KeyValuePair<string, string>> environment)
+    {
+        var arguments = new List<string> { "--user", "--collect", "--quiet", "--property=KillMode=process", $"--unit={unitName}" };
+        arguments.AddRange(environment.Select(variable => $"--setenv={variable.Key}={variable.Value}"));
+        arguments.AddRange(command);
+        return Exec("systemd-run", [.. arguments]).Ok;
+    }
+
     public static bool Restart(string baseDirectory) => OperatingSystem.IsMacOS()
         ? Exec("launchctl", "kickstart", "-k", LaunchdTarget(baseDirectory)).Ok
         : Exec("systemctl", "--user", "restart", UnitName(baseDirectory)).Ok;

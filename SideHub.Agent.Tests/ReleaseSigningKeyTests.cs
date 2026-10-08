@@ -4,8 +4,9 @@ using System.Text.RegularExpressions;
 namespace SideHub.Agent.Tests;
 
 /// <summary>
-/// install.sh (PEM, checked with openssl) and install.ps1 (.NET XML key) each embed the release signing
-/// public key: a mismatch would make every signed release uninstallable on one of the platforms.
+/// install.sh (PEM, checked with openssl), install.ps1 (.NET XML key) and the agent's self-update
+/// (<see cref="SideHub.Agent.Update.ReleaseVerifier"/>) each embed the release signing public key: a mismatch would
+/// make every signed release uninstallable on one of the platforms, or from SideHub.
 /// </summary>
 public class ReleaseSigningKeyTests
 {
@@ -31,6 +32,12 @@ public class ReleaseSigningKeyTests
         Assert.True(expected.Modulus!.Length * 8 >= 3072, "release signing key must be at least RSA-3072");
         Assert.Equal(expected.Modulus, actual.Modulus);
         Assert.Equal(expected.Exponent, actual.Exponent);
+
+        using var fromAgent = RSA.Create();
+        fromAgent.ImportFromPem(SideHub.Agent.Update.ReleaseVerifier.ReleaseSigningKeyPem);
+        var agent = fromAgent.ExportParameters(false);
+        Assert.Equal(expected.Modulus, agent.Modulus);
+        Assert.Equal(expected.Exponent, agent.Exponent);
     }
 
     private static string FindScriptsDirectory()
