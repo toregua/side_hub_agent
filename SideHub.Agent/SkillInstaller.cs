@@ -144,11 +144,17 @@ If you cannot complete the step, run:
     sidehub-cli workflow step-fail "short reason"
 
 Without one of those signals the workflow cannot advance and the step will
-time out (default 60 minutes; longer if configured).
+time out (default 60 minutes, 72 hours for an interactive step; longer if
+configured).
 
-You are running unattended in permissionless mode. Do not ask for
-confirmation. Long operations like video rendering are fine: set the step
-timeout accordingly when designing the workflow.
+Unless your prompt says the step is INTERACTIVE, you are running unattended
+in permissionless mode. Do not ask for confirmation. Long operations like
+video rendering are fine: set the step timeout accordingly when designing
+the workflow.
+
+In an INTERACTIVE step, the user works with you in this terminal: tool calls
+are still auto-approved, but you draft, ask your questions about the work and
+wait for their answers. Run step-complete only once they validate the step.
 
 Some actions may be controlled by the workflow's tool policy: a blocked
 action says why. If the reason says it waits for a human approval, stop

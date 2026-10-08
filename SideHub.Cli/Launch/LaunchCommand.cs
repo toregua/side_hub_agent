@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
 namespace SideHub.Cli.Launch;
 
@@ -51,6 +52,9 @@ public static class LaunchCommand
         foreach (var warning in warnings.Concat(plan.Warnings))
             Console.Error.WriteLine($"sidehub-cli launch: {warning}");
 
+        if (ClaudeWorkspaceTrust.Applies(cli, args[1..], Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable)))
+            TrustWorkspace();
+
         if (plan.SessionId is { } sessionId)
             AgentNotifier.SessionStarted(cli, sessionId);
 
@@ -97,6 +101,21 @@ public static class LaunchCommand
         if (plan.SessionId is not null || plan.ReportLaunch)
             AgentNotifier.Exited(cli, plan.SessionId);
         return process.ExitCode;
+    }
+
+    /// <summary>Best effort: without it, claude asks whether to trust the folder and someone answers in the terminal.</summary>
+    private static void TrustWorkspace()
+    {
+        if (ClaudeWorkspaceTrust.ConfigPath() is not { } configPath)
+            return;
+        try
+        {
+            ClaudeWorkspaceTrust.Accept(configPath, Directory.GetCurrentDirectory());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: claude may ask whether to trust this folder: {ex.Message}");
+        }
     }
 
     /// <summary>The CLI's hooks call this program back (<c>sidehub-cli cli-state</c>) from inside the terminal, to
