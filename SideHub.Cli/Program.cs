@@ -60,7 +60,7 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive delete <id> [--yes]");
     Console.Error.WriteLine("  drive move <id> --parent <newParentId|root> [--after <siblingId>]");
     Console.Error.WriteLine("  drive mkdir --title \"...\" [--parent <id>]");
-    Console.Error.WriteLine("  drive upload <localPath> [--parent <id>] [--name \"...\"]");
+    Console.Error.WriteLine("  drive upload <localPath> [--parent <id>] [--name \"...\"] [--markdown]");
     Console.Error.WriteLine("  drive recent [--limit N]");
     Console.Error.WriteLine("  drive usage");
     Console.Error.WriteLine("  drive search <query>");

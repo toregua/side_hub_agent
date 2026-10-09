@@ -702,14 +702,15 @@ public static class DriveCommands
 
     public static async Task<int> UploadAsync(SideHubApiClient client, string[] args, bool json)
     {
-        var localPath = args.FirstOrDefault(a => !a.StartsWith("--") && !a.StartsWith("-"));
+        var localPath = FirstPositional(args, "--parent", "--name", "--title");
         var parentId = GetOption(args, "--parent");
         var title = GetOption(args, "--name") ?? GetOption(args, "--title");
         var skipValidation = args.Contains("--no-validate");
+        var markdown = args.Contains("--markdown");
 
         if (string.IsNullOrEmpty(localPath))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli drive upload <localPath> [--parent <id>] [--name \"...\"] [--no-validate]");
+            Console.Error.WriteLine("Usage: sidehub-cli drive upload <localPath> [--parent <id>] [--name \"...\"] [--markdown] [--no-validate]");
             return 1;
         }
         if (!File.Exists(localPath))
@@ -743,8 +744,38 @@ public static class DriveCommands
         }
         var id = result.TryGetProperty("id", out var i) ? i.GetString() : "";
         var fileName = result.TryGetProperty("fileName", out var f) ? f.GetString() : Path.GetFileName(localPath);
+        if (markdown)
+        {
+            var mimeType = result.TryGetProperty("mimeType", out var m) ? m.GetString() : null;
+            if (mimeType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true)
+                Console.Error.WriteLine($"Warning: {fileName} is not an image ({mimeType ?? "unknown type"}): a page shows only images, it will appear as its caption.");
+            // Stdout is the line alone, ready to paste into a page
+            Console.WriteLine(ImageMarkdown(title ?? Path.GetFileNameWithoutExtension(fileName) ?? "", id ?? ""));
+            return 0;
+        }
         Console.WriteLine($"Uploaded {fileName}: {id}");
         return 0;
+    }
+
+    /// <summary>
+    /// A Markdown image that shows a Drive file in a page: <c>![caption](drive:&lt;id&gt;)</c>.
+    /// The page resolves the stable <c>drive:</c> reference to a fresh URL each time it is opened.
+    /// </summary>
+    internal static string ImageMarkdown(string caption, string id)
+    {
+        var alt = string.Concat(caption.ReplaceLineEndings(" ").Select(c => c is '[' or ']' or '\\' ? $"\\{c}" : c.ToString()));
+        return $"![{alt.Trim()}](drive:{id})";
+    }
+
+    /// <summary>First argument that is neither a flag nor the value of one of <paramref name="valueOptions"/>.</summary>
+    private static string? FirstPositional(string[] args, params string[] valueOptions)
+    {
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (valueOptions.Contains(args[i])) { i++; continue; }
+            if (!args[i].StartsWith('-')) return args[i];
+        }
+        return null;
     }
 
     public static async Task<int> RecentAsync(SideHubApiClient client, string[] args, bool json)

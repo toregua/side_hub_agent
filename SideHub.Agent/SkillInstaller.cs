@@ -45,6 +45,19 @@ Environment variables are already configured in your session.
 - `sidehub-cli drive search <query>`: Search pages by title
 - `sidehub-cli drive create --title "..." --content "..."`: Create a page
 - `sidehub-cli drive update <pageId> --title "..." --content "..."`: Update a page
+- `sidehub-cli drive upload <localPath> [--parent <id>] [--name "..."] [--markdown]`: Upload a local file (screenshot, chart, PDF...; 20 MB max) and print its id. With `--markdown`, prints only the Markdown line that shows the image in a page.
+
+#### Images in a page
+
+To show an image (screenshot, chart, diagram) in a Drive page, upload it, then reference it in the page content
+with `![caption](drive:<id>)`, where `<id>` is the id printed by `drive upload`:
+
+    sidehub-cli drive upload ./login-error.png --name "Login error" --markdown
+    # prints: ![Login error](drive:3f2b8c1e-0d4a-4b6e-9a7f-1c2d3e4f5a6b)
+
+Put that line in the page (`drive create` / `drive update`). The page shows the image and resolves the reference each time
+it is opened: never paste a download URL, it expires. Only images (png, jpg, gif, webp, svg) of the same workspace are shown;
+any other reference appears as its caption, so write a caption that still makes sense alone.
 
 ### Tasks
 - `sidehub-cli task list [--status <status>]`: List workspace tasks (filter by status)
