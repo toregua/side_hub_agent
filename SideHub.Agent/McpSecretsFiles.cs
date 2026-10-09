@@ -26,10 +26,11 @@ public sealed class McpSecretsFiles(string directory)
     {
         if (!NotifyFifo.IsValidPtySessionId(agentKey))
             throw new ArgumentException("Invalid agent key.", nameof(agentKey));
-        // On Linux and macOS, ApplicationData is $XDG_CONFIG_HOME, else ~/.config.
+        // On Linux and macOS, ApplicationData is $XDG_CONFIG_HOME, else ~/.config. DoNotVerify: without it the path is
+        // empty when the folder doesn't exist yet (~/.config on a fresh server), and it is created on first write.
         var root = Environment.GetFolderPath(OperatingSystem.IsWindows()
             ? Environment.SpecialFolder.LocalApplicationData
-            : Environment.SpecialFolder.ApplicationData);
+            : Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.DoNotVerify);
         if (string.IsNullOrEmpty(root))
             throw new InvalidOperationException("Can't locate the user's configuration folder (is HOME set?)");
         return new McpSecretsFiles(Path.Combine(root, OperatingSystem.IsWindows() ? "SideHub" : "sidehub", "mcp-secrets", agentKey));

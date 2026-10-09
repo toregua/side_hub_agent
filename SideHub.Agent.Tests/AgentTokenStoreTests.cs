@@ -84,3 +84,38 @@ public class AgentTokenStoreTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => Tokens.PathFor(agentId));
     }
 }
+
+/// <summary>Changes XDG_CONFIG_HOME for the whole process: never run alongside other tests.</summary>
+[CollectionDefinition(nameof(UserConfigFolderCollection), DisableParallelization = true)]
+public class UserConfigFolderCollection;
+
+[Collection(nameof(UserConfigFolderCollection))]
+public class UserConfigFolderTests
+{
+    [Fact]
+    public void A_config_folder_not_created_yet_still_receives_the_token()
+    {
+        // A fresh server has no ~/.config: setup failed there with "Can't locate the user's configuration folder"
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var dir = Directory.CreateTempSubdirectory("sidehub-xdg-").FullName;
+        var configHome = Path.Combine(dir, "missing-config");
+        var original = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", configHome);
+        try
+        {
+            var tokens = AgentTokenStore.ForCurrentUser();
+            tokens.Save("a1", "sh_agent_token");
+
+            Assert.Equal(Path.Combine(configHome, "sidehub", "tokens"), tokens.Directory);
+            Assert.Equal("sh_agent_token", tokens.Read("a1"));
+            Assert.StartsWith(configHome, McpSecretsFiles.ForAgent("a1").Directory);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", original);
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+}

@@ -14,10 +14,11 @@ public sealed class AgentTokenStore(string directory)
 
     private static string DefaultDirectory()
     {
-        // On Linux and macOS, ApplicationData is $XDG_CONFIG_HOME, else ~/.config.
+        // On Linux and macOS, ApplicationData is $XDG_CONFIG_HOME, else ~/.config. DoNotVerify: without it the path is
+        // empty when the folder doesn't exist yet (~/.config on a fresh server), and it is created on first write.
         var root = Environment.GetFolderPath(OperatingSystem.IsWindows()
             ? Environment.SpecialFolder.LocalApplicationData
-            : Environment.SpecialFolder.ApplicationData);
+            : Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.DoNotVerify);
         if (string.IsNullOrEmpty(root))
             throw new InvalidOperationException("Can't locate the user's configuration folder to keep the agent token (is HOME set?)");
         return Path.Combine(root, OperatingSystem.IsWindows() ? "SideHub" : "sidehub", "tokens");
