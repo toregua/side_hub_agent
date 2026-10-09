@@ -906,6 +906,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             AgentVersion = VersionInfo.AgentVersion,
             CliVersions = cliVersions,
             CliAuth = VersionInfo.CachedCliAuth,
+            CliAccounts = VersionInfo.CachedCliAccounts,
             DefaultBranch = await ReadDefaultBranchAsync(),
             InstallId = SelfUpdate.InstallId(SelfUpdate.Support.InstallDirectory ?? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)),
             Os = SelfUpdate.Os,
@@ -923,9 +924,16 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             });
     }
 
-    private static string LoginLabel(string cli) => VersionInfo.CachedCliAuth?.TryGetValue(cli, out var loggedIn) == true
-        ? loggedIn ? " (logged in)" : " (not logged in)"
-        : "";
+    private static string LoginLabel(string cli)
+    {
+        if (VersionInfo.CachedCliAuth?.TryGetValue(cli, out var loggedIn) != true)
+            return "";
+        if (!loggedIn)
+            return " (not logged in)";
+        return VersionInfo.CachedCliAccounts?.GetValueOrDefault(cli) is { Login: { } login } account
+            ? $" (logged in as {login}{(account.Plan is { } plan ? $", {plan}" : "")})"
+            : " (logged in)";
+    }
 
     /// <summary>The default branch of the repository the agent serves (its <c>origin/HEAD</c>), null when unknown.</summary>
     private async Task<string?> ReadDefaultBranchAsync()

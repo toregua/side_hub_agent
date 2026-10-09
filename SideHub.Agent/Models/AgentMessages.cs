@@ -42,6 +42,13 @@ public class AgentConnectedMessage
     [JsonPropertyName("cliAuth")]
     public IReadOnlyDictionary<string, bool>? CliAuth { get; init; }
 
+    /// <summary>
+    /// The account each CLI runs with, when it tells (only "copilot": source, host, login, plan, sku, organizations,
+    /// enterprises). Never a credential; null while not probed yet, like <see cref="CliAuth"/>.
+    /// </summary>
+    [JsonPropertyName("cliAccounts")]
+    public IReadOnlyDictionary<string, CliAccount>? CliAccounts { get; init; }
+
     /// <summary>The branch <c>origin/HEAD</c> of the agent's repository points to; null when unknown.</summary>
     [JsonPropertyName("defaultBranch")]
     public string? DefaultBranch { get; init; }

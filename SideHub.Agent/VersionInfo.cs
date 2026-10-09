@@ -20,6 +20,7 @@ public static partial class VersionInfo
     /// <summary>
     /// The CLIs that say whether they are logged in, and how: a CLI that is not would stop a run on its login screen.
     /// Only a clear answer counts (see <see cref="ParseLoggedIn"/>); an older CLI without the command is left unknown.
+    /// Copilot has no such command: see <see cref="CopilotAuthProbe"/>.
     /// </summary>
     private static readonly Dictionary<string, string> AuthStatusCommands = new()
     {
@@ -30,6 +31,7 @@ public static partial class VersionInfo
     private static readonly SemaphoreSlim ProbeLock = new(1, 1);
     private static IReadOnlyDictionary<string, string>? _cliVersions;
     private static IReadOnlyDictionary<string, bool> _cliAuth = new Dictionary<string, bool>();
+    private static IReadOnlyDictionary<string, CliAccount> _cliAccounts = new Dictionary<string, CliAccount>();
     private static DateTime _probedAt;
 
     public static string AgentVersion { get; } = ReadAgentVersion();
@@ -50,6 +52,9 @@ public static partial class VersionInfo
     /// whose state is unknown is absent. Null while the versions are not probed.</summary>
     public static IReadOnlyDictionary<string, bool>? CachedCliAuth => CachedCliVersions is null ? null : _cliAuth;
 
+    /// <summary>The account each CLI that tells it runs with (only Copilot), from the same probe as <see cref="CachedCliAuth"/>.</summary>
+    public static IReadOnlyDictionary<string, CliAccount>? CachedCliAccounts => CachedCliVersions is null ? null : _cliAccounts;
+
     /// <summary>
     /// Detected CLI versions, keyed by runtime. Probed at most once per <see cref="CacheTtl"/> so that
     /// reconnections don't spawn the CLIs again; a CLI that is missing or times out is simply absent.
@@ -69,7 +74,7 @@ public static partial class VersionInfo
             var versions = results
                 .Where(r => r.version is not null)
                 .ToDictionary(r => r.cli, r => r.version!);
-            _cliAuth = await ProbeAuthAsync(versions, ct);
+            (_cliAuth, _cliAccounts) = await ProbeAuthAsync(versions, ct);
             _cliVersions = versions;
             _probedAt = DateTime.UtcNow;
             return _cliVersions;
@@ -92,10 +97,9 @@ public static partial class VersionInfo
         await ProbeLock.WaitAsync(ct);
         try
         {
-            var previous = _cliAuth;
-            _cliAuth = await ProbeAuthAsync(versions, ct);
-            return previous.Count != _cliAuth.Count
-                || previous.Any(entry => !_cliAuth.TryGetValue(entry.Key, out var now) || now != entry.Value);
+            var (previousAuth, previousAccounts) = (_cliAuth, _cliAccounts);
+            (_cliAuth, _cliAccounts) = await ProbeAuthAsync(versions, ct);
+            return !SameEntries(previousAuth, _cliAuth) || !SameEntries(previousAccounts, _cliAccounts);
         }
         finally
         {
@@ -103,17 +107,53 @@ public static partial class VersionInfo
         }
     }
 
-    private static async Task<IReadOnlyDictionary<string, bool>> ProbeAuthAsync(
+    private static bool SameEntries<T>(IReadOnlyDictionary<string, T> previous, IReadOnlyDictionary<string, T> now) =>
+        previous.Count == now.Count
+        && previous.All(entry => now.TryGetValue(entry.Key, out var value) && EqualityComparer<T>.Default.Equals(value, entry.Value));
+
+    private static async Task<(IReadOnlyDictionary<string, bool> Auth, IReadOnlyDictionary<string, CliAccount> Accounts)> ProbeAuthAsync(
         IReadOnlyDictionary<string, string> versions, CancellationToken ct)
     {
+        var copilot = versions.ContainsKey("copilot") ? ProbeCopilotAsync(ct) : Task.FromResult<CopilotAuth?>(null);
         var probes = AuthStatusCommands
             .Where(command => versions.ContainsKey(command.Key))
             .Select(async command => (cli: command.Key, output: await RunCliAsync(command.Value, ct)));
         var results = await Task.WhenAll(probes);
-        return results
+        var auth = results
             .Select(r => (r.cli, loggedIn: r.output is { } output ? ParseLoggedIn(r.cli, output.ExitCode, output.Stdout + "\n" + output.Stderr) : null))
             .Where(r => r.loggedIn is not null)
             .ToDictionary(r => r.cli, r => r.loggedIn!.Value);
+        var accounts = new Dictionary<string, CliAccount>();
+        if (await copilot is { } copilotAuth)
+        {
+            auth["copilot"] = copilotAuth.LoggedIn;
+            if (copilotAuth.Account is { } account)
+                accounts["copilot"] = account;
+        }
+        return (auth, accounts);
+    }
+
+    /// <summary>Starts Copilot's headless server for one <see cref="CopilotAuthProbe.QueryAsync"/>, then kills it.</summary>
+    private static async Task<CopilotAuth?> ProbeCopilotAsync(CancellationToken ct)
+    {
+        if (ShellStartInfo(CopilotAuthProbe.CommandLine) is not { } psi)
+            return null;
+        using var process = new Process { StartInfo = psi };
+        try
+        {
+            process.Start();
+            process.ErrorDataReceived += (_, _) => { };
+            process.BeginErrorReadLine();
+            return await CopilotAuthProbe.QueryAsync(process.StandardInput.BaseStream, process.StandardOutput.BaseStream, ProbeTimeout, ct);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+        }
     }
 
     /// <summary>
@@ -143,6 +183,32 @@ public static partial class VersionInfo
     /// <summary>Runs a CLI command line; null when it could not run or timed out.</summary>
     private static async Task<(int ExitCode, string Stdout, string Stderr)?> RunCliAsync(string commandLine, CancellationToken ct)
     {
+        if (ShellStartInfo(commandLine) is not { } psi)
+            return null;
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(ProbeTimeout);
+        using var process = new Process { StartInfo = psi };
+        try
+        {
+            process.Start();
+            // No terminal and nothing to read: a CLI that took the arguments for a prompt ends instead of waiting.
+            process.StandardInput.Close();
+            var stdout = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            await process.WaitForExitAsync(timeoutCts.Token);
+            return (process.ExitCode, await stdout, await stderr);
+        }
+        catch (Exception)
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            return null;
+        }
+    }
+
+    /// <summary>A command line run with redirected input and output; null when no shell can run it.</summary>
+    private static ProcessStartInfo? ShellStartInfo(string commandLine)
+    {
         // Through a login shell so the user's PATH (nvm, ~/.local/bin, …) resolves the CLI like in a PTY.
         // cmd.exe is resolved to its absolute path and told not to look the CLI up in the daemon's
         // working directory (a repository) before the PATH.
@@ -163,25 +229,7 @@ public static partial class VersionInfo
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
         psi.CreateNoWindow = true;
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(ProbeTimeout);
-        using var process = new Process { StartInfo = psi };
-        try
-        {
-            process.Start();
-            // No terminal and nothing to read: a CLI that took the arguments for a prompt ends instead of waiting.
-            process.StandardInput.Close();
-            var stdout = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeoutCts.Token);
-            await process.WaitForExitAsync(timeoutCts.Token);
-            return (process.ExitCode, await stdout, await stderr);
-        }
-        catch (Exception)
-        {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* already gone */ }
-            return null;
-        }
+        return psi;
     }
 
     /// <summary>"2.1.3 (Claude Code)" → "2.1.3", "codex-cli 0.46.0" → "0.46.0".</summary>
