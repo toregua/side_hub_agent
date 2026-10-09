@@ -189,6 +189,7 @@ What a report holds, and nothing else:
 | `pty-helper-failed` | agent | `pty-helper` doesn't start: Node.js missing from the agent's `PATH`, `node-pty` built for another Node version… |
 | `root-refused` | agent, `install.sh` | Run as root without `--allow-root` |
 | `cli-missing` | agent | None of `claude`, `codex`, `gemini`, `copilot` answers `--version` |
+| `install-setup-failed` | agent (`sidehub-agent setup`) | Setup fails: the last two lines it printed, or its error |
 | `install-node-missing`, `install-download-failed`, `install-verification-failed`, `install-permission-denied`, `install-setup-failed`, `install-failed` | `install.sh`, `install.ps1` | The install stage that failed |
 
 Each cause is sent at most once per agent start (a send that fails for lack of network is retried at

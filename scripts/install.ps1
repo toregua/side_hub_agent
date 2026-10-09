@@ -35,6 +35,8 @@ $LastUnsignedVersion = [version]"1.0.61"
 # First release whose archive bundles pty-helper's node_modules (npm ci from the lockfile, in the CI).
 # Older ones need `npm install` from the registry at install time, running package scripts: refused.
 $MinVersion = [version]"1.0.59"
+# From this release `sidehub-agent setup` reports its own failure, with the error it printed
+$SetupReportsVersion = [version]"1.0.95"
 
 # Failure reports: with a token in SIDEHUB_SETUP_TOKEN, a failed install tells SideHub why
 # (POST /api/agent/diagnostics), so a stuck account shows the cause in SideHub. Only the first 16 characters of the
@@ -57,7 +59,7 @@ function Set-InstallStage {
 
 function Send-InstallFailureReport {
     $token = "$env:SIDEHUB_SETUP_TOKEN".Trim()
-    if ($token.Length -lt 16) { return }
+    if (-not $script:SideHubFailReason -or $token.Length -lt 16) { return }
     $body = @{
         tokenPrefix  = $token.Substring(0, 16)
         reason       = $script:SideHubFailReason
@@ -411,6 +413,10 @@ function Install-SideHubAgent {
         $null = $setup.Handle # without it, ExitCode stays empty once the process has exited
         $setup.WaitForExit()
         if ($setup.ExitCode -ne 0) {
+            # Exit code 1: setup ran and reported why, this generic report would replace its detail in SideHub
+            if ($setup.ExitCode -eq 1 -and [version]$tag.TrimStart('v') -ge $SetupReportsVersion) {
+                $script:SideHubFailReason = ""
+            }
             throw "sidehub-agent setup failed (exit code $($setup.ExitCode)): see the messages above."
         }
         Write-Host ""

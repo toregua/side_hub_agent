@@ -215,4 +215,6 @@ public static class DiagnosticReasons
     public const string RootRefused = "root-refused";
     /// <summary>None of claude, codex, gemini, copilot found in the PATH.</summary>
     public const string CliMissing = "cli-missing";
+    /// <summary><c>sidehub-agent setup</c> failed: the last lines it printed, or its error.</summary>
+    public const string InstallSetupFailed = "install-setup-failed";
 }

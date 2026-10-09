@@ -115,7 +115,30 @@ static async Task<int> HandleSetup(string[] args, string baseDirectory, Cancella
         Console.In,
         Environment.GetEnvironmentVariable(AgentSetup.TokenEnvVar));
     DaemonEnvironmentPolicy.ClearSetupToken();
-    var code = await AgentSetup.Run(baseDirectory, token, Value("--api"), ct);
+
+    // A failed setup tells SideHub why, with the error it printed: the install scripts only know that it failed
+    var output = new OutputTail(Console.Out, maxLines: 2);
+    Console.SetOut(output);
+    var reporter = DiagnosticReporter.Create(
+        AgentSetup.ApiBase(Value("--api") ?? Environment.GetEnvironmentVariable("SIDEHUB_API")), token, _ => { });
+    try
+    {
+        var code = await SetupAndStart(args, baseDirectory, token, Value("--api"), ct);
+        if (code != 0 && reporter is not null)
+            await reporter.ReportAsync(DiagnosticReasons.InstallSetupFailed, output.Text);
+        return code;
+    }
+    catch (Exception ex)
+    {
+        if (reporter is not null)
+            await reporter.ReportAsync(DiagnosticReasons.InstallSetupFailed, ex.Message);
+        throw;
+    }
+}
+
+static async Task<int> SetupAndStart(string[] args, string baseDirectory, string token, string? api, CancellationToken ct)
+{
+    var code = await AgentSetup.Run(baseDirectory, token, api, ct);
     if (code != 0 || args.Contains("--no-start")) return code;
     // Run again in a folder whose agent is running (a second install, a new token): it must load the new config
     return new DaemonManager(baseDirectory).IsRunning() || AgentService.IsSupervised(baseDirectory)

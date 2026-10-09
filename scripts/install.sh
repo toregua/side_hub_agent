@@ -58,6 +58,8 @@ LAST_UNSIGNED_VERSION="1.0.61"
 # First release whose archive bundles pty-helper's node_modules (npm ci from the lockfile, in the CI).
 # Older ones need `npm install` from the registry at install time, running package scripts: refused.
 MIN_VERSION="1.0.59"
+# From this release `sidehub-agent setup` reports its own failure, with the error it printed
+SETUP_REPORTS_VERSION="1.0.95"
 
 # Failure reports: with a token, a failed install tells SideHub why (POST /api/agent/diagnostics), so a stuck
 # account shows the cause in SideHub. Only the first 16 characters of the token, the stage that failed and a short
@@ -74,7 +76,7 @@ stage() { FAIL_REASON="$1"; FAIL_DETAIL="$2"; }
 json_escape() { printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 report_failure() {
-    [ "${#TOKEN}" -ge 16 ] || return 0
+    [ -n "$FAIL_REASON" ] && [ "${#TOKEN}" -ge 16 ] || return 0
     command -v curl > /dev/null 2>&1 || return 0
     local body
     body=$(printf '{"tokenPrefix":"%s","reason":"%s","detail":"%s","agentVersion":"%s","os":"%s"}' \
@@ -441,7 +443,13 @@ install() {
         echo "🔗 Configuring the agent in ${PROJECT_DIR}..."
         # Token through the environment, not argv: argv is visible to every user in ps.
         stage install-setup-failed "sidehub-agent setup failed after the install"
-        SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup $allow_root
+        local code=0
+        SIDEHUB_API="$SIDEHUB_API" SIDEHUB_SETUP_TOKEN="$token" "$BIN_LINK" setup $allow_root || code=$?
+        if [ "$code" -ne 0 ]; then
+            # Exit code 1: setup ran and reported why, this generic report would replace its detail in SideHub
+            if [ "$code" -eq 1 ] && ! version_gt "$SETUP_REPORTS_VERSION" "${TAG#v}"; then FAIL_REASON=""; fi
+            exit "$code"
+        fi
         echo ""
         echo "To start it again after a reboot: sidehub-agent service install $allow_root"
         echo "Useful commands: sidehub-agent status · sidehub-agent logs · sidehub-agent stop"
