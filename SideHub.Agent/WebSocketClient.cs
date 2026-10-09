@@ -32,6 +32,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ptyFifoReaders = new();
     // Secret each PTY's notification lines must carry (NotifyFifo.SecretVariable), minted at spawn
     private readonly ConcurrentDictionary<string, string> _ptyNotifySecrets = new();
+    private readonly McpSecretsFiles _mcpSecretsFiles;
     // Real-path cwd of each PTY session, needed to locate Claude's project JSONL
     // for the ai-title watcher.
     private readonly ConcurrentDictionary<string, string> _ptyCwd = new();
@@ -133,6 +134,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var pendingDirectory = Path.Combine(runDir, "pending-usage", config.AgentId ?? "default");
         _fifoAgentKey = config.AgentId ?? "default";
         _fifoDirectory = Path.Combine(runDir, "fifo", _fifoAgentKey);
+        // No PTY outlives the agent: the secrets files a crash left behind are deleted now.
+        _mcpSecretsFiles = McpSecretsFiles.ForAgent(_fifoAgentKey);
+        if (!_mcpSecretsFiles.DeleteAll())
+            Log($"Could not delete the leftover MCP secrets files in {_mcpSecretsFiles.Directory}");
         _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync,
             new PendingRunAnswerStore(Path.Combine(pendingDirectory, "answers")), TrySendAsync, Log);
         _questionCheckout = new QuestionCheckout(_fifoAgentKey, Log);
@@ -238,7 +243,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         if (mcpServers is { Count: > 0 })
         {
             var admittedSecrets = secretKeys?.Where(allowedEnv.ContainsKey).ToHashSet(StringComparer.Ordinal) ?? [];
-            if (McpServerPolicy.ToEnvironmentValue(mcpServers, admittedSecrets, out var rejectedServers) is { } servers)
+            string WriteSecretsFile(PtyMcpServer server) => _mcpSecretsFiles.Write(ptySessionId, server.Name!, server.SecretsFile!,
+                server.Secrets!.Select(name => KeyValuePair.Create(name, allowedEnv[name])).ToList());
+            if (McpServerPolicy.ToEnvironmentValue(mcpServers, admittedSecrets, WriteSecretsFile, out var rejectedServers) is { } servers)
                 env[McpServerPolicy.EnvironmentKey] = servers;
             if (rejectedServers.Count > 0)
                 Log($"SECURITY: PTY {ptySessionId} ignored MCP servers: {string.Join(", ", rejectedServers)}");
@@ -339,7 +346,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     }
 
     /// <summary>Tear down the FIFO and stop its reader task, plus any Claude
-    /// title watchers that were bound to this PTY, and let a question run's checkout move again.</summary>
+    /// title watchers that were bound to this PTY, let a question run's checkout move again, and delete its MCP
+    /// secrets files.</summary>
     private void CleanupNotifyFifo(string ptySessionId)
     {
         _questionCheckout.Release(ptySessionId);
@@ -355,6 +363,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         StopClaudeTitleWatchers(ptySessionId);
         if (!OperatingSystem.IsWindows())
             NotifyFifo.Delete(_fifoDirectory, ptySessionId);
+        if (!_mcpSecretsFiles.Delete(ptySessionId))
+            Log($"Could not delete the MCP secrets files of PTY {ptySessionId}");
     }
 
     /// <summary>Cancel any pending Claude ai-title watchers bound to this PTY.

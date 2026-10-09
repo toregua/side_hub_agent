@@ -170,6 +170,14 @@ public class PtyMcpServer
 
     [JsonPropertyName("headers")]
     public Dictionary<string, string>? Headers { get; init; }
+
+    // stdio: the secrets (of additionalEnv) the agent writes to a private file in the secretsFile format (dotenv, raw),
+    // whose path replaces ${secrets_file} in args and env (McpSecretsFiles). Both absent for a server without a file.
+    [JsonPropertyName("secrets")]
+    public List<string>? Secrets { get; init; }
+
+    [JsonPropertyName("secretsFile")]
+    public string? SecretsFile { get; init; }
 }
 
 public class TerminalAttachmentPayload

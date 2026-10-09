@@ -36,7 +36,7 @@ public class McpServersTests
 
     private static IReadOnlyList<Server> ThroughAgent(List<PtyMcpServer> servers, string[] secrets, out IReadOnlyList<string> rejected)
     {
-        var value = McpServerPolicy.ToEnvironmentValue(servers, secrets, out rejected);
+        var value = McpServerPolicy.ToEnvironmentValue(servers, secrets, null, out rejected);
         var warnings = new List<string>();
         var parsed = McpServers.Parse(value, warnings);
         Assert.Empty(warnings);
@@ -115,8 +115,8 @@ public class McpServersTests
     [Fact]
     public void Agent_sets_no_variable_without_servers_and_the_backend_cannot_set_it_through_additionalEnv()
     {
-        Assert.Null(McpServerPolicy.ToEnvironmentValue([], ["X"], out _));
-        Assert.Null(McpServerPolicy.ToEnvironmentValue(null, [], out _));
+        Assert.Null(McpServerPolicy.ToEnvironmentValue([], ["X"], null, out _));
+        Assert.Null(McpServerPolicy.ToEnvironmentValue(null, [], null, out _));
 
         var env = PtyEnvironmentPolicy.FilterAdditionalEnv(
             new Dictionary<string, string> { [McpServerPolicy.EnvironmentKey] = "[]" }, out var rejected);
