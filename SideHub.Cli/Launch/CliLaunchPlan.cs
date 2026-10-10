@@ -48,8 +48,11 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// null to add no hooks.</param>
     /// <param name="mcp">The run's MCP servers (see <see cref="McpServers"/>), null for none.</param>
     /// <param name="toolPolicy">The run's tool policy (see <see cref="PolicyCheckCommand"/>), null for none.</param>
+    /// <param name="declinedProjectMcpServers">claude: project MCP servers to start without (nobody is there to answer
+    /// their approval dialog, see <see cref="ClaudeProjectMcp"/>), null for none.</param>
     public static CliLaunchPlan For(string cli, IReadOnlyList<string> arguments, string? prompt, Version? geminiVersion,
-        Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null, ToolPolicy? toolPolicy = null)
+        Func<Guid> newSessionId, StateReporting? stateReporting = null, McpSetup? mcp = null, ToolPolicy? toolPolicy = null,
+        IReadOnlyList<string>? declinedProjectMcpServers = null)
     {
         if (!KnownClis.Contains(cli))
             throw new ArgumentException($"Unknown CLI '{cli}'.", nameof(cli));
@@ -78,7 +81,7 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         // A command that starts no conversation runs no tool: the policy has nothing to check.
         var refusal = startsConversation && toolPolicy is not null ? ToolPolicyRefusal(cli, args, toolPolicy) : null;
         if (startsConversation && refusal is null)
-            AddHooks(cli, args, stateReporting, toolPolicy);
+            AddHooks(cli, args, stateReporting, toolPolicy, declinedProjectMcpServers);
 
         var warnings = new List<string>();
         string? geminiSettings = null;
@@ -151,13 +154,16 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
     /// claude keeps only the last <c>--settings</c>, codex's <c>notify</c> is a single program. A tool policy is
     /// only given here once its hook can be installed (see <see cref="ToolPolicyRefusal"/>).
     /// </summary>
-    private static void AddHooks(string cli, List<string> args, StateReporting? reporting, ToolPolicy? policy)
+    private static void AddHooks(
+        string cli, List<string> args, StateReporting? reporting, ToolPolicy? policy, IReadOnlyList<string>? declinedMcp)
     {
         switch (cli)
         {
-            case "claude" when (reporting is not null || policy is not null) && !SetsClaudeSettings(args):
-                var program = reporting?.Program ?? policy!.Program!;
-                args.InsertRange(0, ["--settings", CliStateHooks.ClaudeSettings(program, reportState: reporting is not null, policy?.Matcher)]);
+            case "claude" when (reporting is not null || policy is not null || declinedMcp is { Count: > 0 }) && !SetsClaudeSettings(args):
+                // Without hooks, the program is never written to the settings.
+                var program = reporting?.Program ?? policy?.Program ?? "";
+                args.InsertRange(0, ["--settings", CliStateHooks.ClaudeSettings(
+                    program, reportState: reporting is not null, policy?.Matcher, declinedMcp)]);
                 break;
             case "codex" when reporting is { CodexNotifyTaken: false } && !SetsCodexNotify(args):
                 args.InsertRange(0, ["-c", CliStateHooks.CodexNotify(reporting.Program)]);

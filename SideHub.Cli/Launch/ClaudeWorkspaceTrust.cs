@@ -5,18 +5,22 @@ namespace SideHub.Cli.Launch;
 
 /// <summary>
 /// The first time claude runs interactively in a folder, it asks whether to trust it, "No, exit" selected; headless
-/// (<c>-p</c>) it never asks. A run SideHub launches interactively (an interactive workflow step) has nobody to answer
-/// yet: its agent drafts first, and the validation SideHub types later would pick "No, exit". Its folder is the agent's
-/// repository, where SideHub's headless runs already work without the dialog: it is marked trusted, as accepting the
-/// dialog would (<c>projects.&lt;folder&gt;.hasTrustDialogAccepted</c> in claude's global config).
+/// (<c>-p</c>) it never asks. What SideHub launches interactively has nobody to answer yet: an interactive workflow
+/// step (its agent drafts first, and the validation SideHub types later would pick "No, exit"), a task of the agent's
+/// queue (launched while nobody watches). Its folder is the agent's repository, where SideHub's headless runs already
+/// work without the dialog: it is marked trusted, as accepting the dialog would
+/// (<c>projects.&lt;folder&gt;.hasTrustDialogAccepted</c> in claude's global config).
 /// </summary>
 public static class ClaudeWorkspaceTrust
 {
     public const string RunIdVariable = "SIDEHUB_RUN_ID";
+    public const string TaskIdVariable = "SIDEHUB_TASK_ID";
 
-    /// <summary>A claude launched by a SideHub run (<c>$SIDEHUB_RUN_ID</c>), interactive: the one that would ask.</summary>
-    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId) =>
-        cli == "claude" && !string.IsNullOrEmpty(runId) && !arguments.Any(a => a is "-p" or "--print");
+    /// <summary>A claude launched by SideHub for a run (<c>$SIDEHUB_RUN_ID</c>) or a task (<c>$SIDEHUB_TASK_ID</c>),
+    /// interactive: the one that would ask.</summary>
+    public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId = null) =>
+        cli == "claude" && (!string.IsNullOrEmpty(runId) || !string.IsNullOrEmpty(taskId))
+        && !arguments.Any(a => a is "-p" or "--print");
 
     /// <summary><c>$CLAUDE_CONFIG_DIR/.claude.json</c>, else <c>~/.claude.json</c>; null without a home.</summary>
     public static string? ConfigPath()

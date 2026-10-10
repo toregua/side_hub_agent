@@ -88,6 +88,14 @@ A server a CLI cannot read its secrets for without putting them on its command l
 an http URL or inside a header other than `Bearer ${NAME}`; on Windows, anywhere but a variable of the
 same name) is left out, with a message in the terminal.
 
+**Nobody watching.** An interactive claude started by SideHub for a run (`SIDEHUB_RUN_ID`, an interactive
+workflow step) or a task (`SIDEHUB_TASK_ID`, the agent's task queue or a task injected in a tab) would stop
+on claude's first-launch questions in the folder, which nobody is there to answer. The launcher gives the
+answer a person would: the folder is marked trusted in claude's config (`hasTrustDialogAccepted`, the
+agent's own repository), and the project MCP servers (`.mcp.json` in the folder or a parent) nobody decided
+on yet are started without, through `--settings` `disabledMcpjsonServers` for this launch only. A server
+you enabled or disabled keeps your decision; no file of the repository is written.
+
 **`cli-wrappers/`** (Linux, macOS): the agent puts small `claude` / `codex` / `gemini` / `copilot`
 wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
 wrapper simply hands over to `sidehub-cli launch`. Without the launcher, the real CLI runs as if there

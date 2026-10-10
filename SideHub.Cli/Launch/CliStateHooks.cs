@@ -39,7 +39,10 @@ public static partial class CliStateHooks
     /// <param name="program">This program's absolute path (<c>sidehub-cli</c>).</param>
     /// <param name="reportState">Whether to add the state hooks (false: no agent to report to).</param>
     /// <param name="toolPolicyMatcher">The run's tool policy (a regex over tool names), null for none.</param>
-    public static string ClaudeSettings(string program, bool reportState = true, string? toolPolicyMatcher = null)
+    /// <param name="declinedProjectMcpServers">Project MCP servers (<c>.mcp.json</c>) to start without, as answering "Continue
+    /// without using this MCP server" would (see <see cref="ClaudeProjectMcp"/>); null or empty for none.</param>
+    public static string ClaudeSettings(string program, bool reportState = true, string? toolPolicyMatcher = null,
+        IReadOnlyList<string>? declinedProjectMcpServers = null)
     {
         object Hook(string state) => new
         {
@@ -86,7 +89,9 @@ public static partial class CliStateHooks
             });
         }
 
-        return JsonSerializer.Serialize(new { hooks });
+        return declinedProjectMcpServers is { Count: > 0 } declined
+            ? JsonSerializer.Serialize(new { hooks, disabledMcpjsonServers = declined })
+            : JsonSerializer.Serialize(new { hooks });
     }
 
     /// <summary>The <c>-c</c> value for codex: <c>notify=["&lt;program&gt;","cli-state","codex"]</c>, a TOML array

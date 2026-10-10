@@ -42,8 +42,14 @@ public static class LaunchCommand
 
         var geminiVersion = cli == "gemini" ? RealCli.PackageVersion(target.ScriptPath, "@google/gemini-cli") : null;
         var warnings = new List<string>();
+        // Launched by SideHub while nobody watches (a run, a task of the queue): claude's first-launch questions in this
+        // folder get the answer a person would give (trust the repository, start without its undecided MCP servers).
+        var unattended = ClaudeWorkspaceTrust.Applies(cli, args[1..],
+            Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable),
+            Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable));
+        var declinedMcp = unattended ? DeclinedProjectMcpServers() : null;
         var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli), McpSetup(cli, warnings),
-            ToolPolicy());
+            ToolPolicy(), declinedMcp);
         if (plan.Refusal is { } refusal)
         {
             Console.Error.WriteLine($"sidehub-cli launch: {refusal}");
@@ -52,7 +58,7 @@ public static class LaunchCommand
         foreach (var warning in warnings.Concat(plan.Warnings))
             Console.Error.WriteLine($"sidehub-cli launch: {warning}");
 
-        if (ClaudeWorkspaceTrust.Applies(cli, args[1..], Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable)))
+        if (unattended)
             TrustWorkspace();
 
         if (plan.SessionId is { } sessionId)
@@ -101,6 +107,20 @@ public static class LaunchCommand
         if (plan.SessionId is not null || plan.ReportLaunch)
             AgentNotifier.Exited(cli, plan.SessionId);
         return process.ExitCode;
+    }
+
+    /// <summary>Best effort: without it, claude asks about each of them and someone answers in the terminal.</summary>
+    private static IReadOnlyList<string>? DeclinedProjectMcpServers()
+    {
+        try
+        {
+            return ClaudeProjectMcp.Undecided(Directory.GetCurrentDirectory(), Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: claude may ask about the project's MCP servers: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>Best effort: without it, claude asks whether to trust the folder and someone answers in the terminal.</summary>

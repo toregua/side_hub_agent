@@ -20,6 +20,13 @@ public class ClaudeWorkspaceTrustTests : IDisposable
     public void Only_an_interactive_claude_of_a_run_is_concerned(string cli, string[] args, string? runId, bool expected) =>
         Assert.Equal(expected, ClaudeWorkspaceTrust.Applies(cli, args, runId));
 
+    [Theory]
+    [InlineData(new[] { "--session-id", "x" }, "task-id", true)]
+    [InlineData(new[] { "-p" }, "task-id", false)]
+    [InlineData(new string[0], "", false)]
+    public void An_interactive_claude_of_a_task_is_concerned_too(string[] args, string taskId, bool expected) =>
+        Assert.Equal(expected, ClaudeWorkspaceTrust.Applies("claude", args, runId: null, taskId));
+
     [Fact]
     public void The_folder_is_trusted_and_the_rest_of_the_config_kept()
     {
