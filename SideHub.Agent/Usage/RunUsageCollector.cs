@@ -177,13 +177,33 @@ public sealed class RunUsageCollector
     }
 
     /// <summary>The harvester of each CLI the run started, with what it needs to find the run's sessions.</summary>
-    private IEnumerable<(IUsageHarvester Harvester, RunUsageContext Context)> Contexts(TrackedRun run)
+    private IEnumerable<(IUsageHarvester Harvester, RunUsageContext Context)> Contexts(TrackedRun run) =>
+        Contexts(run.PtySessionId, run.RunId, run.Cwd, run.CliSessions.ToArray(), run.StartedAt);
+
+    /// <summary>
+    /// The last message of the CLIs started in a terminal since <paramref name="since"/>, run or not: what a work
+    /// review shows as the agent's own summary. Null when no transcript holds one.
+    /// </summary>
+    /// <param name="cliSessions">cliSessionId → provider, as announced in the terminal.</param>
+    public string? ReadFinalMessage(
+        string ptySessionId, string cwd, IReadOnlyList<KeyValuePair<string, string>> cliSessions, DateTimeOffset since)
     {
-        var sessions = run.CliSessions.ToArray();
+        foreach (var (harvester, context) in Contexts(ptySessionId, Guid.Empty, cwd, cliSessions, since))
+        {
+            if (harvester is IFinalMessageReader reader && reader.ReadFinalMessage(context) is { } text)
+                return text;
+        }
+        return null;
+    }
+
+    private IEnumerable<(IUsageHarvester Harvester, RunUsageContext Context)> Contexts(
+        string ptySessionId, Guid runId, string cwd, IReadOnlyList<KeyValuePair<string, string>> sessions,
+        DateTimeOffset startedAt)
+    {
         CliLaunch[] launches;
         lock (_launches)
             launches = _launches.ToArray();
-        bool IsOwn(CliLaunch l) => l.PtySessionId == run.PtySessionId;
+        bool IsOwn(CliLaunch l) => l.PtySessionId == ptySessionId;
 
         var providers = sessions.Select(s => s.Value)
             .Concat(launches.Where(IsOwn).Select(l => l.Provider))
@@ -200,7 +220,7 @@ public sealed class RunUsageCollector
                 .Where(l => string.Equals(l.Provider, provider, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             yield return (harvester, new RunUsageContext(
-                run.RunId, run.Cwd, ids, sameCli.Where(IsOwn).ToList(), sameCli.Where(l => !IsOwn(l)).ToList(), run.StartedAt));
+                runId, cwd, ids, sameCli.Where(IsOwn).ToList(), sameCli.Where(l => !IsOwn(l)).ToList(), startedAt));
         }
     }
 
@@ -244,11 +264,14 @@ public sealed class RunUsageCollector
     }
 
     /// <summary>At most <see cref="MaxAnswerLength"/> characters (marker included), never splitting a surrogate pair.</summary>
-    public static string Truncate(string text)
+    public static string Truncate(string text) => Truncate(text, MaxAnswerLength);
+
+    /// <summary>At most <paramref name="maxLength"/> characters (marker included), never splitting a surrogate pair.</summary>
+    public static string Truncate(string text, int maxLength)
     {
-        if (text.Length <= MaxAnswerLength)
+        if (text.Length <= maxLength)
             return text;
-        var cut = MaxAnswerLength - TruncationMarker.Length;
+        var cut = maxLength - TruncationMarker.Length;
         if (char.IsHighSurrogate(text[cut - 1]))
             cut--;
         return text[..cut] + TruncationMarker;

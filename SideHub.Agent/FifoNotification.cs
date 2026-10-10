@@ -28,6 +28,9 @@ public abstract record FifoNotification
     /// <summary><c>sidehub-cli workflow step-complete|step-fail</c>: the step is over, the CLI may stay open.</summary>
     public sealed record RunStepEnded : FifoNotification;
 
+    /// <summary><c>sidehub-cli task done</c>: the task of this terminal is finished (its work review round ends).</summary>
+    public sealed record TaskDone : FifoNotification;
+
     /// <summary>The codex wrapper: <paramref name="Pid"/> is codex's process, null for wrappers that don't send it.</summary>
     public sealed record CliLaunched(string Provider, string Cwd, int? Pid) : FifoNotification;
 
@@ -97,6 +100,9 @@ public abstract record FifoNotification
             {
                 case "run-step-ended":
                     return new RunStepEnded();
+
+                case "task-done":
+                    return new TaskDone();
 
                 case "cli-launched":
                 {

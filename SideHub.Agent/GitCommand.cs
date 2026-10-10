@@ -43,9 +43,12 @@ public static class GitCommand
     /// <summary>Runs git in <paramref name="workingDirectory"/>; null when git is unavailable, could not start, or
     /// was killed after <paramref name="timeout"/> (or on <paramref name="ct"/>).</summary>
     /// <param name="keepSshEnvironment">Keep the daemon's GIT_SSH* variables (commands that reach a remote).</param>
+    /// <param name="environment">Variables set for this command only, after the daemon's GIT_* ones are removed
+    /// (e.g. GIT_INDEX_FILE): chosen by the agent, never by the repository.</param>
     public static async Task<Result?> RunAsync(
         string workingDirectory, TimeSpan timeout, IEnumerable<string> args,
-        bool keepSshEnvironment = false, CancellationToken ct = default)
+        bool keepSshEnvironment = false, CancellationToken ct = default,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         // Never a bare "git": it would be looked up in the working directory (the repository) first.
         if (ExecutableResolver.Resolve("git") is not { } gitPath)
@@ -75,6 +78,9 @@ public static class GitCommand
             // Never take the index lock away from the user's own git commands for a mere refresh.
             psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
             psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            if (environment is not null)
+                foreach (var (name, value) in environment)
+                    psi.Environment[name] = value;
 
             using var process = Process.Start(psi);
             if (process is null)

@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using SideHub.Agent.Models;
+using SideHub.Agent.Review;
 using SideHub.Agent.Update;
 using SideHub.Agent.Usage;
 
@@ -74,6 +75,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly RunUsageCollector _usageCollector;
     // Where question runs read the repository, away from the developer's working copy.
     private readonly QuestionCheckout _questionCheckout;
+    // What the works the backend asked to review changed (review.changes), and their diffs on demand.
+    private readonly WorkReviewTracker _reviews;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
     private Timer? _cliSessionUsageTimer;
@@ -141,6 +144,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _usageCollector = new RunUsageCollector(harvesters, new PendingUsageStore(pendingDirectory), TrySendAsync,
             new PendingRunAnswerStore(Path.Combine(pendingDirectory, "answers")), TrySendAsync, Log);
         _questionCheckout = new QuestionCheckout(_fifoAgentKey, Log);
+        _reviews = new WorkReviewTracker(Path.Combine(runDir, "reviews"), _fifoAgentKey,
+            new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
+            _usageCollector.ReadFinalMessage, Log);
         _cliSessionUsage = new CliSessionUsageCollector(
             sessionHarvesters, new PendingCliSessionUsageStore(Path.Combine(pendingDirectory, "cli-sessions")), TrySendAsync, Log);
         _diagnostics = DiagnosticReporter.ForConfig(config, Log);
@@ -483,6 +489,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
                     return;
 
+                // Written by `sidehub-cli task done`: the task's review round ends (a run's round ends with its terminal).
+                case FifoNotification.TaskDone:
+                    if (_reviews.HasOpenRound(ptySessionId))
+                        RunInBackground("review.changes", () => _reviews.EndRoundAsync(ptySessionId, "task-done", ReviewKinds.Task, CancellationToken.None));
+                    return;
+
                 // Written by `sidehub-cli launch codex`: codex has no session id to announce, so the harvester
                 // needs the rollout its process holds open, or matches it by cwd and launch time. The same
                 // match gives the session id announced to the backend (RecordCliLaunch).
@@ -522,6 +534,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow) is not { } message)
             return;
         Log($"CLI state in PTY {ptySessionId}: {changed.State} (provider={changed.Provider} cliSessionId={changed.CliSessionId ?? "(unknown)"})");
+        if (changed.State == CliStates.Working && _ptyCwd.TryGetValue(ptySessionId, out var workingIn))
+            _reviews.NoteCliWorking(ptySessionId, workingIn);
         // Even when the send fails (backend away), the state stays cached and is replayed at the next connection.
         await TrySendAsync(message, ct);
     }
@@ -607,6 +621,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var (provider, cliSessionId) = (started.Provider, started.CliSessionId);
         Log($"CLI session started in PTY {ptySessionId}: provider={provider} cliSessionId={cliSessionId}");
         _usageCollector.RecordCliSession(ptySessionId, provider, cliSessionId);
+        _reviews.RecordCliSession(ptySessionId, provider, cliSessionId);
         _cliSessionUsage.SessionStarted(ptySessionId, provider, cliSessionId,
             _ptyCwd.TryGetValue(ptySessionId, out var cwd) ? cwd : _workingDirectory);
         _ptyCliSessions[ptySessionId] = new PtyCliSession(provider, cliSessionId);
@@ -811,6 +826,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 await SendConnectedMessageAsync(ct);
                 await ReportAlivePtySessionsAsync(ct);
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
+                RunInBackground("pending review.changes replay", () => _reviews.ReplayPendingAsync(ct));
+                RunInBackground("review purge", () => _reviews.PurgeIfDueAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
                 if (_updates is not null)
                     RunInBackground("update outcome", _updates.OnConnectedAsync);
@@ -1130,6 +1147,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "pty.history.request":
                     await HandlePtyHistoryRequestAsync(message, ct);
+                    break;
+                case "review.round-start":
+                    RunInBackground("review.round-start", () => HandleReviewRoundStartAsync(message, ct));
+                    break;
+                case "review.diff.request":
+                    RunInBackground("review.diff.request", () => HandleReviewDiffRequestAsync(message, ct));
                     break;
                 case "file.write.start":
                     await HandleFileWriteStartAsync(message, ct);
@@ -1690,6 +1713,16 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 Log($"Skill files not written for PTY {ptySessionId}: file writes are disabled (allowFileWrite: false)");
             }
 
+            // The backend asks for this terminal's work to be reviewed: photo of the folder before the CLI starts.
+            // Not for a question run (read-only, in its own checkout).
+            if (question is null && Guid.TryParse(message.ReviewId, out var reviewId))
+            {
+                var runId = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv);
+                Guid? taskId = Guid.TryParse(message.AdditionalEnv?.GetValueOrDefault("SIDEHUB_TASK_ID"), out var t) ? t : null;
+                await _reviews.StartRoundAsync(reviewId, ptySessionId, cwd, runId is null ? ReviewKinds.Task : ReviewKinds.Run,
+                    runId, taskId, OtherCliWorking(ptySessionId, cwd), WorkReviewTracker.LaunchSnapshotTimeout, ct);
+            }
+
             Log($"Starting PTY session {ptySessionId} with {shell} ({columns}x{rows}) in {cwd}");
 
             try
@@ -1740,6 +1773,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             {
                 Log($"Failed to start PTY {ptySessionId}: {ex.Message}");
                 CleanupNotifyFifo(ptySessionId);
+                _reviews.Abandon(ptySessionId);
             }
             return;
         }
@@ -1913,10 +1947,58 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         RunInBackground("final usage", async () =>
         {
             if (delay > TimeSpan.Zero) await Task.Delay(delay);
+            // Before the usage: the review reads the CLI's last message while the run is still tracked.
+            await _reviews.EndRoundAsync(ptySessionId, trigger, kind: null, CancellationToken.None);
+            _reviews.ForgetTerminal(ptySessionId);
             if (_usageCollector.IsTracked(ptySessionId))
                 await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
             await _cliSessionUsage.PtyClosedAsync(ptySessionId, trigger, CancellationToken.None);
         });
+    }
+
+    /// <summary>Whether the CLI of another terminal in the same folder is working right now.</summary>
+    private bool OtherCliWorking(string ptySessionId, string cwd)
+    {
+        string full;
+        try { full = Path.GetFullPath(cwd); }
+        catch { full = cwd; }
+        return _ptyCwd.Any(entry => entry.Key != ptySessionId && entry.Value == full
+                                    && _cliStates.Current(entry.Key)?.State == CliStates.Working);
+    }
+
+    /// <summary>A fix is about to be typed in a terminal that is still open: photo of the folder first, then the
+    /// backend types it (it waits for <c>review.round-started</c>).</summary>
+    private async Task HandleReviewRoundStartAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || !Guid.TryParse(message.ReviewId, out var reviewId)
+            || string.IsNullOrEmpty(message.PtySessionId))
+        {
+            Log("review.round-start ignored: requestId, reviewId and ptySessionId are required");
+            return;
+        }
+        var ptySessionId = message.PtySessionId;
+        var result = _ptySessions.ContainsKey(ptySessionId) && _ptyCwd.TryGetValue(ptySessionId, out var cwd)
+            ? await _reviews.StartRoundAsync(reviewId, ptySessionId, cwd, kind: null, runId: null, taskId: null,
+                OtherCliWorking(ptySessionId, cwd), WorkReviewTracker.SnapshotTimeout, ct)
+            : new WorkReviewTracker.StartResult(null, ReviewDiffErrors.UnknownTerminal);
+        await SendAsync(new ReviewRoundStartedMessage
+        {
+            RequestId = message.RequestId, ReviewId = reviewId, PtySessionId = ptySessionId,
+            Round = result.Round, Error = result.Error,
+        }, ct);
+    }
+
+    /// <summary>The diff of a review round, read from the photos on this machine.</summary>
+    private async Task HandleReviewDiffRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || !Guid.TryParse(message.ReviewId, out var reviewId) || message.Round is not { } round)
+        {
+            Log("review.diff.request ignored: requestId, reviewId and round are required");
+            return;
+        }
+        var answer = await _reviews.DiffAsync(message.RequestId, reviewId, round, message.Path, ct);
+        Log($"Review {reviewId} round {round} diff: " + (answer.Error ?? (answer.Truncated ? "too large" : $"{answer.Diff?.Length ?? 0} chars")));
+        await SendAsync(answer, ct);
     }
 
     private async Task HandlePtyHistoryRequestAsync(IncomingMessage message, CancellationToken ct)

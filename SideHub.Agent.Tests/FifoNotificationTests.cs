@@ -43,6 +43,7 @@ public class FifoNotificationTests
         Assert.Equal(new FifoNotification.CliLaunched("codex", "/root/Github/side_hub", 4242),
             Parse("""{"event":"cli-launched","provider":"codex","cwd":"/root/Github/side_hub","pid":4242}"""));
         Assert.IsType<FifoNotification.RunStepEnded>(Parse("""{"event":"run-step-ended"}"""));
+        Assert.IsType<FifoNotification.TaskDone>(Parse("""{"event":"task-done"}"""));
     }
 
     [Fact]

@@ -36,6 +36,8 @@ public static class AgentNotifier
 
     public static void StepEnded() => Send(new { @event = "run-step-ended" });
 
+    public static void TaskDone() => Send(new { @event = "task-done" });
+
     private static void Send(object notification)
     {
         var channel = Environment.GetEnvironmentVariable(ChannelVariable);

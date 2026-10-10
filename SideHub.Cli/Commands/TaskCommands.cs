@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SideHub.Cli.Launch;
 
 namespace SideHub.Cli.Commands;
 
@@ -134,6 +135,8 @@ public static class TaskCommands
 
         var commitSha = await GitWorkTree.HeadAsync(directory);
         var result = await client.CompleteTaskAsync(taskId, summary, commitSha);
+        // The agent hosting this terminal photographs what the task changed (work review). Best-effort.
+        AgentNotifier.TaskDone();
 
         if (json)
         {

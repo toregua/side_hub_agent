@@ -124,6 +124,15 @@ public class IncomingMessage
     [JsonPropertyName("ptySessionId")]
     public string? PtySessionId { get; init; }
 
+    /// <summary>pty.start, review.round-start, review.diff.request: the work review (a GUID) the terminal's rounds belong
+    /// to. On pty.start, the backend asks for the work done in this terminal to be reviewed.</summary>
+    [JsonPropertyName("reviewId")]
+    public string? ReviewId { get; init; }
+
+    /// <summary>review.diff.request: which round of the review.</summary>
+    [JsonPropertyName("round")]
+    public int? Round { get; init; }
+
     [JsonPropertyName("attachment")]
     public TerminalAttachmentPayload? Attachment { get; init; }
 

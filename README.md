@@ -135,6 +135,28 @@ When the run ends, the agent reads the CLI's last message from its transcript an
 | `SIDEHUB_BASE_BRANCH` | backend | Branch of `origin` the question is about (e.g. `main`) |
 | `SIDEHUB_QUESTION_COMMIT` | agent | Commit the checkout is at (the backend cannot set it) |
 
+### Work review (`Review/`)
+
+When the backend wants a delegated work reviewed (a run, a task given to the agent), its `pty.start`
+carries a `reviewId`. The agent then takes a **photo** of the folder before the CLI starts, and another
+when the work ends (`task done` for a task, the end of the terminal for a run), and sends what changed
+between them as `review.changes`: file paths, statuses, line counts, commit subjects, the CLI's last
+message. A fix asked from the review is a new **round** of the same review: typed in the terminal if it
+is still open (`review.round-start`, answered by `review.round-started` once the photo is taken), or
+started in a new one with the same `reviewId`.
+
+A photo is a commit of the work tree as it is (uncommitted changes and untracked files included, not the
+ignored ones, nor `.sidehub/` and `.sidehub-images/`), built in a temporary index. The repository's
+files, index, branches and HEAD are left alone; only objects and refs under `refs/sidehub/reviews/` are
+added, kept 30 days after the last round with the records in `.sidehub/run/reviews/`. Since a round
+compares two photos, its diff stays the same however late it is read, and what other works changed
+between two rounds is not in it. When another work of the folder (any agent) or another terminal's CLI
+was busy during a round, its report says so (`overlapping`).
+
+The diff itself is only sent when someone opens the review (`review.diff.request` → `review.diff`,
+1 MB at most, then file by file). Reports that cannot be sent are queued in
+`pending-usage/<agentId>/reviews/`; a round cut by an agent restart is reported as `interrupted`.
+
 ### One daemon per project
 
 A daemon runs per project folder, with that folder as its working directory. It loads every
@@ -153,7 +175,8 @@ workflow callbacks, drive…). Disable file writes (`"allowFileWrite": false`) t
 | Connection info: agent id, version, OS shells, root folder path, installed CLI versions | Your source code and repositories¹ |
 | PTY lifecycle: started, exited (exit code), CLI session id and title | Your secrets, environment variables and credentials |
 | CLI state (`working` / `waiting-input` / `idle`) | Model calls: the CLIs talk to the providers directly, with your subscriptions or API keys |
-| Token counts per run and per CLI session | CLI transcripts and session files (but the last message of a question run, its answer) |
+| Token counts per run and per CLI session | CLI transcripts and session files (but the last message of a question run, its answer, and of a reviewed work) |
+| For a reviewed work: changed file paths, line counts, commit subjects; its diff when someone opens the review | The photos of a reviewed work (`refs/sidehub/reviews/`) |
 | The output of the terminals SideHub opens (cockpit terminals and runs) | The agent token (sent only to SideHub, as an authentication header) |
 | Output of one-shot `command.execute` commands, if enabled | |
 | Whatever a CLI explicitly sends with `sidehub-cli` (task updates, step results, drive notes) | |
@@ -483,6 +506,7 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 | `pty.start` / `pty.stop` | Open / close a terminal (shell, size, extra environment, which of its keys are secrets, MCP servers of a run) |
 | `pty.input` / `pty.resize` | Keystrokes / terminal size |
 | `pty.history.request` | Replay a terminal's buffered output |
+| `review.round-start` / `review.diff.request` | Start a round of a work review in an open terminal (photo first) / diff of a round (`reviewId`, `round`, `path`) |
 | `command.execute` | One-shot command (can be disabled) |
 | `file.write.start` / `.chunk` / `.end`, `terminal.attachment.enqueue` | File upload into `workingDirectory`, e.g. an image pasted in a terminal (can be disabled) |
 | `agent.update` / `agent.update.now` / `agent.update.cancel` | Update to a release (`requestId`, `version`, `tag`, `mode`: `when-idle` or `now`), stop waiting, cancel (see Update) |
@@ -498,6 +522,7 @@ For a hardened setup under a dedicated system user, use the templates in [`contr
 | `pty.cli-session-started` / `pty.cli-session-titled` | Id and title of the CLI session running in a terminal |
 | `pty.cli-state` | `working` / `waiting-input` / `idle` |
 | `run.usage` / `cli-session.usage` | Token counts per model |
+| `review.changes` / `review.round-started` / `review.diff` | What a round of a reviewed work changed / a round started in an open terminal / the diff of a round |
 | `run.answer` | Final message of a question run, with the commit it was asked against: `{"runId", "text", "commitSha", "commitDate", "error"}` (`text` null with an `error` such as `no-final-message` when none was found) |
 | `command.output` / `command.completed` / `command.failed` / `command.busy` | One-shot command results |
 
@@ -547,6 +572,7 @@ side_hub_agent/
 │   ├── CommandExecutor.cs         # One-shot commands
 │   ├── DaemonManager.cs, InstanceRegistry.cs, RotatingLogWriter.cs
 │   ├── Usage/                     # Token usage from CLI transcripts, pending queue
+│   ├── Review/                    # Work review: photos of the folder, changes, diffs
 │   ├── Models/                    # WebSocket message DTOs
 │   ├── cli-wrappers/              # claude / codex / gemini / copilot wrappers (bash)
 │   └── pty-helper/                # Node.js + node-pty
