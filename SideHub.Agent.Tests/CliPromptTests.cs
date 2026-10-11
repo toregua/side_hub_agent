@@ -71,6 +71,18 @@ public class CliPromptTests
         Assert.EndsWith("…", (string?)prompt["detail"]);
     }
 
+    [Fact]
+    public void The_permission_claude_asks_for_AskUserQuestion_is_the_question_itself()
+    {
+        var input = AskUserQuestion("""[{"question":"A ?","options":[{"label":"x"},{"label":"y"}]}]""")
+            .Replace("\"PreToolUse\"", "\"PermissionRequest\"");
+
+        var prompt = CliPrompt.FromHookInput(Utf8(input));
+
+        Assert.Equal("question", (string?)prompt!["kind"]);
+        Assert.Equal("A ?", (string?)prompt["question"]);
+    }
+
     [Theory]
     [InlineData("""{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission"}""")]
     [InlineData("""{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}""")]

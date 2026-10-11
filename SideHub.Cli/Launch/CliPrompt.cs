@@ -49,7 +49,9 @@ public static class CliPrompt
             var toolInput = root.TryGetProperty("tool_input", out var ti) && ti.ValueKind == JsonValueKind.Object ? ti : default;
             return hookEvent switch
             {
-                "PreToolUse" when tool == "AskUserQuestion" && toolInput.ValueKind == JsonValueKind.Object => QuestionPrompt(toolInput),
+                // Claude asks permission for AskUserQuestion too, right after its PreToolUse: that dialog is the question
+                "PreToolUse" or "PermissionRequest" when tool == "AskUserQuestion" =>
+                    toolInput.ValueKind == JsonValueKind.Object ? QuestionPrompt(toolInput) : null,
                 "PermissionRequest" when tool is { Length: > 0 } => PermissionPrompt(tool, toolInput),
                 _ => null,
             };
