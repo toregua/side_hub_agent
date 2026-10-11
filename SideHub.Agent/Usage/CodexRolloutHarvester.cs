@@ -167,6 +167,9 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
     public IReadOnlyList<string> SessionFiles(string cwd, string cliSessionId) =>
         FindRollout(cliSessionId) is { } path ? [path] : [];
 
+    public string? LastMessage(string cwd, string cliSessionId) =>
+        FindRollout(cliSessionId) is { } path ? LastAgentMessage(path) : null;
+
     /// <summary>The top-level rollout of a session (<c>rollout-&lt;time&gt;-&lt;id&gt;.jsonl</c>), or null.</summary>
     private string? FindRollout(string cliSessionId)
     {

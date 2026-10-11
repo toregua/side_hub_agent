@@ -49,6 +49,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly ConcurrentDictionary<string, PtyCliSession> _ptyCliSessions = new();
     // What the CLI of each PTY is doing (working / waiting-input / idle), reported as pty.cli-state.
     private readonly CliStateTracker _cliStates = new();
+    // The last answer of each PTY's CLI, for the phone's Reading mode (pty.cli-message).
+    private readonly CliMessageTracker _cliMessages = new();
+    // Reads a CLI session's last answer, per provider (claude, codex).
+    private readonly Dictionary<string, ICliSessionUsageHarvester> _lastMessageReaders = new();
+    // The secrets of each PTY (its env and which keys are secrets): masked in what is sent from its transcript too.
+    private readonly ConcurrentDictionary<string, (Dictionary<string, string>? Env, List<string>? Keys)> _ptySecrets = new();
     // Codex launches still looking for their rollout (→ cwd), and the rollouts already tied to a launch.
     private readonly ConcurrentDictionary<object, string> _pendingCodexLaunches = new();
     private readonly ConcurrentDictionary<string, byte> _announcedCodexRollouts = new();
@@ -147,6 +153,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _reviews = new WorkReviewTracker(Path.Combine(runDir, "reviews"), _fifoAgentKey,
             new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
             _usageCollector.ReadFinalMessage, Log);
+        foreach (var (provider, harvester) in sessionHarvesters)
+            _lastMessageReaders[provider] = harvester;
         _cliSessionUsage = new CliSessionUsageCollector(
             sessionHarvesters, new PendingCliSessionUsageStore(Path.Combine(pendingDirectory, "cli-sessions")), TrySendAsync, Log);
         _diagnostics = DiagnosticReporter.ForConfig(config, Log);
@@ -366,6 +374,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _ptyNotifySecrets.TryRemove(ptySessionId, out _);
         _ptyCliSessions.TryRemove(ptySessionId, out _);
         _cliStates.Clear(ptySessionId);
+        _cliMessages.Clear(ptySessionId);
+        _ptySecrets.TryRemove(ptySessionId, out _);
         StopClaudeTitleWatchers(ptySessionId);
         if (!OperatingSystem.IsWindows())
             NotifyFifo.Delete(_fifoDirectory, ptySessionId);
@@ -538,6 +548,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     {
         // The PTY may have closed while the line was in flight: a state is never reported for an unknown PTY.
         if (!_ptySessions.ContainsKey(ptySessionId)) return;
+        // A turn ended: its answer for the Reading mode. Before the repeat check, codex reports nothing but idle.
+        if (changed.State == CliStates.Idle)
+        {
+            var cliSessionId = changed.CliSessionId
+                ?? (_ptyCliSessions.TryGetValue(ptySessionId, out var known) && known.Provider == changed.Provider ? known.CliSessionId : null);
+            RunInBackground("cli-message", () => ReportLastMessageAsync(ptySessionId, changed.Provider, cliSessionId, ct));
+        }
         if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow, changed.Prompt) is not { } message)
             return;
         // The prompt's content stays out of the log (it can hold a command line): only its kind
@@ -545,6 +562,30 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         if (changed.State == CliStates.Working && _ptyCwd.TryGetValue(ptySessionId, out var workingIn))
             _reviews.NoteCliWorking(ptySessionId, workingIn);
         // Even when the send fails (backend away), the state stays cached and is replayed at the next connection.
+        await TrySendAsync(message, ct);
+    }
+
+    /// <summary>
+    /// The CLI's last answer, read from its transcript once its turn ended (the last lines may land just after the hook:
+    /// read again once when none is found), secrets masked, sent as <c>pty.cli-message</c> unless already sent.
+    /// </summary>
+    private async Task ReportLastMessageAsync(string ptySessionId, string provider, string? cliSessionId, CancellationToken ct)
+    {
+        if (cliSessionId is null || !_lastMessageReaders.TryGetValue(provider, out var reader)) return;
+        string? text = null;
+        foreach (var delay in new[] { 400, 1500 })
+        {
+            await Task.Delay(delay, ct);
+            if (!_ptySessions.ContainsKey(ptySessionId) || !_ptyCwd.TryGetValue(ptySessionId, out var cwd)) return;
+            text = reader.LastMessage(cwd, cliSessionId);
+            if (!string.IsNullOrWhiteSpace(text)) break;
+        }
+        if (string.IsNullOrWhiteSpace(text)) return;
+        // Masked before being cut: a cut could leave the start of a secret
+        if (_ptySecrets.TryGetValue(ptySessionId, out var secrets) && SecretMasker.For(secrets.Env, secrets.Keys) is { } masker)
+            text = masker.Process(text) + masker.Flush();
+        if (_cliMessages.Record(ptySessionId, provider, cliSessionId, text, DateTime.UtcNow) is not { } message) return;
+        Log($"CLI answer in PTY {ptySessionId}: {message.Text.Length} chars (provider={provider} cliSessionId={cliSessionId})");
         await TrySendAsync(message, ct);
     }
 
@@ -1768,6 +1809,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
                 var session = new PtySession(executor, shell, startedAt);
                 _ptySessions[ptySessionId] = session;
+                _ptySecrets[ptySessionId] = (message.AdditionalEnv, message.SecretKeys);
                 _ptyLastActivity[ptySessionId] = DateTime.UtcNow;
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }
@@ -2060,6 +2102,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 await ReportCliSessionAsync(ptySessionId, ct);
                 if (_cliStates.Current(ptySessionId) is { } cliState)
                     await SendAsync(cliState, ct);
+                if (_cliMessages.Current(ptySessionId) is { } cliMessage)
+                    await SendAsync(cliMessage, ct);
             }
         }
 
@@ -2123,6 +2167,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _ptyCwd.Clear();
         _ptyCliSessions.Clear();
         _cliStates.ClearAll();
+        _cliMessages.ClearAll();
         foreach (var cts in _ptyFifoReaders.Values)
         {
             try { cts.Cancel(); cts.Dispose(); } catch { }

@@ -375,6 +375,33 @@ public sealed record PtyCliPromptOption(
     [property: JsonPropertyName("description"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Description = null);
 
 /// <summary>
+/// The last answer of the CLI in a PTY (its last message with text, read from its transcript at the end of a turn), for
+/// the phone's Reading mode. Secrets of the PTY masked, cut to <see cref="CliMessageTracker.MaxLength"/>. Replayed
+/// after a backend reconnect.
+/// </summary>
+public class PtyCliMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.cli-message";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+
+    [JsonPropertyName("cliSessionId")]
+    public string? CliSessionId { get; init; }
+
+    [JsonPropertyName("text")]
+    public required string Text { get; init; }
+
+    /// <summary>When the agent read it (UTC).</summary>
+    [JsonPropertyName("at")]
+    public required DateTime At { get; init; }
+}
+
+/// <summary>
 /// The coding CLI of a PTY has exited (<c>sidehub-cli launch</c> wrote <c>cli-exited</c>): the terminal is a plain
 /// shell again. The backend forgets the PTY's CLI (provider, state) so the UI stops treating it as a CLI.
 /// </summary>

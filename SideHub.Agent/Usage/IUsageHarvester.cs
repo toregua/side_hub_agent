@@ -40,6 +40,10 @@ public interface ICliSessionUsageHarvester
 
     /// <summary>Usage per model of the whole session, or null when its files cannot be found.</summary>
     IReadOnlyList<ModelUsageReport>? HarvestSession(string cwd, string cliSessionId);
+
+    /// <summary>The text of the session's last answer (the CLI's last message with text), or null when there is none:
+    /// shown on the phone in Reading mode at the end of each turn.</summary>
+    string? LastMessage(string cwd, string cliSessionId);
 }
 
 /// <param name="Cwd">Real path of the run's working directory.</param>

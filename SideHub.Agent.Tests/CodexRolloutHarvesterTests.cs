@@ -255,4 +255,14 @@ public class CodexRolloutHarvesterTests : IDisposable
         Assert.Null(Harvester.ReadFinalMessage(Run([Launch("run-a", T0)])));
         Assert.Null(Harvester.ReadFinalMessage(Run([Launch("run-b", T0.AddHours(1))])));
     }
+
+    [Fact]
+    public void LastMessage_IsTheLastAnswerOfTheSessionsRollout()
+    {
+        var path = _codex.AddRollout(T0.AddSeconds(2), Cwd, "answer.jsonl");
+        var sessionId = Path.GetFileNameWithoutExtension(path)[^36..];
+
+        Assert.Equal("## Answer\n\nLogin issues a **JWT**.", Harvester.LastMessage(Cwd, sessionId));
+        Assert.Null(Harvester.LastMessage(Cwd, Guid.NewGuid().ToString()));
+    }
 }

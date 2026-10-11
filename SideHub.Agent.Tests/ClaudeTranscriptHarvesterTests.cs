@@ -194,6 +194,16 @@ public class ClaudeTranscriptHarvesterTests : IDisposable
     }
 
     [Fact]
+    public void LastMessage_IsTheLastAnswerOfTheSession()
+    {
+        _claude.AddSession("-work-side-hub", SessionId, withSubagents: true, "answer.jsonl");
+
+        Assert.Equal("## Answer\n\nLogin issues a **JWT**.\n\nSee `AuthService.cs`.", Harvester.LastMessage(Cwd, SessionId));
+        Assert.Null(Harvester.LastMessage(Cwd, "22222222-2222-3333-4444-555555555555"));
+        Assert.Null(Harvester.LastMessage(Cwd, "../-work-side-hub/" + SessionId));
+    }
+
+    [Fact]
     public void ReadFinalMessage_IsNullWithoutTheRunsTranscript()
     {
         Assert.Null(Harvester.ReadFinalMessage(Run(SessionId)));

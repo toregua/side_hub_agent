@@ -56,6 +56,11 @@ public sealed class ClaudeTranscriptHarvester(string projectsRoot) : IUsageHarve
             ? Summarize([(file, cliSessionId)])
             : null;
 
+    public string? LastMessage(string cwd, string cliSessionId) =>
+        FifoNotification.IsValidCliSessionId(cliSessionId) && FindSessionFile(cwd, cliSessionId) is { } file
+            ? LastAssistantText(file)
+            : null;
+
     /// <summary>The session file and its sub-agent files: Claude appends to them while the session goes on.</summary>
     public IReadOnlyList<string> SessionFiles(string cwd, string cliSessionId) =>
         FifoNotification.IsValidCliSessionId(cliSessionId) && FindSessionFile(cwd, cliSessionId) is { } file
