@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace SideHub.Agent.Models;
@@ -330,6 +331,67 @@ public class PtyCliStateMessage
     /// <summary>When the agent received the report (UTC).</summary>
     [JsonPropertyName("at")]
     public required DateTime At { get; init; }
+
+    /// <summary>What the CLI asks while <c>waiting-input</c>, when its hook said (<see cref="PtyCliPrompt"/>).</summary>
+    [JsonPropertyName("prompt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PtyCliPrompt? Prompt { get; init; }
+}
+
+/// <summary>
+/// What a waiting CLI asks, from its hook (<c>sidehub-cli cli-state</c>, see <c>CliPrompt</c> in SideHub.Cli), so the
+/// phone can offer taps instead of arrow keys: a <c>question</c> (one single-choice question and its options) or a
+/// <c>permission</c> (the tool and what it would act on). Untrusted like any FIFO line: bounded by
+/// <see cref="FifoNotification"/>, shown as plain text.
+/// </summary>
+public sealed record PtyCliPrompt(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("question"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Question = null,
+    [property: JsonPropertyName("header"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Header = null,
+    [property: JsonPropertyName("options"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PtyCliPromptOption>? Options = null,
+    [property: JsonPropertyName("tool"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Tool = null,
+    [property: JsonPropertyName("detail"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Detail = null,
+    [property: JsonPropertyName("description"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Description = null)
+{
+    public const string QuestionKind = "question";
+    public const string PermissionKind = "permission";
+
+    // Same limits as sidehub-cli's CliPrompt, plus the ellipsis it adds when it cuts a text.
+    public const int MaxQuestion = 301;
+    public const int MaxDescription = 201;
+    public const int MaxLabel = 121;
+    public const int MaxHeader = 61;
+    public const int MaxTool = 100;
+    public const int MaxDetail = 501;
+    public const int MaxOptions = 4;
+
+    /// <summary>Same content (records compare their option lists by reference).</summary>
+    public bool SameAs(PtyCliPrompt? other) =>
+        other is not null && JsonSerializer.Serialize(this) == JsonSerializer.Serialize(other);
+}
+
+public sealed record PtyCliPromptOption(
+    [property: JsonPropertyName("label")] string Label,
+    [property: JsonPropertyName("description"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Description = null);
+
+/// <summary>
+/// The coding CLI of a PTY has exited (<c>sidehub-cli launch</c> wrote <c>cli-exited</c>): the terminal is a plain
+/// shell again. The backend forgets the PTY's CLI (provider, state) so the UI stops treating it as a CLI.
+/// </summary>
+public class PtyCliExitedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "pty.cli-exited";
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+
+    /// <summary>The session that ended; null when the launcher knew none (a new codex session).</summary>
+    [JsonPropertyName("cliSessionId")]
+    public string? CliSessionId { get; init; }
 }
 
 /// <summary>

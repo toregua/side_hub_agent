@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SideHub.Cli.Launch;
 
@@ -31,7 +32,7 @@ public static class CliStateCommand
         try
         {
             if (Report(args, ReadHookInput) is { } report)
-                AgentNotifier.State(report.Provider, report.State, report.CliSessionId);
+                AgentNotifier.State(report.Provider, report.State, report.CliSessionId, report.Prompt);
         }
         catch
         {
@@ -40,7 +41,8 @@ public static class CliStateCommand
         return 0;
     }
 
-    public sealed record StateReport(string Provider, string State, string? CliSessionId);
+    /// <param name="Prompt">What a waiting CLI asks (see <see cref="CliPrompt"/>), null when unknown.</param>
+    public sealed record StateReport(string Provider, string State, string? CliSessionId, JsonObject? Prompt = null);
 
     /// <summary>What to report for the arguments, or null when there is nothing to report.</summary>
     /// <param name="hookInput">Reads the hook's stdin (claude only), null when there is none.</param>
@@ -51,7 +53,11 @@ public static class CliStateCommand
         switch (args[0])
         {
             case "claude" when States.Contains(args[1]):
-                return new StateReport("claude", args[1], SessionIdFromHookInput(hookInput()));
+            {
+                var input = hookInput();
+                var prompt = args[1] == WaitingInput ? CliPrompt.FromHookInput(input) : null;
+                return new StateReport("claude", args[1], SessionIdFromHookInput(input), prompt);
+            }
 
             // codex runs its notify program with the event as the last argument; only turn ends are reported.
             case "codex":

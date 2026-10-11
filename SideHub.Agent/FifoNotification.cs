@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using SideHub.Agent.Models;
 
 namespace SideHub.Agent;
 
@@ -42,8 +43,9 @@ public abstract record FifoNotification
     public sealed record CliExited(string Provider, string? CliSessionId) : FifoNotification;
 
     /// <summary><c>sidehub-cli cli-state</c>, run by the CLI's own hooks: the CLI is now <paramref name="State"/> (one of
-    /// <see cref="CliStates.All"/>). <paramref name="CliSessionId"/> is the session the hook reported, null when it gave none.</summary>
-    public sealed record CliStateChanged(string Provider, string State, string? CliSessionId) : FifoNotification;
+    /// <see cref="CliStates.All"/>). <paramref name="CliSessionId"/> is the session the hook reported, null when it gave none.
+    /// <paramref name="Prompt"/>: what a waiting CLI asks, when its hook said (a malformed one is dropped, the state kept).</summary>
+    public sealed record CliStateChanged(string Provider, string State, string? CliSessionId, PtyCliPrompt? Prompt = null) : FifoNotification;
 
     /// <summary>
     /// A CLI session id is accepted only as a canonical UUID (<c>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</c>): hex digits
@@ -167,7 +169,10 @@ public abstract record FifoNotification
                         rejection = "invalid cliSessionId";
                         return null;
                     }
-                    return new CliStateChanged(provider!, state, cliSessionId);
+                    var prompt = state == CliStates.WaitingInput && root.TryGetProperty("prompt", out var promptProperty)
+                        ? ParsePrompt(promptProperty)
+                        : null;
+                    return new CliStateChanged(provider!, state, cliSessionId, prompt);
                 }
 
                 default:
@@ -195,6 +200,68 @@ public abstract record FifoNotification
             return true;
         cliSessionId = idProperty.ValueKind == JsonValueKind.String ? idProperty.GetString() : null;
         return IsValidCliSessionId(cliSessionId);
+    }
+
+    /// <summary>A prompt as <c>sidehub-cli</c> writes it, within its limits; null for anything else.</summary>
+    public static PtyCliPrompt? ParsePrompt(JsonElement prompt)
+    {
+        if (prompt.ValueKind != JsonValueKind.Object)
+            return null;
+        switch (String(prompt, "kind"))
+        {
+            case PtyCliPrompt.QuestionKind:
+            {
+                var question = Text(prompt, "question", PtyCliPrompt.MaxQuestion, required: true, out var ok);
+                var header = Text(prompt, "header", PtyCliPrompt.MaxHeader, required: false, out var headerOk);
+                if (!ok || !headerOk
+                    || !prompt.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array
+                    || options.GetArrayLength() is < 1 or > PtyCliPrompt.MaxOptions)
+                    return null;
+                var list = new List<PtyCliPromptOption>();
+                foreach (var option in options.EnumerateArray())
+                {
+                    if (option.ValueKind != JsonValueKind.Object)
+                        return null;
+                    var label = Text(option, "label", PtyCliPrompt.MaxLabel, required: true, out var labelOk);
+                    var description = Text(option, "description", PtyCliPrompt.MaxDescription, required: false, out var descriptionOk);
+                    if (!labelOk || !descriptionOk)
+                        return null;
+                    list.Add(new PtyCliPromptOption(label!, description));
+                }
+                return new PtyCliPrompt(PtyCliPrompt.QuestionKind, Question: question, Header: header, Options: list);
+            }
+
+            case PtyCliPrompt.PermissionKind:
+            {
+                var tool = Text(prompt, "tool", PtyCliPrompt.MaxTool, required: true, out var toolOk);
+                var detail = Text(prompt, "detail", PtyCliPrompt.MaxDetail, required: false, out var detailOk);
+                var description = Text(prompt, "description", PtyCliPrompt.MaxDescription, required: false, out var descriptionOk);
+                if (!toolOk || !detailOk || !descriptionOk)
+                    return null;
+                return new PtyCliPrompt(PtyCliPrompt.PermissionKind, Tool: tool, Detail: detail, Description: description);
+            }
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>An optional (or required) string field of at most <paramref name="max"/> characters, without control
+    /// characters other than line breaks and tabs.</summary>
+    private static string? Text(JsonElement obj, string name, int max, bool required, out bool ok)
+    {
+        ok = false;
+        if (!obj.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            ok = !required;
+            return null;
+        }
+        if (value.ValueKind != JsonValueKind.String || value.GetString() is not { } text
+            || text.Length > max || (required && string.IsNullOrWhiteSpace(text))
+            || text.Any(c => char.IsControl(c) && c is not '\n' and not '\t'))
+            return null;
+        ok = true;
+        return text;
     }
 
     private static bool IsKnownProvider(string? provider, out string? rejection)

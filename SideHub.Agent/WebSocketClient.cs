@@ -509,8 +509,15 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // Written by `sidehub-cli launch` once the CLI has exited: its session's usage is final.
                 case FifoNotification.CliExited exited:
                     Log($"CLI exited in PTY {ptySessionId}: provider={exited.Provider} cliSessionId={exited.CliSessionId ?? "(unknown)"}");
-                    // The backend clears the state itself when the CLI ends: only forget it here.
                     _cliStates.Clear(ptySessionId);
+                    // The terminal is a plain shell again: the backend forgets its CLI (backends that don't know the
+                    // message ignore it and clear the state on the final usage report, as before).
+                    await TrySendAsync(new PtyCliExitedMessage
+                    {
+                        PtySessionId = ptySessionId,
+                        Provider = exited.Provider,
+                        CliSessionId = exited.CliSessionId,
+                    }, ct);
                     RunInBackground("cli-session.usage", () => _cliSessionUsage.CliExitedAsync(
                         ptySessionId, exited.Provider, exited.CliSessionId, CancellationToken.None));
                     return;
@@ -531,9 +538,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     {
         // The PTY may have closed while the line was in flight: a state is never reported for an unknown PTY.
         if (!_ptySessions.ContainsKey(ptySessionId)) return;
-        if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow) is not { } message)
+        if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow, changed.Prompt) is not { } message)
             return;
-        Log($"CLI state in PTY {ptySessionId}: {changed.State} (provider={changed.Provider} cliSessionId={changed.CliSessionId ?? "(unknown)"})");
+        // The prompt's content stays out of the log (it can hold a command line): only its kind
+        Log($"CLI state in PTY {ptySessionId}: {changed.State}{(changed.Prompt is { } p ? $" ({p.Kind})" : "")} (provider={changed.Provider} cliSessionId={changed.CliSessionId ?? "(unknown)"})");
         if (changed.State == CliStates.Working && _ptyCwd.TryGetValue(ptySessionId, out var workingIn))
             _reviews.NoteCliWorking(ptySessionId, workingIn);
         // Even when the send fails (backend away), the state stays cached and is replayed at the next connection.

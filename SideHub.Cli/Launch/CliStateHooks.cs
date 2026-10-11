@@ -32,8 +32,9 @@ public static partial class CliStateHooks
 
     /// <summary>
     /// The <c>--settings</c> JSON for claude. UserPromptSubmit and PostToolUse: working (PostToolUse also ends a
-    /// permission wait once the tool ran); Notification on a permission or input request, and PreToolUse of
-    /// AskUserQuestion: waiting-input; Stop: idle. With a tool policy, a PreToolUse group also runs
+    /// permission wait once the tool ran); Notification on a permission or input request, PermissionRequest and
+    /// PreToolUse of AskUserQuestion: waiting-input (the last two also say what is asked, see <see cref="CliPrompt"/>);
+    /// Stop: idle. With a tool policy, a PreToolUse group also runs
     /// <c>sidehub-cli policy check</c> (<see cref="PolicyCheckCommand"/>) on the tools it matches.
     /// </summary>
     /// <param name="program">This program's absolute path (<c>sidehub-cli</c>).</param>
@@ -69,6 +70,8 @@ public static partial class CliStateHooks
             Add("PreToolUse", Group(CliStateCommand.WaitingInput, "AskUserQuestion"));
             Add("PostToolUse", Group(CliStateCommand.Working));
             Add("Notification", Group(CliStateCommand.WaitingInput, WaitingInputNotifications));
+            // Before a permission dialog: same state, with the tool and what it would run (CliPrompt)
+            Add("PermissionRequest", Group(CliStateCommand.WaitingInput));
             Add("Stop", Group(CliStateCommand.Idle));
         }
         if (toolPolicyMatcher is not null)

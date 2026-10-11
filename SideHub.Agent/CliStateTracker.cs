@@ -18,8 +18,9 @@ public static class CliStates
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal) { Working, WaitingInput, Idle };
 }
 
-/// <summary>A CLI's last reported state in a PTY, and when the agent learned it (UTC).</summary>
-public sealed record PtyCliState(string Provider, string State, string? CliSessionId, DateTime At)
+/// <summary>A CLI's last reported state in a PTY, and when the agent learned it (UTC). <paramref name="Prompt"/>: what
+/// it asks while waiting-input, when its hook said.</summary>
+public sealed record PtyCliState(string Provider, string State, string? CliSessionId, DateTime At, PtyCliPrompt? Prompt = null)
 {
     public PtyCliStateMessage Message(string ptySessionId) => new()
     {
@@ -28,27 +29,33 @@ public sealed record PtyCliState(string Provider, string State, string? CliSessi
         Provider = Provider,
         State = State,
         At = At,
+        Prompt = Prompt,
     };
 }
 
 /// <summary>
 /// The latest CLI state of each PTY, reported to the backend as <c>pty.cli-state</c>: a report that repeats the
-/// last one (same state, same session) is not sent again, the latest state is replayed after a backend reconnect,
-/// and the state is forgotten when the CLI or the PTY ends (the backend clears its own on the CLI's end).
+/// last one (same state, same session) is not sent again, unless it brings what a waiting CLI asks (Claude reports
+/// waiting-input twice for a permission: its PermissionRequest hook says what, its Notification hook does not); the
+/// latest state is replayed after a backend reconnect, and forgotten when the CLI or the PTY ends.
 /// </summary>
 public sealed class CliStateTracker
 {
     private readonly ConcurrentDictionary<string, PtyCliState> _states = new();
 
     /// <summary>Records a report; returns the message to send, or null when it repeats the PTY's current state.</summary>
-    public PtyCliStateMessage? Record(string ptySessionId, string provider, string state, string? cliSessionId, DateTime at)
+    public PtyCliStateMessage? Record(string ptySessionId, string provider, string state, string? cliSessionId, DateTime at,
+        PtyCliPrompt? prompt = null)
     {
         if (!CliStates.All.Contains(state))
             throw new ArgumentException($"Unknown CLI state '{state}'.", nameof(state));
+        if (state != CliStates.WaitingInput)
+            prompt = null;
         if (_states.TryGetValue(ptySessionId, out var current)
-            && current.State == state && current.Provider == provider && current.CliSessionId == cliSessionId)
+            && current.State == state && current.Provider == provider && current.CliSessionId == cliSessionId
+            && (prompt is null || prompt.SameAs(current.Prompt)))
             return null;
-        var next = new PtyCliState(provider, state, cliSessionId, at);
+        var next = new PtyCliState(provider, state, cliSessionId, at, prompt);
         _states[ptySessionId] = next;
         return next.Message(ptySessionId);
     }

@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
+using System.Text.Encodings.Web;
 using System.Text.Json.Nodes;
 
 namespace SideHub.Cli.Launch;
@@ -17,6 +18,13 @@ public static class AgentNotifier
     public const string SecretVariable = "SIDEHUB_PTY_NOTIFY_SECRET";
 
     private const string PipePrefix = @"\\.\pipe\";
+
+    /// <summary>Non-ASCII text as is (accents are frequent in prompts): a line stays as long as its text.</summary>
+    private static readonly JsonSerializerOptions LineOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    /// <summary>Longest cli-state line sent with a prompt, under the agent's limit (8192) with room for the secret.</summary>
+    private const int MaxPromptLine = 7000;
+
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(1);
 
     public static void SessionStarted(string provider, string cliSessionId) =>
@@ -31,8 +39,19 @@ public static class AgentNotifier
 
     /// <param name="state">working, waiting-input or idle (see <see cref="CliStateCommand"/>).</param>
     /// <param name="cliSessionId">The session the CLI's hook reported, null when it gave none.</param>
-    public static void State(string provider, string state, string? cliSessionId) =>
-        Send(new { @event = "cli-state", provider, state, cliSessionId });
+    /// <param name="prompt">What a waiting CLI asks (<see cref="CliPrompt"/>), null when unknown.</param>
+    public static void State(string provider, string state, string? cliSessionId, JsonObject? prompt = null)
+    {
+        var notification = JsonSerializer.SerializeToNode(new { @event = "cli-state", provider, state, cliSessionId })!.AsObject();
+        if (prompt is not null)
+        {
+            notification["prompt"] = prompt.DeepClone();
+            // The agent drops a line that is too long: then the state goes without its prompt
+            if (notification.ToJsonString(LineOptions).Length > MaxPromptLine)
+                notification.Remove("prompt");
+        }
+        Send(notification);
+    }
 
     public static void StepEnded() => Send(new { @event = "run-step-ended" });
 
@@ -43,9 +62,9 @@ public static class AgentNotifier
         var channel = Environment.GetEnvironmentVariable(ChannelVariable);
         if (string.IsNullOrEmpty(channel))
             return;
-        var json = JsonSerializer.SerializeToNode(notification)!.AsObject();
+        var json = notification as JsonObject ?? JsonSerializer.SerializeToNode(notification)!.AsObject();
         json["secret"] = Environment.GetEnvironmentVariable(SecretVariable) ?? "";
-        var line = Encoding.UTF8.GetBytes(json.ToJsonString() + "\n");
+        var line = Encoding.UTF8.GetBytes(json.ToJsonString(LineOptions) + "\n");
 
         var write = Task.Run(() =>
         {
