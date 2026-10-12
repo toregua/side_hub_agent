@@ -130,6 +130,10 @@ public class IncomingMessage
     [JsonPropertyName("reviewId")]
     public string? ReviewId { get; init; }
 
+    /// <summary>git.push.request: the commit the push was confirmed for (it must still be HEAD).</summary>
+    [JsonPropertyName("head")]
+    public string? Head { get; init; }
+
     /// <summary>review.diff.request: which round of the review.</summary>
     [JsonPropertyName("round")]
     public int? Round { get; init; }

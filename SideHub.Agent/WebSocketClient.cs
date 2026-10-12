@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using SideHub.Agent.Models;
+using SideHub.Agent.Outgoing;
 using SideHub.Agent.Review;
 using SideHub.Agent.Update;
 using SideHub.Agent.Usage;
@@ -86,6 +87,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly WorkReviewTracker _reviews;
     // Where peer review runs read the end of the reviewed round, one disposable worktree per run.
     private readonly PeerReviewCheckout _peerReviews;
+    // The commits of the agent's branch not pushed yet (git.outgoing), and the push confirmed from SideHub.
+    private readonly OutgoingCommitsReporter _outgoing;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
     private Timer? _cliSessionUsageTimer;
@@ -162,6 +165,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
             _usageCollector.ReadFinalMessage, Log);
         _peerReviews = new PeerReviewCheckout(_fifoAgentKey, _reviews, Log);
+        _outgoing = new OutgoingCommitsReporter(workingDirectory, TrySendAsync, Log);
         foreach (var (provider, harvester) in sessionHarvesters)
             _lastMessageReaders[provider] = harvester;
         _cliSessionUsage = new CliSessionUsageCollector(
@@ -509,10 +513,15 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         RunInBackground("run.usage", () => _usageCollector.HarvestAsync(ptySessionId, "step-ended", final: false, CancellationToken.None));
                     return;
 
-                // Written by `sidehub-cli task done`: the task's review round ends (a run's round ends with its terminal).
+                // Written by `sidehub-cli task done`: the task's review round ends (a run's round ends with its terminal),
+                // and its commit is now waiting to be pushed.
                 case FifoNotification.TaskDone:
-                    if (_reviews.HasOpenRound(ptySessionId))
-                        RunInBackground("review.changes", () => _reviews.EndRoundAsync(ptySessionId, "task-done", ReviewKinds.Task, CancellationToken.None));
+                    RunInBackground("review.changes", async () =>
+                    {
+                        if (_reviews.HasOpenRound(ptySessionId))
+                            await _reviews.EndRoundAsync(ptySessionId, "task-done", ReviewKinds.Task, CancellationToken.None);
+                        await _outgoing.RefreshAsync(CancellationToken.None);
+                    });
                     return;
 
                 // Written by `sidehub-cli launch codex`: codex has no session id to announce, so the harvester
@@ -913,6 +922,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 RunInBackground("review purge", () => _reviews.PurgeIfDueAsync(ct));
                 RunInBackground("peer review checkouts purge", () => _peerReviews.PurgeLeftoversAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
+                _outgoing.Start(ct);
                 if (_updates is not null)
                     RunInBackground("update outcome", _updates.OnConnectedAsync);
                 StartHeartbeat(ct);
@@ -965,6 +975,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             {
                 StopHeartbeat();
                 StopPtyReaper();
+                _outgoing.Stop();
                 if (_ws != null)
                 {
                     if (_ws.State == WebSocketState.Open)
@@ -1237,6 +1248,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "review.diff.request":
                     RunInBackground("review.diff.request", () => HandleReviewDiffRequestAsync(message, ct));
+                    break;
+                case "git.push.request":
+                    RunInBackground("git.push.request", () => HandleGitPushRequestAsync(message, ct));
                     break;
                 case "file.write.start":
                     await HandleFileWriteStartAsync(message, ct);
@@ -2050,6 +2064,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             // Before the usage: the review reads the CLI's last message while the run is still tracked.
             await _reviews.EndRoundAsync(ptySessionId, trigger, kind: null, CancellationToken.None);
             _reviews.ForgetTerminal(ptySessionId);
+            await _outgoing.RefreshAsync(CancellationToken.None);
             if (_usageCollector.IsTracked(ptySessionId))
                 await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
             await _cliSessionUsage.PtyClosedAsync(ptySessionId, trigger, CancellationToken.None);
@@ -2099,6 +2114,17 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var answer = await _reviews.DiffAsync(message.RequestId, reviewId, round, message.Path, ct);
         Log($"Review {reviewId} round {round} diff: " + (answer.Error ?? (answer.Truncated ? "too large" : $"{answer.Diff?.Length ?? 0} chars")));
         await SendAsync(answer, ct);
+    }
+
+    /// <summary>Pushes the commit a person confirmed in SideHub (doc 58); the fresh git.outgoing goes out before the answer.</summary>
+    private async Task HandleGitPushRequestAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || string.IsNullOrWhiteSpace(message.Head))
+        {
+            Log("git.push.request ignored: requestId and head are required");
+            return;
+        }
+        await SendAsync(await _outgoing.PushAsync(message.RequestId, message.Head, ct), ct);
     }
 
     private async Task HandlePtyHistoryRequestAsync(IncomingMessage message, CancellationToken ct)
@@ -2202,6 +2228,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     {
         _updates?.Detach(this);
         StopHeartbeat();
+        _outgoing.Dispose();
         _cliSessionUsageTimer?.Dispose();
         _cliSessionUsageTimer = null;
 
