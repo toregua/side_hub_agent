@@ -23,7 +23,7 @@ public abstract record FifoNotification
     /// <summary>CLI providers the wrappers announce, as they spell them.</summary>
     public static readonly IReadOnlySet<string> KnownProviders = new HashSet<string>(StringComparer.Ordinal)
     {
-        "claude", "codex", "gemini", "copilot",
+        "claude", "codex", "gemini", "copilot", "agy",
     };
 
     /// <summary><c>sidehub-cli workflow step-complete|step-fail</c>: the step is over, the CLI may stay open.</summary>

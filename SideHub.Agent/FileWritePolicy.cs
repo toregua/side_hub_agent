@@ -27,6 +27,8 @@ public static partial class FileWritePolicy
         [".claude", "settings.local.json"],
         [".mcp.json"],
         [".gemini", "settings.json"],
+        [".agents", "hooks.json"],
+        [".agents", "mcp_config.json"],
         [".codex", "config.toml"],
         [".envrc"],
         [".vscode", "tasks.json"],

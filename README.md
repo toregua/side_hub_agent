@@ -1,6 +1,6 @@
 # SideHub Agent
 
-The open source agent that runs coding CLIs (Claude Code, Codex, Gemini CLI, GitHub Copilot CLI) on
+The open source agent that runs coding CLIs (Claude Code, Codex, Antigravity CLI, GitHub Copilot CLI, Gemini CLI) on
 your own machines for the [SideHub](https://www.sidehub.io) cockpit.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -27,7 +27,7 @@ threat model is in [SECURITY.md](SECURITY.md).
 │     ├── WebSocketClient ── pty.start / pty.input / pty.stop …         │
 │     ├── NodePtyExecutor ── pty-helper/ (Node.js + node-pty)           │
 │     │      └── PTY: bash / zsh / pwsh … in the project folder         │
-│     │            └── sidehub-cli launch claude|codex|gemini|copilot   │
+│     │            └── sidehub-cli launch claude|codex|agy|copilot      │
 │     │                  └── the real CLI ──▶ model provider (your keys)│
 │     ├── NotifyFifo ◀── session id, CLI state, CLI exit                │
 │     └── Usage/ ──────── token counts read from the CLI transcripts    │
@@ -55,16 +55,19 @@ watch it, interrupt it or take it over.
 Every coding CLI is started through `sidehub-cli launch` (shipped next to the agent), on every OS:
 
 ```
-sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|gemini|copilot> [args…]
+sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|gemini|copilot|agy> [args…]
 ```
 
 It:
 
 1. finds the real CLI on your `PATH` (skipping the SideHub wrappers);
 2. sets the session id up front when the CLI accepts one (`--session-id` for claude, copilot and
-   gemini ≥ 0.41), so SideHub can resume the session and read its usage;
+   gemini ≥ 0.41), so SideHub can resume the session and read its usage; codex and agy take none: the
+   agent finds codex's from its rollout, agy's hooks report its conversation;
 3. adds per-invocation state hooks (claude `--settings` hooks, codex `-c notify=`) that report whether
-   the CLI is `working`, `waiting-input` or `idle`;
+   the CLI is `working`, `waiting-input` or `idle`. agy reads hooks from files only: the launcher keeps a
+   `sidehub` entry in `~/.gemini/config/hooks.json` (your own entries are kept), which reports `working`
+   and `idle` with the conversation id and does nothing outside a SideHub terminal;
 4. gives the CLI the workspace MCP servers the run may use, if any (see below);
 5. tells the agent which session runs in the terminal, then runs the CLI.
 
@@ -83,6 +86,7 @@ CLI for this invocation only, never through a file in the repository:
 | codex | `-c mcp_servers.<name>={…}`; secrets read from the environment (`env_vars`, `bearer_token_env_var`, `env_http_headers`, or `/bin/sh -c` for a secret in a stdio server's arguments) | no, added to your own |
 | gemini | a temporary system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, your machine's system settings copied in) deleted when gemini exits; gemini expands `${NAME}` | yes (`--allowed-mcp-server-names`) |
 | copilot | not supported | – |
+| agy | not supported yet | – |
 
 A server a CLI cannot read its secrets for without putting them on its command line (codex: a secret in
 an http URL or inside a header other than `Bearer ${NAME}`; on Windows, anywhere but a variable of the
@@ -94,9 +98,11 @@ on claude's first-launch questions in the folder, which nobody is there to answe
 answer a person would: the folder is marked trusted in claude's config (`hasTrustDialogAccepted`, the
 agent's own repository), and the project MCP servers (`.mcp.json` in the folder or a parent) nobody decided
 on yet are started without, through `--settings` `disabledMcpjsonServers` for this launch only. A server
-you enabled or disabled keeps your decision; no file of the repository is written.
+you enabled or disabled keeps your decision; no file of the repository is written. An interactive agy
+started the same way gets its folder added to `trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`
+(agy asks for each folder: trusting a parent does not cover it).
 
-**`cli-wrappers/`** (Linux, macOS): the agent puts small `claude` / `codex` / `gemini` / `copilot`
+**`cli-wrappers/`** (Linux, macOS): the agent puts small `claude` / `codex` / `gemini` / `copilot` / `agy`
 wrappers first on the terminal's `PATH`. When you type `claude` by hand in a SideHub terminal, the
 wrapper simply hands over to `sidehub-cli launch`. Without the launcher, the real CLI runs as if there
 were no wrapper.
@@ -112,7 +118,8 @@ arrives there as untrusted input (validated ids, bounded sizes).
 
 After a run, and periodically for CLI sessions typed in terminals, the agent reads the CLI's own local
 transcript (`ClaudeTranscriptHarvester` for Claude Code's project JSONL, `CodexRolloutHarvester` for
-Codex rollouts) and sends **only token counts per model** (input, output, cache read/write, reasoning):
+Codex rollouts, `AntigravityTranscriptHarvester` for agy's `~/.gemini/antigravity-cli/brain/<id>/…/transcript_full.jsonl`)
+and sends **only token counts per model** (input, output, cache read/write, reasoning):
 
 - `run.usage`: at the end of a run started by SideHub;
 - `cli-session.usage`: a cumulative snapshot of a session typed in a terminal, when the CLI exits or
@@ -219,7 +226,7 @@ What a report holds, and nothing else:
 | `backend-unreachable` | agent | The handshake fails otherwise before the first connection: DNS, socket, proxy, TLS, HTTP error |
 | `pty-helper-failed` | agent | `pty-helper` doesn't start: Node.js missing from the agent's `PATH`, `node-pty` built for another Node version… |
 | `root-refused` | agent, `install.sh` | Run as root without `--allow-root` |
-| `cli-missing` | agent | None of `claude`, `codex`, `gemini`, `copilot` answers `--version` |
+| `cli-missing` | agent | None of `claude`, `codex`, `gemini`, `copilot`, `agy` answers `--version` |
 | `install-setup-failed` | agent (`sidehub-agent setup`) | Setup fails: the last two lines it printed, or its error |
 | `install-node-missing`, `install-download-failed`, `install-verification-failed`, `install-permission-denied`, `install-setup-failed`, `install-failed` | `install.sh`, `install.ps1` | The install stage that failed |
 
@@ -234,7 +241,7 @@ the setup commands copied from SideHub set it.
 ## Installation
 
 Requires [Node.js](https://nodejs.org) 18 or later (for the PTY helper) and the CLIs you want to use
-(`claude`, `codex`, `gemini`, `copilot`) on the `PATH`.
+(`claude`, `codex`, `agy`, `copilot`, `gemini`) on the `PATH`.
 
 ### Linux / macOS
 
@@ -582,7 +589,7 @@ side_hub_agent/
 │   ├── Usage/                     # Token usage from CLI transcripts, pending queue
 │   ├── Review/                    # Work review: photos of the folder, changes, diffs
 │   ├── Models/                    # WebSocket message DTOs
-│   ├── cli-wrappers/              # claude / codex / gemini / copilot wrappers (bash)
+│   ├── cli-wrappers/              # claude / codex / gemini / copilot / agy wrappers (bash)
 │   └── pty-helper/                # Node.js + node-pty
 ├── SideHub.Cli/                   # sidehub-cli
 │   ├── Launch/                    # `launch` and `cli-state`

@@ -8,8 +8,9 @@ namespace SideHub.Agent;
 
 /// <summary>
 /// Writes provider-specific skill files into the working directory so that
-/// LLMs (Claude, Codex, Gemini, Copilot) discover the sidehub-cli commands.
-/// Copilot has no dedicated file: it reads AGENTS.md, written for Codex.
+/// LLMs (Claude, Codex, Gemini, Copilot, agy) discover the sidehub-cli commands.
+/// Copilot has no dedicated file: it reads AGENTS.md, written for Codex. agy (Antigravity CLI) reads both
+/// AGENTS.md and GEMINI.md, so it gets the skill twice until GEMINI.md is no longer written.
 /// Now fetches a lightweight drive index at spawn time so agents are aware
 /// of existing workspace memory without loading full content.
 /// </summary>

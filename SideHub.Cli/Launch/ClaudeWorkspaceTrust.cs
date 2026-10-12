@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace SideHub.Cli.Launch;
@@ -19,8 +18,13 @@ public static class ClaudeWorkspaceTrust
     /// <summary>A claude launched by SideHub for a run (<c>$SIDEHUB_RUN_ID</c>) or a task (<c>$SIDEHUB_TASK_ID</c>),
     /// interactive: the one that would ask.</summary>
     public static bool Applies(string cli, IReadOnlyList<string> arguments, string? runId, string? taskId = null) =>
-        cli == "claude" && (!string.IsNullOrEmpty(runId) || !string.IsNullOrEmpty(taskId))
-        && !arguments.Any(a => a is "-p" or "--print");
+        cli == "claude" && Unattended(arguments, runId, taskId);
+
+    /// <summary>A CLI launched by SideHub for a run or a task, interactive (not <c>-p</c> / <c>--print</c>): nobody is
+    /// there yet to answer its first-launch questions.</summary>
+    public static bool Unattended(IReadOnlyList<string> arguments, string? runId, string? taskId) =>
+        (!string.IsNullOrEmpty(runId) || !string.IsNullOrEmpty(taskId))
+        && !arguments.Any(a => a is "-p" or "--print" or "--prompt");
 
     /// <summary><c>$CLAUDE_CONFIG_DIR/.claude.json</c>, else <c>~/.claude.json</c>; null without a home.</summary>
     public static string? ConfigPath()
@@ -54,21 +58,7 @@ public static class ClaudeWorkspaceTrust
         if (project["hasTrustDialogAccepted"] is JsonValue accepted && accepted.TryGetValue<bool>(out var yes) && yes)
             return false;
         project["hasTrustDialogAccepted"] = true;
-
-        var temporary = $"{configPath}.sidehub-{Guid.NewGuid():N}.tmp";
-        try
-        {
-            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
-            if (!OperatingSystem.IsWindows())
-                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-            using (var stream = new FileStream(temporary, options))
-                JsonSerializer.Serialize(stream, root, new JsonSerializerOptions { WriteIndented = true });
-            File.Move(temporary, configPath, overwrite: true);
-        }
-        finally
-        {
-            File.Delete(temporary);
-        }
+        ConfigFiles.Replace(configPath, root);
         return true;
     }
 }

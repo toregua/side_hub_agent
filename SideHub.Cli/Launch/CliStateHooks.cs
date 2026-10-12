@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace SideHub.Cli.Launch;
@@ -15,6 +16,10 @@ namespace SideHub.Cli.Launch;
 /// argument (https://learn.chatgpt.com/docs/config-file/config-advanced). It replaces a <c>notify</c> of the user's
 /// config, so it is only added when the user has none. Codex hooks would also report turn starts, but run only
 /// once the user trusted them in <c>/hooks</c>: not usable from the command line.</item>
+/// <item>agy: no per-invocation option, only hooks files. An entry of its own, <see cref="AntigravityHookName"/>, is
+/// kept in the user's global <c>~/.gemini/config/hooks.json</c> (<see cref="EnsureAntigravityHooks"/>), next to the
+/// user's own entries. It runs in every agy, also outside SideHub, where it does nothing: the shell guard skips
+/// <c>sidehub-cli</c> without a SideHub terminal, and agy ignores a hook whose program is gone.</item>
 /// </list>
 /// gemini and copilot read hooks from settings files only: they report no state.
 /// <para>
@@ -126,6 +131,55 @@ public static partial class CliStateHooks
         var firstTable = TableHeader().Match(text);
         var topLevel = firstTable.Success ? text[..firstTable.Index] : text;
         return TopLevelNotify().IsMatch(topLevel);
+    }
+
+    /// <summary>The key of SideHub's entry in agy's hooks file.</summary>
+    public const string AntigravityHookName = "sidehub";
+
+    /// <summary>
+    /// SideHub's entry in agy's hooks file: PreInvocation (before each model call): working; Stop: idle (see
+    /// <see cref="CliStateCommand"/>, which reads the conversation from the hook's stdin). agy runs a hook's
+    /// <c>command</c> through a shell: the program is quoted, and on Linux and macOS only started in a SideHub terminal.
+    /// </summary>
+    public static JsonObject AntigravityHook(string program)
+    {
+        string Command(string state)
+        {
+            if (OperatingSystem.IsWindows())
+                return $"\"{program}\" {CliStateCommand.Name} agy {state}";
+            var quoted = "'" + program.Replace("'", "'\\''") + "'";
+            return $"[ -z \"${AgentNotifier.ChannelVariable}\" ] || {quoted} {CliStateCommand.Name} agy {state}";
+        }
+        JsonArray Handler(string state) => [new JsonObject { ["command"] = Command(state), ["timeout"] = HookTimeoutSeconds }];
+        return new JsonObject
+        {
+            ["PreInvocation"] = Handler(CliStateCommand.Working),
+            ["Stop"] = Handler(CliStateCommand.Idle),
+        };
+    }
+
+    /// <summary>agy's global hooks file: <c>~/.gemini/config/hooks.json</c>; null without a home.</summary>
+    public static string? AntigravityHooksPath()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".gemini", "config", "hooks.json");
+    }
+
+    /// <summary>
+    /// Puts SideHub's entry (<see cref="AntigravityHook"/>) in agy's hooks file at <paramref name="path"/>, keeping the
+    /// user's entries. Returns false when it already was there; throws on an unreadable or invalid file (left alone).
+    /// </summary>
+    public static bool EnsureAntigravityHooks(string path, string program)
+    {
+        var root = File.Exists(path) && File.ReadAllText(path) is { } text && !string.IsNullOrWhiteSpace(text)
+            ? JsonNode.Parse(text) as JsonObject ?? throw new InvalidDataException($"{path} is not a JSON object.")
+            : new JsonObject();
+        var hook = AntigravityHook(program);
+        if (JsonNode.DeepEquals(root[AntigravityHookName], hook))
+            return false;
+        root[AntigravityHookName] = hook;
+        ConfigFiles.Replace(path, root);
+        return true;
     }
 
     /// <summary>codex's config.toml: <c>$CODEX_HOME/config.toml</c>, else <c>~/.codex/config.toml</c>.</summary>

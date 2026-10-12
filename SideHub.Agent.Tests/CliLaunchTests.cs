@@ -32,6 +32,39 @@ public class CliLaunchTests : IDisposable
     }
 
     [Fact]
+    public void Agy_gets_no_session_id_and_reports_its_launch_and_exit()
+    {
+        var plan = Plan("agy", ["--model", "gemini-3.8-flash-high", "-p"], "fix it");
+
+        Assert.Equal(["--model", "gemini-3.8-flash-high", "-p", "fix it"], plan.Arguments);
+        Assert.Null(plan.SessionId);
+        Assert.True(plan.ReportLaunch);
+    }
+
+    [Theory]
+    [InlineData("agy", new[] { "--conversation", Existing })]
+    [InlineData("agy", new[] { "--conversation=" + Existing })]
+    public void A_resumed_agy_conversation_is_announced(string cli, string[] args)
+    {
+        var plan = Plan(cli, args);
+
+        Assert.Equal(args, plan.Arguments);
+        Assert.Equal(Existing, plan.SessionId);
+    }
+
+    [Theory]
+    [InlineData("models")]
+    [InlineData("mcp")]
+    [InlineData("update")]
+    public void Agy_subcommands_start_no_conversation(string subcommand)
+    {
+        var plan = Plan("agy", [subcommand]);
+
+        Assert.Equal([subcommand], plan.Arguments);
+        Assert.False(plan.ReportLaunch);
+    }
+
+    [Fact]
     public void The_prompt_is_the_last_argument_untouched()
     {
         const string prompt = "line \"one\"\nline two with $HOME & %PATH% ' `x`";

@@ -60,6 +60,12 @@ public static class LaunchCommand
 
         if (unattended)
             TrustWorkspace();
+        if (AntigravityWorkspaceTrust.Applies(cli, args[1..],
+                Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable),
+                Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable)))
+            TrustAntigravityWorkspace();
+        if (plan.AntigravityHooks && HookProgram() is { } hookProgram)
+            InstallAntigravityHooks(hookProgram);
 
         if (plan.SessionId is { } sessionId)
             AgentNotifier.SessionStarted(cli, sessionId);
@@ -135,6 +141,36 @@ public static class LaunchCommand
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
             Console.Error.WriteLine($"sidehub-cli launch: claude may ask whether to trust this folder: {ex.Message}");
+        }
+    }
+
+    /// <summary>Best effort: without it, agy asks whether to trust the folder and someone answers in the terminal.</summary>
+    private static void TrustAntigravityWorkspace()
+    {
+        if (AntigravityWorkspaceTrust.SettingsPath() is not { } settingsPath)
+            return;
+        try
+        {
+            AntigravityWorkspaceTrust.Accept(settingsPath, Directory.GetCurrentDirectory());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: agy may ask whether to trust this folder: {ex.Message}");
+        }
+    }
+
+    /// <summary>Best effort: without them, SideHub does not see what agy is doing nor which conversation it runs.</summary>
+    private static void InstallAntigravityHooks(string program)
+    {
+        if (CliStateHooks.AntigravityHooksPath() is not { } hooksPath)
+            return;
+        try
+        {
+            CliStateHooks.EnsureAntigravityHooks(hooksPath, program);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"sidehub-cli launch: agy's state stays unknown to SideHub: cannot add its hooks to {hooksPath}: {ex.Message}");
         }
     }
 

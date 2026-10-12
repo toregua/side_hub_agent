@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# SideHub wrapper around a coding CLI. The same file is installed as `claude`, `codex`, `gemini` and
-# `copilot`; it acts for the name it was called by.
+# SideHub wrapper around a coding CLI. The same file is installed as `claude`, `codex`, `gemini`,
+# `copilot` and `agy`; it acts for the name it was called by.
 #
-# Why this exists: when a user types `claude` (or codex, gemini, copilot) in a SideHub shell, SideHub
+# Why this exists: when a user types `claude` (or codex, gemini, copilot, agy) in a SideHub shell, SideHub
 # must know which CLI session runs in the terminal, to resume it later and read its token usage.
 # `sidehub-cli launch`, shipped next to the agent, does that on every OS: it pre-sets the session id
 # when the CLI accepts one (`--session-id`), tells the agent through the FIFO at

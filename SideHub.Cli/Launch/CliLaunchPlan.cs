@@ -2,13 +2,17 @@ namespace SideHub.Cli.Launch;
 
 /// <summary>
 /// What <c>sidehub-cli launch</c> runs for a coding CLI, and what it reports to the agent: the CLI session id
-/// (so SideHub can later run <c>--resume &lt;id&gt;</c>) or, for codex, which has no pre-set id, its launch.
+/// (so SideHub can later run <c>--resume &lt;id&gt;</c>) or, for codex and agy, which take no pre-set id, their launch.
 /// Pure: the arguments are only inspected and extended, never interpreted by a shell.
 /// </summary>
 public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, string? SessionId, bool ReportLaunch)
 {
     /// <summary>gemini: the system settings file to run it with (<see cref="McpServers.Gemini"/>), null for none.</summary>
     public string? GeminiSystemSettings { get; init; }
+
+    /// <summary>agy: its state hooks must be in its hooks file (<see cref="CliStateHooks.EnsureAntigravityHooks"/>):
+    /// it takes none on the command line.</summary>
+    public bool AntigravityHooks { get; init; }
 
     /// <summary>MCP servers that could not be given to the CLI, to show in the terminal.</summary>
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -18,7 +22,7 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
 
     public static readonly IReadOnlySet<string> KnownClis = new HashSet<string>(StringComparer.Ordinal)
     {
-        "claude", "codex", "gemini", "copilot",
+        "claude", "codex", "gemini", "copilot", "agy",
     };
 
     /// <summary>First gemini release that accepts <c>--session-id</c> (and resumes a session by its UUID).</summary>
@@ -30,14 +34,15 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         ["claude"] = ["auth", "config", "doctor", "install", "mcp", "migrate-installer", "plugin", "plugins", "setup-token", "update", "upgrade"],
         ["copilot"] = ["help", "init", "login", "logout", "mcp", "memories", "plugin", "plugins", "sessions", "update", "version"],
         ["gemini"] = ["extension", "extensions", "hook", "hooks", "mcp", "skill", "skills"],
+        ["agy"] = ["agent", "agents", "changelog", "help", "install", "mcp", "mic-serve", "models", "plugin", "plugins", "remote-control", "update"],
         ["codex"] = ["a", "app-server", "apply", "archive", "cloud", "completion", "debug", "features", "help", "login", "logout", "mcp", "mcp-server", "sandbox", "unarchive"],
     };
 
     private static readonly HashSet<string> InfoOptions = ["--help", "-h", "--version", "-v", "-V"];
 
     // Options through which the caller already chose the session: the launcher leaves it alone.
-    private static readonly HashSet<string> SessionOptions = ["--session-id", "--resume", "-r", "--continue", "--session-file", "--connect", "--from-pr"];
-    private static readonly HashSet<string> SessionIdOptions = ["--session-id", "--resume", "-r"];
+    private static readonly HashSet<string> SessionOptions = ["--session-id", "--resume", "-r", "--continue", "--session-file", "--connect", "--from-pr", "--conversation"];
+    private static readonly HashSet<string> SessionIdOptions = ["--session-id", "--resume", "-r", "--conversation"];
 
     /// <param name="cli">One of <see cref="KnownClis"/>.</param>
     /// <param name="arguments">The CLI's arguments, as given.</param>
@@ -82,6 +87,7 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         var refusal = startsConversation && toolPolicy is not null ? ToolPolicyRefusal(cli, args, toolPolicy) : null;
         if (startsConversation && refusal is null)
             AddHooks(cli, args, stateReporting, toolPolicy, declinedProjectMcpServers);
+        var antigravityHooks = cli == "agy" && startsConversation && refusal is null && stateReporting is not null;
 
         var warnings = new List<string>();
         string? geminiSettings = null;
@@ -91,8 +97,10 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         if (prompt is not null)
             args.Add(prompt);
 
-        return new CliLaunchPlan(cli, args, sessionId, ReportLaunch: cli == "codex" && startsConversation)
+        // agy's session is told by its hooks (see CliStateCommand), but only the launch says when it exits.
+        return new CliLaunchPlan(cli, args, sessionId, ReportLaunch: cli is "codex" or "agy" && startsConversation)
         {
+            AntigravityHooks = antigravityHooks,
             GeminiSystemSettings = geminiSettings,
             Warnings = warnings,
             Refusal = refusal,
@@ -189,8 +197,12 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         return false;
     }
 
-    private static bool AcceptsSessionId(string cli, Version? geminiVersion) =>
-        cli != "gemini" || (geminiVersion is not null && geminiVersion >= GeminiSessionIdVersion);
+    private static bool AcceptsSessionId(string cli, Version? geminiVersion) => cli switch
+    {
+        "agy" => false,
+        "gemini" => geminiVersion is not null && geminiVersion >= GeminiSessionIdVersion,
+        _ => true,
+    };
 
     /// <summary>Whether the arguments already pick the session; <paramref name="sessionId"/> is its UUID when given.</summary>
     private static bool ChosenSession(List<string> args, string cli, out string? sessionId)
@@ -200,8 +212,8 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         for (var i = 0; i < args.Count; i++)
         {
             var (name, value) = SplitOption(args[i]);
-            // claude's -c is --continue; other CLIs give -c another meaning.
-            if (!SessionOptions.Contains(name) && !(cli == "claude" && name == "-c"))
+            // claude's and agy's -c is --continue; other CLIs give -c another meaning.
+            if (!SessionOptions.Contains(name) && !(cli is "claude" or "agy" && name == "-c"))
                 continue;
             chosen = true;
             if (!SessionIdOptions.Contains(name))

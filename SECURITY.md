@@ -55,7 +55,8 @@ silently do. They are not a security boundary against a compromised backend.
   attachments under `.sidehub-images/`, the skill files `AGENTS.md` / `GEMINI.md` /
   `.claude/commands/sidehub.md`) goes through `FileWritePolicy`: never under `.git/` or
   `.sidehub/`, never into a file that makes a tool run commands (`.claude/settings*.json`,
-  `.mcp.json`, `.gemini/settings.json`, `.codex/config.toml`, `.envrc`, `.vscode/tasks.json`,
+  `.mcp.json`, `.gemini/settings.json`, `.agents/hooks.json`, `.agents/mcp_config.json`,
+  `.codex/config.toml`, `.envrc`, `.vscode/tasks.json`,
   `settings.json`, `launch.json`), and on Windows never through an 8.3 short name or an
   alternate data stream. The file is then opened folder by folder without following any
   symbolic link (`openat` + `O_NOFOLLOW` on Linux/macOS), so a link committed in the repository

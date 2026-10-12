@@ -27,4 +27,24 @@ public class VersionInfoTests
     {
         Assert.Equal(expected, VersionInfo.ParseLoggedIn(cli, exitCode, stdout));
     }
+
+    [Fact]
+    public void AntigravitySignedIn_ShouldNeedANonEmptyTokenFile()
+    {
+        var home = Directory.CreateTempSubdirectory("sidehub-agy-home-").FullName;
+        try
+        {
+            Assert.False(VersionInfo.AntigravitySignedIn(home));
+            var directory = Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity-cli")).FullName;
+            File.WriteAllText(Path.Combine(directory, "antigravity-oauth-token"), "");
+            Assert.False(VersionInfo.AntigravitySignedIn(home));
+            File.WriteAllText(Path.Combine(directory, "antigravity-oauth-token"), "token");
+            Assert.True(VersionInfo.AntigravitySignedIn(home));
+            Assert.False(VersionInfo.AntigravitySignedIn(""));
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
 }

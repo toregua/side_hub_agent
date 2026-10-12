@@ -12,7 +12,7 @@ namespace SideHub.Agent;
 public static partial class VersionInfo
 {
     /// <summary>Runtimes probed with <c>&lt;cli&gt; --version</c>; keys match the backend runtime names.</summary>
-    public static IReadOnlyList<string> ProbedClis { get; } = ["claude", "codex", "gemini", "copilot"];
+    public static IReadOnlyList<string> ProbedClis { get; } = ["claude", "codex", "gemini", "copilot", "agy"];
 
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
@@ -123,6 +123,8 @@ public static partial class VersionInfo
             .Select(r => (r.cli, loggedIn: r.output is { } output ? ParseLoggedIn(r.cli, output.ExitCode, output.Stdout + "\n" + output.Stderr) : null))
             .Where(r => r.loggedIn is not null)
             .ToDictionary(r => r.cli, r => r.loggedIn!.Value);
+        if (versions.ContainsKey("agy") && AntigravitySignedIn(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
+            auth["agy"] = true;
         var accounts = new Dictionary<string, CliAccount>();
         if (await copilot is { } copilotAuth)
         {
@@ -132,6 +134,15 @@ public static partial class VersionInfo
         }
         return (auth, accounts);
     }
+
+    /// <summary>
+    /// agy has no status command: its Google sign-in leaves a token in <c>~/.gemini/antigravity-cli/</c> on Linux (the
+    /// token itself is never read). Without the file the state is unknown, not signed out: on a desktop the token is in
+    /// the OS keyring, and an API key needs none.
+    /// </summary>
+    public static bool AntigravitySignedIn(string home) =>
+        !string.IsNullOrEmpty(home)
+        && new FileInfo(Path.Combine(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")) is { Exists: true, Length: > 0 };
 
     /// <summary>Starts Copilot's headless server for one <see cref="CopilotAuthProbe.QueryAsync"/>, then kills it.</summary>
     private static async Task<CopilotAuth?> ProbeCopilotAsync(CancellationToken ct)

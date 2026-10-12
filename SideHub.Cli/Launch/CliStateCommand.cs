@@ -5,7 +5,8 @@ namespace SideHub.Cli.Launch;
 
 /// <summary>
 /// <c>sidehub-cli cli-state claude &lt;working|waiting-input|idle&gt;</c> (a Claude Code hook: the hook's JSON on stdin
-/// gives the session) and <c>sidehub-cli cli-state codex &lt;event-json&gt;</c> (codex's <c>notify</c> program):
+/// gives the session), <c>sidehub-cli cli-state agy &lt;working|idle&gt;</c> (an agy hook, same stdin with
+/// <c>conversationId</c>) and <c>sidehub-cli cli-state codex &lt;event-json&gt;</c> (codex's <c>notify</c> program):
 /// tells the agent hosting the terminal what the CLI is doing. Installed by <see cref="CliStateHooks"/>.
 /// <para>
 /// It runs inside the CLI's turn, so it must never slow it down nor fail it: it writes nothing to stdout (Claude
@@ -45,7 +46,7 @@ public static class CliStateCommand
     public sealed record StateReport(string Provider, string State, string? CliSessionId, JsonObject? Prompt = null);
 
     /// <summary>What to report for the arguments, or null when there is nothing to report.</summary>
-    /// <param name="hookInput">Reads the hook's stdin (claude only), null when there is none.</param>
+    /// <param name="hookInput">Reads the hook's stdin (claude and agy), null when there is none.</param>
     public static StateReport? Report(string[] args, Func<byte[]?> hookInput)
     {
         if (args.Length != 2)
@@ -57,6 +58,13 @@ public static class CliStateCommand
                 var input = hookInput();
                 var prompt = args[1] == WaitingInput ? CliPrompt.FromHookInput(input) : null;
                 return new StateReport("claude", args[1], SessionIdFromHookInput(input), prompt);
+            }
+
+            // agy's hooks give no waiting state: PreInvocation is working, Stop idle once nothing runs in the background.
+            case "agy" when args[1] is Working or Idle:
+            {
+                var (conversationId, fullyIdle) = AntigravityHookInput(hookInput());
+                return args[1] == Idle && fullyIdle == false ? null : new StateReport("agy", args[1], conversationId);
             }
 
             // codex runs its notify program with the event as the last argument; only turn ends are reported.
@@ -102,6 +110,33 @@ public static class CliStateCommand
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    /// <summary>The <c>conversationId</c> (when it is a UUID) and <c>fullyIdle</c> (Stop only) of an agy hook input.
+    /// Its PreInvocation and Stop inputs are small: one that does not parse gives neither.</summary>
+    public static (string? ConversationId, bool? FullyIdle) AntigravityHookInput(byte[]? input)
+    {
+        if (input is null || input.Length == 0)
+            return (null, null);
+        try
+        {
+            using var doc = JsonDocument.Parse(input);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return (null, null);
+            var id = root.TryGetProperty("conversationId", out var conversation) && conversation.ValueKind == JsonValueKind.String
+                && CliLaunchPlan.IsSessionId(conversation.GetString())
+                    ? conversation.GetString()
+                    : null;
+            bool? fullyIdle = root.TryGetProperty("fullyIdle", out var idle) && idle.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? idle.GetBoolean()
+                : null;
+            return (id, fullyIdle);
+        }
+        catch (JsonException)
+        {
+            return (null, null);
         }
     }
 

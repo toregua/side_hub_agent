@@ -169,6 +169,62 @@ public class CliStateHooksTests : IDisposable
     public void Clis_without_command_line_hooks_get_none(string cli) =>
         Assert.Equal(["--session-id", Session, "-i", "x"], Plan(cli, ["-i", "x"]).Arguments);
 
+    // ---- agy ----
+
+    [Fact]
+    public void Agy_takes_no_hook_argument_but_its_hooks_file_is_due_in_a_sidehub_terminal()
+    {
+        var plan = Plan("agy", ["-p"], "x");
+
+        Assert.Equal(["-p", "x"], plan.Arguments);
+        Assert.True(plan.AntigravityHooks);
+        Assert.False(CliLaunchPlan.For("agy", ["-p"], "x", null, () => Minted).AntigravityHooks);
+        Assert.False(Plan("agy", ["models"]).AntigravityHooks);
+    }
+
+    [Fact]
+    public void The_agy_hooks_are_added_next_to_the_users_own_and_only_once()
+    {
+        var path = Path.Combine(_dir, "config", "hooks.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, """{ "my-linter": { "PostToolUse": [ { "matcher": "run_command", "hooks": [ { "command": "./lint.sh" } ] } ] } }""");
+
+        Assert.True(CliStateHooks.EnsureAntigravityHooks(path, Program));
+        Assert.False(CliStateHooks.EnsureAntigravityHooks(path, Program));
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        Assert.Equal("./lint.sh", doc.RootElement.GetProperty("my-linter").GetProperty("PostToolUse")[0]
+            .GetProperty("hooks")[0].GetProperty("command").GetString());
+        var ours = doc.RootElement.GetProperty(CliStateHooks.AntigravityHookName);
+        Assert.Equal(["PreInvocation", "Stop"], ours.EnumerateObject().Select(p => p.Name));
+        var stop = ours.GetProperty("Stop")[0].GetProperty("command").GetString()!;
+        Assert.EndsWith($"'{Program}' cli-state agy idle", stop);
+        Assert.StartsWith("[ -z \"$SIDEHUB_PTY_NOTIFY_FIFO\" ] ||", stop);
+    }
+
+    [Fact]
+    public void The_agy_hooks_file_is_created_and_a_moved_program_updated()
+    {
+        var path = Path.Combine(_dir, "new", "hooks.json");
+
+        Assert.True(CliStateHooks.EnsureAntigravityHooks(path, Program));
+        Assert.True(CliStateHooks.EnsureAntigravityHooks(path, "/opt/it's/sidehub-cli"));
+
+        var command = JsonDocument.Parse(File.ReadAllText(path)).RootElement
+            .GetProperty("sidehub").GetProperty("PreInvocation")[0].GetProperty("command").GetString();
+        Assert.EndsWith("'/opt/it'\\''s/sidehub-cli' cli-state agy working", command);
+    }
+
+    [Fact]
+    public void An_invalid_agy_hooks_file_is_left_alone()
+    {
+        var path = Path.Combine(_dir, "hooks.json");
+        File.WriteAllText(path, "[1, 2]");
+
+        Assert.Throws<InvalidDataException>(() => CliStateHooks.EnsureAntigravityHooks(path, Program));
+        Assert.Equal("[1, 2]", File.ReadAllText(path));
+    }
+
     // ---- sidehub-cli cli-state ----
 
     private static byte[] Utf8(string s) => Encoding.UTF8.GetBytes(s);
@@ -212,6 +268,7 @@ public class CliStateHooksTests : IDisposable
     [InlineData("claude", "busy")]
     [InlineData("claude", "Idle")]
     [InlineData("gemini", "idle")]
+    [InlineData("agy", "waiting-input")]
     [InlineData("claude", null)]
     public void Unknown_arguments_report_nothing(string cli, string? state)
     {
@@ -219,6 +276,32 @@ public class CliStateHooksTests : IDisposable
 
         Assert.Null(CliStateCommand.Report(args, () => throw new InvalidOperationException("stdin is not read")));
     }
+
+    [Fact]
+    public void An_agy_hook_reports_its_state_and_the_conversation_of_its_input()
+    {
+        var invocation = Utf8($$"""{"conversationId":"{{Session}}","invocationNum":0,"initialNumSteps":1,"modelName":"gemini-3.8-flash-low","transcriptPath":"/t.jsonl","workspacePaths":["/w"]}""");
+        var stop = Utf8($$"""{"conversationId":"{{Session}}","error":"","executionNum":0,"fullyIdle":true,"terminationReason":"NO_TOOL_CALL"}""");
+
+        Assert.Equal(new CliStateCommand.StateReport("agy", "working", Session), CliStateCommand.Report(["agy", "working"], () => invocation));
+        Assert.Equal(new CliStateCommand.StateReport("agy", "idle", Session), CliStateCommand.Report(["agy", "idle"], () => stop));
+    }
+
+    [Fact]
+    public void An_agy_stop_with_work_left_in_the_background_is_not_idle()
+    {
+        var stop = Utf8($$"""{"conversationId":"{{Session}}","fullyIdle":false}""");
+
+        Assert.Null(CliStateCommand.Report(["agy", "idle"], () => stop));
+    }
+
+    [Theory]
+    [InlineData("""{"conversationId":"../../x"}""")]
+    [InlineData("""not json""")]
+    [InlineData(null)]
+    public void An_agy_hook_without_a_valid_conversation_still_reports_its_state(string? input) =>
+        Assert.Equal(new CliStateCommand.StateReport("agy", "working", null),
+            CliStateCommand.Report(["agy", "working"], () => input is null ? null : Utf8(input)));
 
     [Fact]
     public void A_codex_turn_end_reports_idle_with_its_thread()

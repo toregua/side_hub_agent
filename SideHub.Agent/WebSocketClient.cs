@@ -59,6 +59,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly ConcurrentDictionary<object, string> _pendingCodexLaunches = new();
     private readonly ConcurrentDictionary<string, byte> _announcedCodexRollouts = new();
     private readonly CodexRolloutHarvester? _codexRollouts;
+    private readonly AntigravityTranscriptHarvester? _antigravity;
     private sealed record PtyCliSession(string Provider, string CliSessionId, string? Title = null);
     private const int PtyIdleTimeoutMinutes = 30;
 
@@ -138,6 +139,11 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         {
             harvesters["codex"] = _codexRollouts = new CodexRolloutHarvester(codexSessions);
             sessionHarvesters["codex"] = _codexRollouts;
+        }
+        if (AntigravityTranscriptHarvester.Root() is { } antigravityRoot)
+        {
+            harvesters["agy"] = _antigravity = new AntigravityTranscriptHarvester(antigravityRoot);
+            sessionHarvesters["agy"] = _antigravity;
         }
         // Several agents can share a run directory: keep each agent's pending reports apart,
         // the backend only accepts a run's usage from the agent it was launched on.
@@ -552,6 +558,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     {
         // The PTY may have closed while the line was in flight: a state is never reported for an unknown PTY.
         if (!_ptySessions.ContainsKey(ptySessionId)) return;
+        // agy takes no session id at launch: its hooks tell the conversation, a new one (/clear) included.
+        if (changed.Provider == "agy" && changed.CliSessionId is { } conversationId
+            && !(_ptyCliSessions.TryGetValue(ptySessionId, out var current) && current.Provider == "agy" && current.CliSessionId == conversationId))
+            await RecordCliSessionAsync(ptySessionId, new FifoNotification.CliSessionStarted("agy", conversationId), ct);
+        if (changed.Provider == "agy" && changed.State == CliStates.Idle && changed.CliSessionId is { } titled)
+            RunInBackground("agy title", () => ReportAntigravityTitleAsync(ptySessionId, titled, ct));
         // A turn ended: its answer for the Reading mode. Before the repeat check, codex reports nothing but idle.
         if (changed.State == CliStates.Idle)
         {
@@ -591,6 +603,24 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         if (_cliMessages.Record(ptySessionId, provider, cliSessionId, text, DateTime.UtcNow) is not { } message) return;
         Log($"CLI answer in PTY {ptySessionId}: {message.Text.Length} chars (provider={provider} cliSessionId={cliSessionId})");
         await TrySendAsync(message, ct);
+    }
+
+    /// <summary>agy titles a conversation once its first turn ended: sent once, like claude's ai-title.</summary>
+    private async Task ReportAntigravityTitleAsync(string ptySessionId, string cliSessionId, CancellationToken ct)
+    {
+        if (_antigravity is null
+            || !_ptyCliSessions.TryGetValue(ptySessionId, out var session)
+            || session.Provider != "agy" || session.CliSessionId != cliSessionId || session.Title is not null
+            || _antigravity.Title(cliSessionId) is not { } title
+            || !_ptyCliSessions.TryUpdate(ptySessionId, session with { Title = title }, session))
+            return;
+        Log($"agy title for {cliSessionId} ({title.Length} chars)");
+        await TrySendAsync(new PtyCliSessionTitledMessage
+        {
+            PtySessionId = ptySessionId,
+            CliSessionId = cliSessionId,
+            Title = title,
+        }, ct);
     }
 
     private void RecordCliLaunch(string ptySessionId, FifoNotification.CliLaunched launched)

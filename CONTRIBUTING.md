@@ -64,7 +64,7 @@ Key design decisions:
 - **Everything is a terminal**: runs and interactive sessions are PTYs the backend types into; there is
   no SDK proxy or structured protocol with the CLIs
 - **PTY via Node.js**: Terminal emulation delegates to a Node.js helper using `node-pty` (`pty-helper/`)
-- **One launch path**: `sidehub-cli launch` starts claude / codex / gemini / copilot the same way on
+- **One launch path**: `sidehub-cli launch` starts claude / codex / gemini / copilot / agy the same way on
   every OS and reports the session id through `NotifyFifo`
 - **Usage from local transcripts**: `Usage/` reads token counts from the CLIs' own files; only counts
   are sent
