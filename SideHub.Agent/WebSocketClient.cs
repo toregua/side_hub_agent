@@ -148,6 +148,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             harvesters["agy"] = _antigravity = new AntigravityTranscriptHarvester(antigravityRoot);
             sessionHarvesters["agy"] = _antigravity;
         }
+        if (CopilotSessionHarvester.Root() is { } copilotRoot)
+        {
+            var copilot = new CopilotSessionHarvester(copilotRoot);
+            harvesters["copilot"] = copilot;
+            sessionHarvesters["copilot"] = copilot;
+        }
         // Several agents can share a run directory: keep each agent's pending reports apart,
         // the backend only accepts a run's usage from the agent it was launched on.
         var runDir = runDirectory ?? Path.Combine(workingDirectory, ".sidehub", "run");

@@ -118,7 +118,8 @@ arrives there as untrusted input (validated ids, bounded sizes).
 
 After a run, and periodically for CLI sessions typed in terminals, the agent reads the CLI's own local
 transcript (`ClaudeTranscriptHarvester` for Claude Code's project JSONL, `CodexRolloutHarvester` for
-Codex rollouts, `AntigravityTranscriptHarvester` for agy's `~/.gemini/antigravity-cli/brain/<id>/…/transcript_full.jsonl`)
+Codex rollouts, `AntigravityTranscriptHarvester` for agy's `~/.gemini/antigravity-cli/brain/<id>/…/transcript_full.jsonl`,
+`CopilotSessionHarvester` for copilot's `~/.copilot/session-state/<id>/events.jsonl`)
 and sends **only token counts per model** (input, output, cache read/write, reasoning):
 
 - `run.usage`: at the end of a run started by SideHub;
