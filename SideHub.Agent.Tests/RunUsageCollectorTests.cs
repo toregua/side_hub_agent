@@ -257,6 +257,30 @@ public class RunUsageCollectorTests : IDisposable
     }
 
     [Fact]
+    public async Task PeerReviewRun_SendsItsAnswer_AtTheEndSnapshotOfTheRound()
+    {
+        // A peer review run reads its own worktree, at the photo of the end of the reviewed round.
+        const string checkoutPath = "/home/dev/.sidehub/qa/agent-1/reviews/0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        var endSnapshot = new PreparedCheckout(
+            checkoutPath, "89abcdef0123456789abcdef0123456789abcdef", new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero));
+        var launchedAt = DateTimeOffset.UtcNow;
+        _codex.AddRollout(launchedAt.AddSeconds(2), checkoutPath, "answer.jsonl", source: "exec");
+        var runId = Guid.NewGuid();
+        var collector = Collector();
+        collector.TrackRun("run-1", runId, checkoutPath, endSnapshot);
+        collector.RecordCliLaunch("run-1", "codex", checkoutPath, launchedAt);
+
+        await collector.HarvestAsync("run-1", "exit", final: true, CancellationToken.None);
+
+        var answer = Assert.Single(_answers);
+        Assert.Equal(runId, answer.RunId);
+        Assert.Equal("## Answer\n\nLogin issues a **JWT**.", answer.Text);
+        Assert.Equal(endSnapshot.CommitSha, answer.CommitSha);
+        Assert.Equal(endSnapshot.CommitDate, answer.CommitDate);
+        Assert.Null(answer.Error);
+    }
+
+    [Fact]
     public async Task QuestionRun_WithoutAFinalMessage_SendsTheReason()
     {
         var collector = Collector();

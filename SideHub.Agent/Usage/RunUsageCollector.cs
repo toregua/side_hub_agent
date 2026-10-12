@@ -8,8 +8,8 @@ namespace SideHub.Agent.Usage;
 /// <c>run.usage</c>. A run is harvested when its step ends (the CLI may stay open) and again when its
 /// PTY exits or is stopped; each report replaces the previous one on the backend. Reports that cannot be
 /// sent are kept in a <see cref="PendingUsageStore"/> and replayed at the next connection.
-/// <para>A question run also reports its answer (<c>run.answer</c>, the CLI's last message) once, when its PTY is
-/// gone, kept in a <see cref="PendingRunAnswerStore"/> the same way.</para>
+/// <para>A question or peer review run also reports its answer (<c>run.answer</c>, the CLI's last message) once, when
+/// its PTY is gone, kept in a <see cref="PendingRunAnswerStore"/> the same way.</para>
 /// </summary>
 public sealed class RunUsageCollector
 {
@@ -70,7 +70,7 @@ public sealed class RunUsageCollector
         return Guid.TryParse(ptySessionId[RunPtyPrefix.Length..], out var fromId) ? fromId : null;
     }
 
-    /// <param name="question">The checkout of a question run, whose answer is reported when it ends.</param>
+    /// <param name="question">The checkout of a question or peer review run, whose answer is reported when it ends.</param>
     public void TrackRun(string ptySessionId, Guid runId, string cwd, PreparedCheckout? question = null) =>
         _runs[ptySessionId] = new TrackedRun(ptySessionId, runId, cwd, question);
 

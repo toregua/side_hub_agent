@@ -299,25 +299,49 @@ public sealed class WorkReviewTracker
         if (path is not null && !WorkReviewGit.IsValidPath(path))
             return Answer(error: ReviewDiffErrors.InvalidPath);
 
-        WorkReviewRecord? record;
-        await _lock.WaitAsync(ct);
-        try { record = Load(reviewId); }
-        finally { _lock.Release(); }
-
-        if (record is null)
-            return Answer(error: ReviewDiffErrors.UnknownReview);
-        if (record.Rounds.FirstOrDefault(r => r.Round == round) is not { } found)
-            return Answer(error: ReviewDiffErrors.UnknownRound);
-        if (found.Error is not null)
+        var found = await GetRoundSnapshotsAsync(reviewId, round, ct);
+        if (found.Snapshots is not { } snapshots)
             return Answer(error: found.Error);
-        if (found.Start is null || found.End is null)
-            return Answer(error: ReviewDiffErrors.RoundOpen);
-        if (!await WorkReviewGit.ExistsAsync(record.TopLevel, found.Start, ct)
-            || !await WorkReviewGit.ExistsAsync(record.TopLevel, found.End, ct))
-            return Answer(error: ReviewDiffErrors.Purged);
 
-        var diff = await WorkReviewGit.DiffAsync(record.TopLevel, found.Start, found.End, path, ct);
+        var diff = await WorkReviewGit.DiffAsync(snapshots.TopLevel, snapshots.Start, snapshots.End, path, ct);
         return Answer(diff.Text, diff.Truncated, diff.Error);
+    }
+
+    /// <summary>The repository and the photos of the start and of the end of a round.</summary>
+    public sealed record RoundSnapshots(string TopLevel, string Start, string End);
+
+    /// <summary>The photos of a round, or why there are none (<see cref="ReviewDiffErrors"/>, or the round's own
+    /// <see cref="ReviewErrors"/>).</summary>
+    public sealed record RoundSnapshotsResult(RoundSnapshots? Snapshots, string? Error);
+
+    /// <summary>
+    /// The photos of one round of a review, still in the repository: what its diff (and a peer review of it) is read
+    /// from. Unknown review or round, round in error, still going on, or photos purged: the reason instead.
+    /// </summary>
+    public async Task<RoundSnapshotsResult> GetRoundSnapshotsAsync(Guid reviewId, int round, CancellationToken ct)
+    {
+        static RoundSnapshotsResult Error(string error) => new(null, error);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (Load(reviewId) is not { } record)
+                return Error(ReviewDiffErrors.UnknownReview);
+            if (record.Rounds.FirstOrDefault(r => r.Round == round) is not { } found)
+                return Error(ReviewDiffErrors.UnknownRound);
+            if (found.Error is not null)
+                return Error(found.Error);
+            if (found.Start is null || found.End is null)
+                return Error(ReviewDiffErrors.RoundOpen);
+            if (!await WorkReviewGit.ExistsAsync(record.TopLevel, found.Start, ct)
+                || !await WorkReviewGit.ExistsAsync(record.TopLevel, found.End, ct))
+                return Error(ReviewDiffErrors.Purged);
+            return new RoundSnapshotsResult(new RoundSnapshots(record.TopLevel, found.Start, found.End), null);
+        }
+        finally
+        {
+            _lock.Release();
+        }
     }
 
     /// <summary>Sends the reports kept while disconnected; stops at the first failure.</summary>

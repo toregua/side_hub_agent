@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace SideHub.Agent;
 
-/// <summary>A question run's checkout, ready: its real path and the commit it is at.</summary>
+/// <summary>The checkout of a question or peer review run, ready: its real path and the commit it is at.</summary>
 public sealed record PreparedCheckout(string Path, string CommitSha, DateTimeOffset CommitDate);
 
 /// <summary>

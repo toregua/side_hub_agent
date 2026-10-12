@@ -83,6 +83,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly QuestionCheckout _questionCheckout;
     // What the works the backend asked to review changed (review.changes), and their diffs on demand.
     private readonly WorkReviewTracker _reviews;
+    // Where peer review runs read the end of the reviewed round, one disposable worktree per run.
+    private readonly PeerReviewCheckout _peerReviews;
     // Token usage of the CLI sessions started in terminals, reported as cli-session.usage.
     private readonly CliSessionUsageCollector _cliSessionUsage;
     private Timer? _cliSessionUsageTimer;
@@ -153,6 +155,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _reviews = new WorkReviewTracker(Path.Combine(runDir, "reviews"), _fifoAgentKey,
             new PendingReviewChangesStore(Path.Combine(pendingDirectory, "reviews")), TrySendAsync,
             _usageCollector.ReadFinalMessage, Log);
+        _peerReviews = new PeerReviewCheckout(_fifoAgentKey, _reviews, Log);
         foreach (var (provider, harvester) in sessionHarvesters)
             _lastMessageReaders[provider] = harvester;
         _cliSessionUsage = new CliSessionUsageCollector(
@@ -360,11 +363,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     }
 
     /// <summary>Tear down the FIFO and stop its reader task, plus any Claude
-    /// title watchers that were bound to this PTY, let a question run's checkout move again, and delete its MCP
-    /// secrets files.</summary>
+    /// title watchers that were bound to this PTY, let a question run's checkout move again, remove a peer review
+    /// run's worktree, and delete its MCP secrets files.</summary>
     private void CleanupNotifyFifo(string ptySessionId)
     {
         _questionCheckout.Release(ptySessionId);
+        RunInBackground("peer review checkout removal", () => _peerReviews.ReleaseAsync(ptySessionId));
         if (_ptyFifoReaders.TryRemove(ptySessionId, out var cts))
         {
             try { cts.Cancel(); } catch { /* ignore */ }
@@ -877,6 +881,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 RunInBackground("pending run.usage replay", () => _usageCollector.ReplayPendingAsync(ct));
                 RunInBackground("pending review.changes replay", () => _reviews.ReplayPendingAsync(ct));
                 RunInBackground("review purge", () => _reviews.PurgeIfDueAsync(ct));
+                RunInBackground("peer review checkouts purge", () => _peerReviews.PurgeLeftoversAsync(ct));
                 RunInBackground("pending cli-session.usage replay", () => _cliSessionUsage.ReplayPendingAsync(ct));
                 if (_updates is not null)
                     RunInBackground("update outcome", _updates.OnConnectedAsync);
@@ -1733,26 +1738,41 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
 
             // A question run reads a checkout of origin/<branch> prepared by the agent (never a path from the
             // backend), not the developer's working copy. Without one, nothing starts: the backend sees no pty.started.
-            PreparedCheckout? question = null;
-            if (ptyEnv.GetValueOrDefault(QuestionCheckout.RunKindKey) == QuestionCheckout.QuestionKind)
+            PreparedCheckout? checkout = null;
+            var runKind = ptyEnv.GetValueOrDefault(QuestionCheckout.RunKindKey);
+            if (runKind == QuestionCheckout.QuestionKind)
             {
-                question = await _questionCheckout.PrepareAsync(
+                checkout = await _questionCheckout.PrepareAsync(
                     _workingDirectory, ptyEnv.GetValueOrDefault(QuestionCheckout.BaseBranchKey) ?? "", ptySessionId, ct);
-                if (question is null)
+                if (checkout is null)
                 {
                     Log($"PTY {ptySessionId} not started: its question checkout could not be prepared");
                     CleanupNotifyFifo(ptySessionId);
                     return;
                 }
-                cwd = question.Path;
-                ptyEnv[QuestionCheckout.CommitKey] = question.CommitSha;
-                Log($"PTY {ptySessionId} answers a question from {cwd} at {question.CommitSha}");
+                cwd = checkout.Path;
+                ptyEnv[QuestionCheckout.CommitKey] = checkout.CommitSha;
+                Log($"PTY {ptySessionId} answers a question from {cwd} at {checkout.CommitSha}");
+            }
+            // A peer review run reads, the same way, a worktree at the end of the reviewed round, with its diff.
+            else if (runKind == PeerReviewCheckout.ReviewKind)
+            {
+                checkout = await _peerReviews.PrepareAsync(ptyEnv.GetValueOrDefault(PeerReviewCheckout.ReviewIdKey),
+                    ptyEnv.GetValueOrDefault(PeerReviewCheckout.RoundKey),
+                    RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv), ptySessionId, ct);
+                if (checkout is null)
+                {
+                    CleanupNotifyFifo(ptySessionId);
+                    return;
+                }
+                cwd = checkout.Path;
+                Log($"PTY {ptySessionId} reviews a round from {cwd} at {checkout.CommitSha}");
             }
 
             // Install the SideHub skill file (CLI commands + drive index) so any LLM
-            // CLI launched from this terminal discovers sidehub-cli automatically. Not for a question run: its
-            // read-only CLI cannot run sidehub-cli, and the excludes would land in the developer's repository.
-            if (_config.AllowFileWrite && question is null)
+            // CLI launched from this terminal discovers sidehub-cli automatically. Not for a question or peer review
+            // run: its read-only CLI cannot run sidehub-cli, and the excludes would land in the developer's repository.
+            if (_config.AllowFileWrite && checkout is null)
             {
                 var apiUrl = DeriveApiUrl(_config.SidehubUrl!);
                 await SkillInstaller.EnsureSkillFilesAsync(cwd, apiUrl, _config.AgentToken!, _config.WorkspaceId!, Log);
@@ -1763,8 +1783,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             }
 
             // The backend asks for this terminal's work to be reviewed: photo of the folder before the CLI starts.
-            // Not for a question run (read-only, in its own checkout).
-            if (question is null && Guid.TryParse(message.ReviewId, out var reviewId))
+            // Not for a question or peer review run (read-only, in its own checkout).
+            if (checkout is null && Guid.TryParse(message.ReviewId, out var reviewId))
             {
                 var runId = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv);
                 Guid? taskId = Guid.TryParse(message.AdditionalEnv?.GetValueOrDefault("SIDEHUB_TASK_ID"), out var t) ? t : null;
@@ -1814,7 +1834,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 try { _ptyCwd[ptySessionId] = Path.GetFullPath(cwd); }
                 catch { _ptyCwd[ptySessionId] = cwd; }
                 if (RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is { } runId)
-                    _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId], question);
+                    _usageCollector.TrackRun(ptySessionId, runId, _ptyCwd[ptySessionId], checkout);
                 StartFifoReader(ptySessionId, ct);
                 await SendAsync(session.StartedMessage(ptySessionId, reattached: false), ct);
                 Log($"PTY session {ptySessionId} started");
