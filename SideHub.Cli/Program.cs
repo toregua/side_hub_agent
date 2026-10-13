@@ -112,7 +112,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow create --name \"...\" [--description \"...\"] [--timeout <min>]");
     Console.Error.WriteLine("  workflow update <id> [--name] [--description] [--timeout <min> | --clear-timeout]");
     Console.Error.WriteLine("  workflow delete <id> [--yes]");
-    Console.Error.WriteLine("  workflow add-step <wfId> --name \"...\" --prompt \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-path \"...\"] [--output-drive <itemId>] [--timeout <min>]");
+    Console.Error.WriteLine("  workflow add-step <wfId> --name \"...\" --prompt \"...\" --output-path \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
     Console.Error.WriteLine("  workflow update-step <wfId> <stepId> [--name] [--prompt] [--input-drive]* [--input-step]* [--clear-inputs] [--output-path] [--output-drive | --clear-output-drive] [--timeout]");
     Console.Error.WriteLine("  workflow delete-step <wfId> <stepId> [--yes]");
     Console.Error.WriteLine("  workflow reorder-steps <wfId> <stepId1> <stepId2> [...]");

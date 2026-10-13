@@ -474,4 +474,27 @@ public sealed class CliWriteCommandsTests : IDisposable
 
         Assert.Equal(1, await OutgoingCommands.PushAsync(_client, [], json: false));
     }
+
+    [Fact]
+    public async Task Workflow_add_step_needs_an_output_path_and_never_calls_the_api_without_it()
+    {
+        var code = await WorkflowCommands.AddStepAsync(_client, ["wf-1", "--name", "Write", "--prompt", "Write a note"], json: false);
+
+        Assert.Equal(1, code);
+        Assert.Empty(_api.Calls);
+    }
+
+    [Fact]
+    public async Task Workflow_add_step_posts_the_step_with_its_output_path()
+    {
+        _api.Respond("/workflows/wf-1/steps", """{"id":"wf-1","steps":[{"id":"s-0"},{"id":"s-1"}]}""");
+
+        var code = await WorkflowCommands.AddStepAsync(_client,
+            ["wf-1", "--name", "Write", "--prompt", "Write a note", "--output-path", "note.md"], json: false);
+
+        Assert.Equal(0, code);
+        var call = Assert.Single(_api.Calls);
+        Assert.Equal("POST", call.Method);
+        Assert.Equal("note.md", call.Json.GetProperty("outputPath").GetString());
+    }
 }

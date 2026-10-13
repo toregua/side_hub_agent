@@ -214,9 +214,10 @@ public static class WorkflowCommands
         var outputDrive = GetOption(args, "--output-drive");
         var timeoutStr = GetOption(args, "--timeout");
 
-        if (string.IsNullOrEmpty(workflowId) || string.IsNullOrEmpty(name) || string.IsNullOrEmpty(prompt))
+        // Every step writes its result to a document: SideHub refuses a step without an output path.
+        if (string.IsNullOrEmpty(workflowId) || string.IsNullOrEmpty(name) || string.IsNullOrEmpty(prompt) || string.IsNullOrEmpty(outputPath))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli workflow add-step <workflowId> --name \"...\" --prompt \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-path \"...\"] [--output-drive <itemId>] [--timeout <min>]");
+            Console.Error.WriteLine("Usage: sidehub-cli workflow add-step <workflowId> --name \"...\" --prompt \"...\" --output-path \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
             return 1;
         }
 
@@ -241,7 +242,11 @@ public static class WorkflowCommands
             return 0;
         }
 
-        Console.WriteLine($"Added step to workflow {workflowId}: {Prop(result, "id")}");
+        // The API answers with the whole workflow: the new step is the last one.
+        var stepId = result.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array && steps.GetArrayLength() > 0
+            ? Prop(steps[steps.GetArrayLength() - 1], "id")
+            : null;
+        Console.WriteLine($"Added step to workflow {workflowId}: {stepId ?? "?"}");
         return 0;
     }
 
