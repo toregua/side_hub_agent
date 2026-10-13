@@ -246,6 +246,26 @@ public class PtyStartedMessage
     public DateTime? StartedAt { get; init; }
 }
 
+/// <summary>
+/// The agent will not start the PTY a <c>pty.start</c> asked for, and says why, so the backend fails the run at once
+/// and the terminal tells the user, instead of waiting for a <c>pty.started</c> that never comes. Ignored by older
+/// backends (they still time out).
+/// </summary>
+public class PtyStartRefusedMessage
+{
+    /// <summary>The updater is replacing the agent: anything started now would be cut within seconds.</summary>
+    public const string AgentUpdating = "agent-updating";
+
+    [JsonPropertyName("type")]
+    public string Type => "pty.start-refused";
+
+    [JsonPropertyName("ptySessionId")]
+    public string? PtySessionId { get; init; }
+
+    [JsonPropertyName("reason")]
+    public required string Reason { get; init; }
+}
+
 public class PtyExitedMessage
 {
     [JsonPropertyName("type")]

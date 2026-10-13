@@ -1751,10 +1751,16 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private async Task HandlePtyStartAsync(IncomingMessage message, CancellationToken ct)
     {
         var ptySessionId = message.PtySessionId;
-        // The updater is about to stop this agent: a terminal started now would be cut at once
+        // The updater is about to stop this agent: a terminal started now would be cut at once. Said explicitly, so
+        // the run fails now with the reason and the terminal says it, rather than after the start timeout.
         if (_updates?.IsApplying == true)
         {
             Log($"PTY {ptySessionId} not started: the agent is being updated");
+            await TrySendAsync(new PtyStartRefusedMessage
+            {
+                PtySessionId = ptySessionId,
+                Reason = PtyStartRefusedMessage.AgentUpdating,
+            }, ct);
             return;
         }
 
