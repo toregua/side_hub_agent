@@ -196,29 +196,23 @@ public static class ReviewCommands
             return 1;
         }
 
-        // The API answers 200 with the review as it is when it was already decided: say so instead of claiming a decision.
-        var current = await client.GetReviewAsync(reviewId);
-        if (Prop(current, "status") is { } status && status != "pending")
+        var result = await client.DecideReviewAsync(reviewId, action, comment);
+        var review = result.TryGetProperty("review", out var r) ? r : default;
+
+        // A review already decided answers 200 with the review as it is: say so instead of claiming a decision.
+        if (result.TryGetProperty("alreadyDecided", out var already) && already.ValueKind == JsonValueKind.True)
         {
-            Console.Error.WriteLine($"Review {reviewId} is already {status}: there is nothing to decide.");
+            if (json)
+                Console.WriteLine(SideHubApiClient.Serialize(result));
+            else
+                Console.Error.WriteLine($"Review {reviewId} is already {Prop(review, "status") ?? "decided"}: nothing changed.");
             return 1;
         }
-
-        var result = await client.DecideReviewAsync(reviewId, action, comment);
 
         if (json)
         {
             Console.WriteLine(SideHubApiClient.Serialize(result));
             return 0;
-        }
-
-        var review = result.TryGetProperty("review", out var r) ? r : default;
-        var expected = action switch { "validate" => "validated", "dismiss" => "dismissed", _ => "fix-requested" };
-        var after = review.ValueKind == JsonValueKind.Object ? Prop(review, "status") : null;
-        if (after != expected)
-        {
-            Console.Error.WriteLine($"Review {reviewId} was decided in the meantime: it is {after ?? "unknown"}.");
-            return 1;
         }
 
         Console.WriteLine(action switch

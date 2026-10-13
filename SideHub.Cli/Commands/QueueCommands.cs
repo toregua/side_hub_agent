@@ -1,7 +1,5 @@
 using System.Globalization;
-using System.Net;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace SideHub.Cli.Commands;
 
@@ -9,7 +7,7 @@ namespace SideHub.Cli.Commands;
 /// An agent's task queue: the task it is on and the tasks it chains next, one terminal each. Every command works on the
 /// agent of <c>--agent</c>, by default the one this terminal runs on (<c>SIDEHUB_AGENT_ID</c>).
 /// </summary>
-public static partial class QueueCommands
+public static class QueueCommands
 {
     private static readonly string[] Clis = ["claude", "codex", "agy", "copilot", "gemini"];
 
@@ -28,12 +26,12 @@ public static partial class QueueCommands
         var taskIds = Positionals(args, "--agent", "--cli", "--prompt");
         var cli = (GetOption(args, "--cli") ?? "claude").ToLowerInvariant();
         var prompt = GetOption(args, "--prompt");
-        // One prompt is the first message of one task: several tasks each get theirs, built from the task.
+        // One prompt is the first message of one task: without it, SideHub uses each task's own (TaskPrompt on the backend).
         if (taskIds.Count == 0 || !Clis.Contains(cli) || (prompt is not null && (taskIds.Count > 1 || string.IsNullOrWhiteSpace(prompt))))
         {
             Console.Error.WriteLine(usage);
             if (prompt is not null && taskIds.Count > 1)
-                Console.Error.WriteLine("--prompt applies to one task: queue the tasks one by one, or let each prompt be built from its task.");
+                Console.Error.WriteLine("--prompt applies to one task: queue the tasks one by one, or let SideHub use each task's own prompt.");
             return 1;
         }
         if (AgentOf(client, args, usage) is not { } agentId)
@@ -43,8 +41,7 @@ public static partial class QueueCommands
         JsonElement queue = default;
         foreach (var taskId in taskIds)
         {
-            var taskPrompt = prompt ?? BuildTaskPrompt(await client.GetTaskAsync(taskId));
-            queue = await client.EnqueueTaskAsync(agentId, taskId, cli, taskPrompt, commit);
+            queue = await client.EnqueueTaskAsync(agentId, taskId, cli, prompt, commit);
             if (!json)
                 Console.WriteLine($"Queued task {taskId} ({cli}{(commit ? "" : ", no commit")}).");
         }
@@ -159,70 +156,6 @@ public static partial class QueueCommands
         }
         return 0;
     }
-
-    /// <summary>
-    /// The first message of the CLI for a task, as the board writes it (frontend <c>buildTaskPrompt</c>): title, type,
-    /// reference, description and the usual instructions. The queue adds its own (<c>task done</c>).
-    /// </summary>
-    internal static string BuildTaskPrompt(JsonElement task)
-    {
-        var type = Prop(task, "type");
-        var parts = new List<string> { $"## Tache: {Prop(task, "title")}" };
-
-        var meta = new List<string>();
-        if (!string.IsNullOrEmpty(type)) meta.Add($"Type: {TypeLabel(type)}");
-        if (Prop(task, "ticketReference") is { Length: > 0 } reference) meta.Add($"Reference: {reference}");
-        if (meta.Count > 0) parts.Add(string.Join(" | ", meta));
-
-        if (Prop(task, "description") is { Length: > 0 } description && HtmlToText(description) is { Length: > 0 } plain)
-            parts.Add($"\n### Description\n{plain}");
-
-        parts.Add("\n### Instructions");
-        parts.Add("- Start by reading the CLAUDE.md file at the project root for architecture and conventions");
-        parts.Add("- Understand the existing codebase before making changes");
-        parts.Add("- Follow existing patterns and code style");
-        switch (type)
-        {
-            case "feature":
-                parts.Add("- Implement the feature as described, keeping changes focused and minimal");
-                break;
-            case "pr-review":
-                parts.Add("- Review the PR thoroughly: code quality, architecture, bugs, security");
-                break;
-            case "bug-fix":
-                parts.Add("- Identify the root cause before fixing");
-                parts.Add("- Verify the fix doesn't introduce regressions");
-                break;
-        }
-        parts.Add("- Build and verify your changes compile without errors");
-        return string.Join("\n", parts);
-    }
-
-    private static string TypeLabel(string type) => type switch
-    {
-        "feature" => "Feature",
-        "pr-review" => "PR Review",
-        "bug-fix" => "Bug Fix",
-        _ => type
-    };
-
-    /// <summary>Plain text of a task description (HTML from the editor): one line per block, tags dropped, entities decoded.</summary>
-    internal static string HtmlToText(string html)
-    {
-        var text = BlockEnd().Replace(html, "\n");
-        text = Tag().Replace(text, "");
-        text = WebUtility.HtmlDecode(text);
-        return BlankLines().Replace(text.ReplaceLineEndings("\n"), "\n\n").Trim();
-    }
-
-    [GeneratedRegex(@"<br\s*/?>|</(p|div|li|h[1-6]|pre|blockquote|tr)>", RegexOptions.IgnoreCase)]
-    private static partial Regex BlockEnd();
-
-    [GeneratedRegex("<[^>]*>")]
-    private static partial Regex Tag();
-
-    [GeneratedRegex(@"\n{3,}")]
-    private static partial Regex BlankLines();
 
     private static string? AgentOf(SideHubApiClient client, string[] args, string usage)
     {

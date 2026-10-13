@@ -38,13 +38,12 @@ public sealed class CliWriteCommandsTests : IDisposable
     [InlineData("dismiss", "dismissed")]
     public async Task Review_decide_posts_the_action(string action, string status)
     {
-        _api.Respond("/reviews/rv-1", PendingReview);
-        _api.Respond("/decision", $$"""{"review":{"id":"rv-1","agentId":"agent-1","status":"{{status}}"},"fixRunId":null}""");
+        _api.Respond("/decision", $$"""{"review":{"id":"rv-1","agentId":"agent-1","status":"{{status}}"},"fixRunId":null,"alreadyDecided":false}""");
 
         Assert.Equal(0, await ReviewCommands.DecideAsync(_client, ["rv-1", action], json: false));
 
-        Assert.Equal(["GET /api/reviews/rv-1", "POST /api/reviews/rv-1/decision"], _api.Methods);
-        var body = _api.Calls[1].Json;
+        Assert.Equal("POST /api/reviews/rv-1/decision", Assert.Single(_api.Methods));
+        var body = _api.Calls[0].Json;
         Assert.Equal(action, body.GetProperty("action").GetString());
         Assert.Equal(JsonValueKind.Null, body.GetProperty("comment").ValueKind);
     }
@@ -52,29 +51,27 @@ public sealed class CliWriteCommandsTests : IDisposable
     [Fact]
     public async Task Review_request_fix_sends_the_comment()
     {
-        _api.Respond("/reviews/rv-1", PendingReview);
-        _api.Respond("/decision", """{"review":{"id":"rv-1","agentId":"agent-1","status":"fix-requested"},"fixRunId":"run-9"}""");
+        _api.Respond("/decision", """{"review":{"id":"rv-1","agentId":"agent-1","status":"fix-requested"},"fixRunId":"run-9","alreadyDecided":false}""");
 
         Assert.Equal(0, await ReviewCommands.DecideAsync(_client, ["rv-1", "request-fix", "--comment", "Handle the empty password"], json: false));
 
-        var body = _api.Calls[1].Json;
+        var body = _api.Calls[0].Json;
         Assert.Equal("request-fix", body.GetProperty("action").GetString());
         Assert.Equal("Handle the empty password", body.GetProperty("comment").GetString());
     }
 
     [Fact]
-    public async Task Review_decide_does_not_post_on_a_review_already_decided()
+    public async Task Review_decide_says_nothing_changed_on_a_review_already_decided()
     {
-        _api.Respond("/reviews/rv-1", """{"id":"rv-1","status":"validated","rounds":[],"decisions":[]}""");
+        _api.Respond("/decision", """{"review":{"id":"rv-1","status":"validated"},"fixRunId":null,"alreadyDecided":true}""");
 
         Assert.Equal(1, await ReviewCommands.DecideAsync(_client, ["rv-1", "dismiss"], json: false));
-        Assert.Equal("GET /api/reviews/rv-1", Assert.Single(_api.Methods));
+        Assert.Equal("POST /api/reviews/rv-1/decision", Assert.Single(_api.Methods));
     }
 
     [Fact]
     public async Task Review_decide_shows_the_conflict_of_a_fix_that_cannot_start()
     {
-        _api.Respond("/reviews/rv-1", PendingReview);
         _api.Respond("/decision", """{"error":"The agent is offline.","review":{"id":"rv-1"}}""", HttpStatusCode.Conflict);
 
         var error = await Assert.ThrowsAsync<HttpRequestException>(() =>
@@ -334,26 +331,15 @@ public sealed class CliWriteCommandsTests : IDisposable
     private const string EmptyQueue = """{"agentId":"agent-1","state":"idle","pauseReason":null,"current":null,"items":[],"supported":true}""";
 
     [Fact]
-    public async Task Queue_add_queues_each_task_in_order_with_its_prompt()
+    public async Task Queue_add_queues_each_task_in_order_and_lets_SideHub_write_their_prompt()
     {
-        _api.Respond("/tasks/t-1", """{"id":"t-1","title":"Login","type":"bug-fix","description":"<p>Empty password &amp; crash</p>"}""");
-        _api.Respond("/tasks/t-2", """{"id":"t-2","title":"Signup","type":"feature","description":null}""");
         _api.Respond("/task-queue/items", EmptyQueue);
 
         Assert.Equal(0, await QueueCommands.AddAsync(_client, ["t-1", "t-2", "--cli", "codex", "--no-commit"], json: false));
 
-        Assert.Equal([
-            $"GET /api/workspaces/{WorkspaceId}/tasks/t-1", "POST /api/agents/agent-1/task-queue/items",
-            $"GET /api/workspaces/{WorkspaceId}/tasks/t-2", "POST /api/agents/agent-1/task-queue/items"], _api.Methods);
-        var first = _api.Calls[1].Json;
-        Assert.Equal("t-1", first.GetProperty("taskId").GetString());
-        Assert.Equal("codex", first.GetProperty("cli").GetString());
-        Assert.False(first.GetProperty("commit").GetBoolean());
-        var prompt = first.GetProperty("prompt").GetString()!;
-        Assert.StartsWith("## Tache: Login\nType: Bug Fix", prompt);
-        Assert.Contains("### Description\nEmpty password & crash", prompt);
-        Assert.Contains("- Identify the root cause before fixing", prompt);
-        Assert.Equal("t-2", _api.Calls[3].Json.GetProperty("taskId").GetString());
+        Assert.Equal(["POST /api/agents/agent-1/task-queue/items", "POST /api/agents/agent-1/task-queue/items"], _api.Methods);
+        Assert.Equal("""{"taskId":"t-1","cli":"codex","prompt":null,"commit":false}""", _api.Calls[0].Body);
+        Assert.Equal("t-2", _api.Calls[1].Json.GetProperty("taskId").GetString());
     }
 
     [Fact]

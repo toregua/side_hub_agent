@@ -820,7 +820,8 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public Task<JsonElement> EnqueueTaskAsync(string agentId, string taskId, string cli, string prompt, bool commit) =>
+    /// <param name="prompt">Null: SideHub uses the task's own first message.</param>
+    public Task<JsonElement> EnqueueTaskAsync(string agentId, string taskId, string cli, string? prompt, bool commit) =>
         PostAsync($"api/agents/{agentId}/task-queue/items", new { taskId, cli, prompt, commit });
 
     public async Task<JsonElement> RemoveQueuedTaskAsync(string agentId, string itemId)

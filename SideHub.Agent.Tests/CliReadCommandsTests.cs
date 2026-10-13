@@ -300,12 +300,6 @@ public sealed class CliReadCommandsTests : IDisposable
     }
 
     [Fact]
-    public void Task_description_html_becomes_plain_text()
-    {
-        Assert.Equal("First line\nSecond & last", QueueCommands.HtmlToText("<p>First <b>line</b></p><p>Second &amp; last</p>"));
-    }
-
-    [Fact]
     public async Task A_refusal_points_to_whoami()
     {
         _api.Respond("/runs/r-1", """{"error":"This operation is not allowed with a run token."}""", HttpStatusCode.Forbidden);
