@@ -91,16 +91,17 @@ public static class RunCommands
         Console.WriteLine($"Ended:      {PropDate(run, "endedAt")}");
         Console.WriteLine($"Duration:   {Duration(run)}");
         Console.WriteLine($"Terminal:   {Prop(run, "ptySessionId")}");
-        PrintIfSet(run, "cliSessionId", "CLI session");
+        PrintIfSet(run, "cliSessionId", "Session");
         PrintIfSet(run, "workflowExecutionId", "Execution");
         PrintIfSet(run, "stepId", "Step");
-        PrintIfSet(run, "scheduledPromptExecutionId", "Scheduler execution");
+        PrintIfSet(run, "scheduledPromptExecutionId", "Sched. exec");
         PrintIfSet(run, "taskId", "Task");
         PrintIfSet(run, "reviewId", "Review");
-        PrintIfSet(run, "peerReviewOf", "Peer review of");
+        PrintIfSet(run, "peerReviewOf", "Reviews");
 
         if (run.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object
-            && usage.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array)
+            && usage.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array
+            && models.GetArrayLength() > 0)
         {
             Console.WriteLine();
             Console.WriteLine("Usage:");
