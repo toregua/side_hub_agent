@@ -199,13 +199,15 @@ public static class ReviewCommands
         var result = await client.DecideReviewAsync(reviewId, action, comment);
         var review = result.TryGetProperty("review", out var r) ? r : default;
 
-        // A review already decided answers 200 with the review as it is: say so instead of claiming a decision.
-        if (result.TryGetProperty("alreadyDecided", out var already) && already.ValueKind == JsonValueKind.True)
+        // A review already decided, or with nothing to review yet, answers 200 as it is: say so instead of claiming a decision.
+        if (result.TryGetProperty("unchanged", out var unchanged) && unchanged.ValueKind == JsonValueKind.True)
         {
             if (json)
                 Console.WriteLine(SideHubApiClient.Serialize(result));
             else
-                Console.Error.WriteLine($"Review {reviewId} is already {Prop(review, "status") ?? "decided"}: nothing changed.");
+                Console.Error.WriteLine(Prop(review, "status") is { } status
+                    ? $"Review {reviewId} is already {status}: nothing changed."
+                    : $"Review {reviewId} has nothing to review yet (its work changed nothing, or its round is still running): nothing changed.");
             return 1;
         }
 

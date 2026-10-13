@@ -38,7 +38,7 @@ public sealed class CliWriteCommandsTests : IDisposable
     [InlineData("dismiss", "dismissed")]
     public async Task Review_decide_posts_the_action(string action, string status)
     {
-        _api.Respond("/decision", $$"""{"review":{"id":"rv-1","agentId":"agent-1","status":"{{status}}"},"fixRunId":null,"alreadyDecided":false}""");
+        _api.Respond("/decision", $$"""{"review":{"id":"rv-1","agentId":"agent-1","status":"{{status}}"},"fixRunId":null,"unchanged":false}""");
 
         Assert.Equal(0, await ReviewCommands.DecideAsync(_client, ["rv-1", action], json: false));
 
@@ -51,7 +51,7 @@ public sealed class CliWriteCommandsTests : IDisposable
     [Fact]
     public async Task Review_request_fix_sends_the_comment()
     {
-        _api.Respond("/decision", """{"review":{"id":"rv-1","agentId":"agent-1","status":"fix-requested"},"fixRunId":"run-9","alreadyDecided":false}""");
+        _api.Respond("/decision", """{"review":{"id":"rv-1","agentId":"agent-1","status":"fix-requested"},"fixRunId":"run-9","unchanged":false}""");
 
         Assert.Equal(0, await ReviewCommands.DecideAsync(_client, ["rv-1", "request-fix", "--comment", "Handle the empty password"], json: false));
 
@@ -63,10 +63,29 @@ public sealed class CliWriteCommandsTests : IDisposable
     [Fact]
     public async Task Review_decide_says_nothing_changed_on_a_review_already_decided()
     {
-        _api.Respond("/decision", """{"review":{"id":"rv-1","status":"validated"},"fixRunId":null,"alreadyDecided":true}""");
+        _api.Respond("/decision", """{"review":{"id":"rv-1","status":"validated"},"fixRunId":null,"unchanged":true}""");
 
         Assert.Equal(1, await ReviewCommands.DecideAsync(_client, ["rv-1", "dismiss"], json: false));
         Assert.Equal("POST /api/reviews/rv-1/decision", Assert.Single(_api.Methods));
+    }
+
+    [Fact]
+    public async Task Review_decide_explains_a_review_with_nothing_to_review_yet()
+    {
+        _api.Respond("/decision", """{"review":{"id":"rv-1","status":null},"fixRunId":null,"unchanged":true}""");
+
+        var stderr = new StringWriter();
+        var previous = Console.Error;
+        Console.SetError(stderr);
+        try
+        {
+            Assert.Equal(1, await ReviewCommands.DecideAsync(_client, ["rv-1", "validate"], json: false));
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+        Assert.Contains("has nothing to review yet", stderr.ToString());
     }
 
     [Fact]
