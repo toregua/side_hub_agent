@@ -49,6 +49,13 @@ public class AgentConnectedMessage
     [JsonPropertyName("cliAccounts")]
     public IReadOnlyDictionary<string, CliAccount>? CliAccounts { get; init; }
 
+    /// <summary>
+    /// How each logged-in CLI is paid for, when it tells ("claude": subscription "max", "codex": api…): the backend
+    /// uses it as the agent's billing mode unless the user chose one. Null while not probed yet, like <see cref="CliAuth"/>.
+    /// </summary>
+    [JsonPropertyName("cliBilling")]
+    public IReadOnlyDictionary<string, CliBilling>? CliBilling { get; init; }
+
     /// <summary>The branch <c>origin/HEAD</c> of the agent's repository points to; null when unknown.</summary>
     [JsonPropertyName("defaultBranch")]
     public string? DefaultBranch { get; init; }

@@ -61,6 +61,7 @@ static async Task<int> RunCommand(string[] args, string baseDirectory, Cancellat
         "restart" => await HandleRestart(args, baseDirectory, ct),
         "logs" => await HandleLogs(args, baseDirectory),
         "status" => HandleStatus(args, baseDirectory),
+        "doctor" => await CliReport.PrintAsync(ct),
         "service" => AgentService.Run(args, baseDirectory),
         "version" or "--version" => ShowVersion(),
         "update" when args.Length > 1 && args[1] == "apply" => await SideHub.Agent.Update.UpdateApplier.RunAsync(ct),
@@ -141,9 +142,13 @@ static async Task<int> SetupAndStart(string[] args, string baseDirectory, string
     var code = await AgentSetup.Run(baseDirectory, token, api, ct);
     if (code != 0 || args.Contains("--no-start")) return code;
     // Run again in a folder whose agent is running (a second install, a new token): it must load the new config
-    return new DaemonManager(baseDirectory).IsRunning() || AgentService.IsSupervised(baseDirectory)
+    code = new DaemonManager(baseDirectory).IsRunning() || AgentService.IsSupervised(baseDirectory)
         ? Commands.Restart(baseDirectory, daemon: true, ct)
         : await Commands.Start(baseDirectory, daemon: true, ct);
+    if (code != 0) return code;
+    // The install command ends on what the agent will run, and with which sign-in: no model key goes to SideHub
+    Console.WriteLine();
+    return await CliReport.PrintAsync(ct);
 }
 
 static int HandleStop(string[] args, string baseDirectory)

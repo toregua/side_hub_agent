@@ -47,4 +47,21 @@ public class VersionInfoTests
             Directory.Delete(home, recursive: true);
         }
     }
+
+    [Theory]
+    [InlineData("claude", "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\",\n  \"subscriptionType\": \"max\"\n}", "subscription", "max")]
+    [InlineData("claude", "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}", "subscription", null)]
+    [InlineData("claude", "{\n  \"loggedIn\": true,\n  \"authMethod\": \"api_key\",\n  \"subscriptionType\": null\n}", "api", null)]
+    [InlineData("claude", "{\n  \"loggedIn\": true,\n  \"authMethod\": \"third_party\",\n  \"apiProvider\": \"bedrock\"\n}", "api", null)]
+    [InlineData("claude", "{\n  \"loggedIn\": true,\n  \"authMethod\": \"oauth_token\"\n}", null, null)]
+    [InlineData("codex", "Logged in using ChatGPT\n", "subscription", null)]
+    [InlineData("codex", "Logged in using an API key - sk-proj-***67890\n", "api", null)]
+    [InlineData("codex", "Not logged in\n", null, null)]
+    [InlineData("agy", "anything", null, null)]
+    public void ParseBilling_ShouldTellSubscriptionFromApiKey(string cli, string output, string? mode, string? plan)
+    {
+        var billing = VersionInfo.ParseBilling(cli, output);
+        Assert.Equal(mode, billing?.Mode);
+        Assert.Equal(plan, billing?.Plan);
+    }
 }

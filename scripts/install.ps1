@@ -421,7 +421,7 @@ function Install-SideHubAgent {
         }
         Write-Host ""
         Write-Host "To start it again each time you log on: sidehub-agent service install"
-        Write-Host "Useful commands: sidehub-agent status, sidehub-agent logs, sidehub-agent stop"
+        Write-Host "Useful commands: sidehub-agent status, sidehub-agent doctor, sidehub-agent logs, sidehub-agent stop"
     } else {
         Write-Host "To get started, from your project folder:"
         Write-Host "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"

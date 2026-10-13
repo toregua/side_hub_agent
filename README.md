@@ -188,7 +188,7 @@ workflow callbacks, drive…). Disable file writes (`"allowFileWrite": false`) t
 
 | Goes to SideHub | Stays on your machine |
 |---|---|
-| Connection info: agent id, version, OS shells, root folder path, installed CLI versions | Your source code and repositories¹ |
+| Connection info: agent id, version, OS shells, root folder path, installed CLI versions, whether they are logged in and with a subscription or an API key (never the key) | Your source code and repositories¹ |
 | PTY lifecycle: started, exited (exit code), CLI session id and title | Your secrets, environment variables and credentials |
 | CLI state (`working` / `waiting-input` / `idle`) | Model calls: the CLIs talk to the providers directly, with your subscriptions or API keys |
 | Token counts per run and per CLI session | CLI transcripts and session files (but the last message of a question run, its answer, and of a reviewed work) |
@@ -242,7 +242,9 @@ the setup commands copied from SideHub set it.
 ## Installation
 
 Requires [Node.js](https://nodejs.org) 18 or later (for the PTY helper) and the CLIs you want to use
-(`claude`, `codex`, `agy`, `copilot`, `gemini`) on the `PATH`.
+(`claude`, `codex`, `agy`, `copilot`, `gemini`) on the `PATH`, signed in for the user running the agent.
+SideHub never asks for a model key: the agent runs the CLIs as they are configured, with your
+subscriptions (Claude, ChatGPT…) or your API keys. `sidehub-agent doctor` shows which ones it found.
 
 ### Linux / macOS
 
@@ -310,6 +312,8 @@ attestation, and the Windows executables an Authenticode signature: see
    folder (see [Agent token](#agent-token)), writes `.sidehub/agent.json` (`0600`, kept out of git), and
    starts the agent in the background. Add `--no-start` to only write the files. Run again in a folder
    whose agent is running (another agent, a new token), it restarts that agent with the new config.
+   It ends with the coding CLIs found, whether they are logged in and how they are paid for (subscription
+   or API key), like `sidehub-agent doctor`.
 3. To start it again after a reboot: `sidehub-agent service install` (see
    [Running as a service](#running-as-a-service)).
 
@@ -460,6 +464,7 @@ Commands:
   restart           Stop then start the agent (-d, --all)
   logs              Show agent logs (--no-follow to print and exit)
   status            Show agent status (--all: every instance)
+  doctor            Show the coding CLIs the agent runs, whether they are logged in and how they are paid for
   service install   Start this folder's agent at boot (Linux), at login (macOS) or at logon (Windows)
   service uninstall / service status
   version           Print the agent's version

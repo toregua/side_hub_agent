@@ -32,6 +32,7 @@ public static partial class VersionInfo
     private static IReadOnlyDictionary<string, string>? _cliVersions;
     private static IReadOnlyDictionary<string, bool> _cliAuth = new Dictionary<string, bool>();
     private static IReadOnlyDictionary<string, CliAccount> _cliAccounts = new Dictionary<string, CliAccount>();
+    private static IReadOnlyDictionary<string, CliBilling> _cliBilling = new Dictionary<string, CliBilling>();
     private static DateTime _probedAt;
 
     public static string AgentVersion { get; } = ReadAgentVersion();
@@ -55,6 +56,9 @@ public static partial class VersionInfo
     /// <summary>The account each CLI that tells it runs with (only Copilot), from the same probe as <see cref="CachedCliAuth"/>.</summary>
     public static IReadOnlyDictionary<string, CliAccount>? CachedCliAccounts => CachedCliVersions is null ? null : _cliAccounts;
 
+    /// <summary>How each logged-in CLI that tells is paid for (claude, codex), from the same probe as <see cref="CachedCliAuth"/>.</summary>
+    public static IReadOnlyDictionary<string, CliBilling>? CachedCliBilling => CachedCliVersions is null ? null : _cliBilling;
+
     /// <summary>
     /// Detected CLI versions, keyed by runtime. Probed at most once per <see cref="CacheTtl"/> so that
     /// reconnections don't spawn the CLIs again; a CLI that is missing or times out is simply absent.
@@ -74,7 +78,7 @@ public static partial class VersionInfo
             var versions = results
                 .Where(r => r.version is not null)
                 .ToDictionary(r => r.cli, r => r.version!);
-            (_cliAuth, _cliAccounts) = await ProbeAuthAsync(versions, ct);
+            (_cliAuth, _cliAccounts, _cliBilling) = await ProbeAuthAsync(versions, ct);
             _cliVersions = versions;
             _probedAt = DateTime.UtcNow;
             return _cliVersions;
@@ -97,9 +101,10 @@ public static partial class VersionInfo
         await ProbeLock.WaitAsync(ct);
         try
         {
-            var (previousAuth, previousAccounts) = (_cliAuth, _cliAccounts);
-            (_cliAuth, _cliAccounts) = await ProbeAuthAsync(versions, ct);
-            return !SameEntries(previousAuth, _cliAuth) || !SameEntries(previousAccounts, _cliAccounts);
+            var (previousAuth, previousAccounts, previousBilling) = (_cliAuth, _cliAccounts, _cliBilling);
+            (_cliAuth, _cliAccounts, _cliBilling) = await ProbeAuthAsync(versions, ct);
+            return !SameEntries(previousAuth, _cliAuth) || !SameEntries(previousAccounts, _cliAccounts)
+                || !SameEntries(previousBilling, _cliBilling);
         }
         finally
         {
@@ -111,18 +116,27 @@ public static partial class VersionInfo
         previous.Count == now.Count
         && previous.All(entry => now.TryGetValue(entry.Key, out var value) && EqualityComparer<T>.Default.Equals(value, entry.Value));
 
-    private static async Task<(IReadOnlyDictionary<string, bool> Auth, IReadOnlyDictionary<string, CliAccount> Accounts)> ProbeAuthAsync(
+    private static async Task<(IReadOnlyDictionary<string, bool> Auth, IReadOnlyDictionary<string, CliAccount> Accounts,
+        IReadOnlyDictionary<string, CliBilling> Billing)> ProbeAuthAsync(
         IReadOnlyDictionary<string, string> versions, CancellationToken ct)
     {
         var copilot = versions.ContainsKey("copilot") ? ProbeCopilotAsync(ct) : Task.FromResult<CopilotAuth?>(null);
         var probes = AuthStatusCommands
             .Where(command => versions.ContainsKey(command.Key))
             .Select(async command => (cli: command.Key, output: await RunCliAsync(command.Value, ct)));
-        var results = await Task.WhenAll(probes);
+        var results = (await Task.WhenAll(probes))
+            .Where(r => r.output is not null)
+            .Select(r => (r.cli, exitCode: r.output!.Value.ExitCode, text: r.output.Value.Stdout + "\n" + r.output.Value.Stderr))
+            .ToList();
         var auth = results
-            .Select(r => (r.cli, loggedIn: r.output is { } output ? ParseLoggedIn(r.cli, output.ExitCode, output.Stdout + "\n" + output.Stderr) : null))
+            .Select(r => (r.cli, loggedIn: ParseLoggedIn(r.cli, r.exitCode, r.text)))
             .Where(r => r.loggedIn is not null)
             .ToDictionary(r => r.cli, r => r.loggedIn!.Value);
+        var billing = results
+            .Where(r => auth.GetValueOrDefault(r.cli))
+            .Select(r => (r.cli, billing: ParseBilling(r.cli, r.text)))
+            .Where(r => r.billing is not null)
+            .ToDictionary(r => r.cli, r => r.billing!);
         if (versions.ContainsKey("agy") && AntigravitySignedIn(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
             auth["agy"] = true;
         var accounts = new Dictionary<string, CliAccount>();
@@ -132,7 +146,7 @@ public static partial class VersionInfo
             if (copilotAuth.Account is { } account)
                 accounts["copilot"] = account;
         }
-        return (auth, accounts);
+        return (auth, accounts, billing);
     }
 
     /// <summary>
@@ -183,6 +197,34 @@ public static partial class VersionInfo
                 if (output.Contains("Not logged in", StringComparison.Ordinal))
                     return false;
                 return exitCode == 0 && output.Contains("Logged in", StringComparison.Ordinal) ? true : null;
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// How a logged-in CLI is paid for, from the same status output as <see cref="ParseLoggedIn"/>. claude:
+    /// <c>"authMethod": "claude.ai"</c> is a subscription (its <c>subscriptionType</c> is the plan), <c>api_key</c> and
+    /// <c>third_party</c> (Bedrock, Vertex…) are billed per use; <c>oauth_token</c> stays unknown (a subscription token
+    /// or a gateway's). codex: "Logged in using ChatGPT" or "… using an API key". Null when unknown.
+    /// </summary>
+    public static CliBilling? ParseBilling(string cli, string output)
+    {
+        switch (cli)
+        {
+            case "claude":
+                var method = AuthMethodPattern().Match(output) is { Success: true } m ? m.Groups[1].Value : null;
+                return method switch
+                {
+                    "claude.ai" => new CliBilling(CliBilling.Subscription,
+                        SubscriptionTypePattern().Match(output) is { Success: true } plan ? plan.Groups[1].Value : null),
+                    "api_key" or "third_party" => new CliBilling(CliBilling.Api, null),
+                    _ => null,
+                };
+            case "codex":
+                if (output.Contains("Logged in using ChatGPT", StringComparison.Ordinal))
+                    return new CliBilling(CliBilling.Subscription, null);
+                return output.Contains("Logged in using an API key", StringComparison.Ordinal) ? new CliBilling(CliBilling.Api, null) : null;
             default:
                 return null;
         }
@@ -255,4 +297,19 @@ public static partial class VersionInfo
 
     [GeneratedRegex(@"""loggedIn""\s*:\s*(true|false)")]
     private static partial Regex LoggedInPattern();
+
+    [GeneratedRegex(@"""authMethod""\s*:\s*""([a-z0-9_.]+)""")]
+    private static partial Regex AuthMethodPattern();
+
+    [GeneratedRegex(@"""subscriptionType""\s*:\s*""([a-z0-9_]+)""")]
+    private static partial Regex SubscriptionTypePattern();
+}
+
+/// <summary>How a CLI is paid for, as reported to the backend: never a credential.</summary>
+/// <param name="Mode"><see cref="Subscription"/> or <see cref="Api"/> (the backend's billing modes).</param>
+/// <param name="Plan">The subscription when the CLI tells (claude: "pro", "max", "team", "enterprise").</param>
+public sealed record CliBilling(string Mode, string? Plan)
+{
+    public const string Subscription = "subscription";
+    public const string Api = "api";
 }

@@ -1035,6 +1035,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             CliVersions = cliVersions,
             CliAuth = VersionInfo.CachedCliAuth,
             CliAccounts = VersionInfo.CachedCliAccounts,
+            CliBilling = VersionInfo.CachedCliBilling,
             DefaultBranch = await ReadDefaultBranchAsync(),
             InstallId = SelfUpdate.InstallId(SelfUpdate.Support.InstallDirectory ?? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)),
             Os = SelfUpdate.Os,
@@ -1058,8 +1059,10 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             return "";
         if (!loggedIn)
             return " (not logged in)";
-        return VersionInfo.CachedCliAccounts?.GetValueOrDefault(cli) is { Login: { } login } account
-            ? $" (logged in as {login}{(account.Plan is { } plan ? $", {plan}" : "")})"
+        if (VersionInfo.CachedCliAccounts?.GetValueOrDefault(cli) is { Login: { } login } account)
+            return $" (logged in as {login}{(account.Plan is { } plan ? $", {plan}" : "")})";
+        return VersionInfo.CachedCliBilling?.GetValueOrDefault(cli) is { } billing
+            ? $" (logged in, {billing.Mode}{(billing.Plan is { } subscription ? $" {subscription}" : "")})"
             : " (logged in)";
     }
 

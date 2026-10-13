@@ -452,7 +452,7 @@ install() {
         fi
         echo ""
         echo "To start it again after a reboot: sidehub-agent service install $allow_root"
-        echo "Useful commands: sidehub-agent status · sidehub-agent logs · sidehub-agent stop"
+        echo "Useful commands: sidehub-agent status · sidehub-agent doctor · sidehub-agent logs · sidehub-agent stop"
     else
         echo "To get started, from your project folder:"
         echo "  sidehub-agent setup --token-stdin   (then paste the token copied from SideHub)"
