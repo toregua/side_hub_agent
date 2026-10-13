@@ -510,6 +510,145 @@ public static class WorkflowCommands
         return 0;
     }
 
+    public static async Task<int> ImportAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var file = GetOption(args, "--file");
+        if (string.IsNullOrEmpty(file))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow import --file <path> [--name \"...\"]");
+            return 1;
+        }
+        if (!File.Exists(file))
+        {
+            Console.Error.WriteLine($"Error: file not found: {file}");
+            return 1;
+        }
+
+        JsonElement document;
+        try
+        {
+            document = JsonSerializer.Deserialize<JsonElement>(await File.ReadAllTextAsync(file));
+        }
+        catch (JsonException ex)
+        {
+            Console.Error.WriteLine($"Error: {file} is not JSON ({ex.Message}). Write it with: sidehub-cli workflow export <wfId> --output <file>");
+            return 1;
+        }
+        if (document.ValueKind != JsonValueKind.Object)
+        {
+            Console.Error.WriteLine($"Error: {file} is not a workflow document. Write it with: sidehub-cli workflow export <wfId> --output <file>");
+            return 1;
+        }
+
+        var result = await client.ImportWorkflowAsync(document, GetOption(args, "--name"));
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        Console.WriteLine($"Imported workflow: {Prop(result, "name")} ({Prop(result, "id")})");
+        return 0;
+    }
+
+    public static async Task<int> DuplicateAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var id = args.FirstOrDefault(a => !a.StartsWith("--") && !IsOptionValue(args, a));
+        if (string.IsNullOrEmpty(id))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow duplicate <id> [--name \"...\"]");
+            return 1;
+        }
+
+        // The name the web app gives a copy.
+        var name = GetOption(args, "--name") ?? $"{Prop(await client.GetWorkflowAsync(id), "name")} (copy)";
+        var result = await client.DuplicateWorkflowAsync(id, name);
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        Console.WriteLine($"Duplicated workflow: {Prop(result, "name")} ({Prop(result, "id")})");
+        return 0;
+    }
+
+    public static async Task<int> CancelAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var execId = args.FirstOrDefault(a => !a.StartsWith("--") && !IsOptionValue(args, a));
+        if (string.IsNullOrEmpty(execId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow cancel <executionId> [--reason \"...\"]");
+            return 1;
+        }
+
+        var result = await client.CancelWorkflowExecutionAsync(execId, GetOption(args, "--reason"));
+
+        if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
+        else Console.WriteLine($"Execution {execId} canceled.");
+        return 0;
+    }
+
+    public static async Task<int> RetryAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var ids = args.Where(a => !a.StartsWith("--")).ToList();
+        if (ids.Count < 2)
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow retry <executionId> <stepId>");
+            return 1;
+        }
+
+        var result = await client.RetryWorkflowFromStepAsync(ids[0], ids[1]);
+
+        if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
+        else Console.WriteLine($"Execution {ids[0]} runs again from step {ids[1]}.");
+        return 0;
+    }
+
+    /// <summary>Ends a step by hand: <c>complete</c> with the Memory page it should have written, or <c>fail</c>.</summary>
+    public static async Task<int> StepOverrideAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var positionals = args.Where(a => !a.StartsWith("--") && !IsOptionValue(args, a)).ToList();
+        var outputId = GetOption(args, "--output-id");
+        var outcome = positionals.ElementAtOrDefault(2);
+        if (positionals.Count < 3 || outcome is not ("complete" or "fail") || (outcome == "complete" && string.IsNullOrEmpty(outputId)))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow step-override <executionId> <stepId> complete --output-id <driveItemId>");
+            Console.Error.WriteLine("       sidehub-cli workflow step-override <executionId> <stepId> fail [--reason \"...\"]");
+            return 1;
+        }
+
+        var (execId, stepId) = (positionals[0], positionals[1]);
+        var result = outcome == "complete"
+            ? await client.ManualCompleteWorkflowStepAsync(execId, stepId, outputId!)
+            : await client.ManualFailWorkflowStepAsync(execId, stepId, GetOption(args, "--reason") ?? "Failed manually");
+
+        if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
+        else Console.WriteLine(outcome == "complete"
+            ? $"Step {stepId} completed by hand (output: {outputId})."
+            : $"Step {stepId} failed by hand.");
+        return 0;
+    }
+
+    /// <summary>Validates an interactive step: its CLI waited for the user, the workflow moves on.</summary>
+    public static async Task<int> ValidateStepAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var ids = args.Where(a => !a.StartsWith("--")).ToList();
+        if (ids.Count < 2)
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow validate-step <executionId> <stepId>");
+            return 1;
+        }
+
+        var result = await client.ValidateWorkflowStepAsync(ids[0], ids[1]);
+
+        if (json) Console.WriteLine(SideHubApiClient.Serialize(result));
+        else Console.WriteLine($"Step {ids[1]} validated: its CLI is asked to finish and report.");
+        return 0;
+    }
+
     private static List<SideHubApiClient.StepInputArg> CollectInputs(string[] args)
     {
         var inputs = new List<SideHubApiClient.StepInputArg>();

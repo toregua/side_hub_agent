@@ -1,7 +1,4 @@
-using System.Collections.Concurrent;
 using System.Net;
-using System.Net.Sockets;
-using System.Text;
 using SideHub.Cli;
 using SideHub.Cli.Commands;
 
@@ -14,7 +11,7 @@ namespace SideHub.Agent.Tests;
 public sealed class CliReadCommandsTests : IDisposable
 {
     private const string WorkspaceId = "11111111-1111-1111-1111-111111111111";
-    private readonly FakeApi _api = new();
+    private readonly FakeSideHubApi _api = new();
     private readonly SideHubApiClient _client;
 
     public CliReadCommandsTests() => _client = new SideHubApiClient(_api.Url, "sh_pty_test", WorkspaceId, "agent-1");
@@ -150,6 +147,164 @@ public sealed class CliReadCommandsTests : IDisposable
         Assert.Equal("POST /api/drive/d-1/restore", Assert.Single(_api.Methods));
     }
 
+    private const string Review = """
+        {"id":"rv-1","agentId":"agent-1","source":"task","provider":"codex","title":"Fix login","status":"pending",
+         "pendingSince":"2026-10-13T08:00:00Z","updatedAt":"2026-10-13T08:00:00Z","taskId":"t-1",
+         "rounds":[
+           {"index":1,"runId":null,"startedAt":"2026-10-13T07:00:00Z","endedAt":"2026-10-13T07:30:00Z","endBranch":"main",
+            "files":[{"path":"src/login.ts","oldPath":null,"status":"modified","insertions":10,"deletions":2,"binary":false}],
+            "filesTruncated":false,"filesChanged":1,"insertions":10,"deletions":2,
+            "commits":[{"sha":"0123456789abcdef","subject":"Fix login"}],"commitsTruncated":false,
+            "summary":"Done.","error":null,"comment":null,"peerReviews":[]},
+           {"index":2,"runId":"run-2","startedAt":"2026-10-13T07:40:00Z","endedAt":"2026-10-13T07:50:00Z","endBranch":"main",
+            "files":[{"path":"src/a b.ts","oldPath":null,"status":"added","insertions":3,"deletions":0,"binary":false}],
+            "filesTruncated":false,"filesChanged":1,"insertions":3,"deletions":0,"commits":[],"commitsTruncated":false,
+            "summary":"Fixed.","error":null,"comment":"Handle empty passwords",
+            "peerReviews":[{"id":"p-1","provider":"claude","model":null,"status":"done","error":null,
+              "recommendations":[{"id":"x","severity":"minor","file":"src/a b.ts","line":3,"title":"Rename","detail":null}],"sent":null}]}],
+         "decisions":[{"action":"request-fix","at":"2026-10-13T07:35:00Z","userId":"u","comment":"Handle empty passwords","fixRunId":"run-2"}]}
+        """;
+
+    [Fact]
+    public async Task Review_list_sends_its_filters()
+    {
+        _api.Respond("/reviews", $"[{Review}]");
+
+        Assert.Equal(0, await ReviewCommands.ListAsync(_client, ["--status", "pending", "--task", "t-1", "--run", "r-1", "--limit", "5"], json: false));
+
+        var request = Assert.Single(_api.Requests);
+        Assert.Equal($"/api/workspaces/{WorkspaceId}/reviews?status=pending&taskId=t-1&runId=r-1&take=5", request);
+    }
+
+    [Theory]
+    [InlineData("open")]
+    [InlineData("--limit", "0")]
+    public async Task Review_list_refuses_bad_filters_without_calling_the_api(params string[] values)
+    {
+        string[] args = values.Length == 1 ? ["--status", values[0]] : values;
+
+        Assert.Equal(1, await ReviewCommands.ListAsync(_client, args, json: false));
+        Assert.Empty(_api.Requests);
+    }
+
+    [Fact]
+    public async Task Review_get_prints_the_rounds()
+    {
+        _api.Respond("/reviews/rv-1", Review);
+
+        Assert.Equal(0, await ReviewCommands.GetAsync(_client, ["rv-1"], json: false));
+        Assert.Equal("/api/reviews/rv-1", Assert.Single(_api.Requests));
+    }
+
+    [Fact]
+    public async Task Review_diff_reads_the_last_round_by_default()
+    {
+        _api.Respond("/reviews/rv-1", Review);
+        _api.Respond("/diff", "diff --git a/x b/x\n", contentType: "text/x-diff");
+
+        Assert.Equal(0, await ReviewCommands.DiffAsync(_client, ["rv-1"], json: false));
+        Assert.Equal(["/api/reviews/rv-1", "/api/reviews/rv-1/diff?round=2"], _api.Requests);
+    }
+
+    [Fact]
+    public async Task Review_diff_of_one_file_of_a_round()
+    {
+        _api.Respond("/diff", "diff --git a/x b/x\n", contentType: "text/x-diff");
+
+        Assert.Equal(0, await ReviewCommands.DiffAsync(_client, ["rv-1", "--round", "1", "--path", "src/a b.ts"], json: false));
+        Assert.Equal("/api/reviews/rv-1/diff?round=1&path=src%2Fa%20b.ts", Assert.Single(_api.Requests));
+    }
+
+    [Fact]
+    public async Task Review_diff_too_large_lists_the_files_to_ask_for()
+    {
+        _api.Respond("/reviews/rv-1", Review);
+        _api.Respond("/diff", """{"error":"The diff is too large: open the files one by one.","code":"too-large"}""", HttpStatusCode.RequestEntityTooLarge);
+
+        Assert.Equal(1, await ReviewCommands.DiffAsync(_client, ["rv-1"], json: false));
+        Assert.Equal(["/api/reviews/rv-1", "/api/reviews/rv-1/diff?round=2"], _api.Requests);
+    }
+
+    [Fact]
+    public async Task Review_diff_surfaces_the_other_refusals()
+    {
+        _api.Respond("/diff", """{"error":"The agent is offline: the diff is read from its machine.","code":"agent-offline"}""", HttpStatusCode.Conflict);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => ReviewCommands.DiffAsync(_client, ["rv-1", "--round", "1"], json: false));
+        Assert.Contains("agent is offline", error.Message);
+    }
+
+    [Fact]
+    public async Task Approval_list_reads_each_execution_waiting_for_a_decision()
+    {
+        _api.Respond("/cockpit/now", """
+            {"attention":[
+               {"kind":"approval-pending","title":"Blog","at":"2026-10-13T08:00:00Z","target":{"workflowExecutionId":"e-1"}},
+               {"kind":"run-failed","title":"x","at":"2026-10-13T08:00:00Z","target":{"runId":"r-1"}},
+               {"kind":"approval-pending","title":"Deploy","at":"2026-10-13T08:00:00Z","target":{"workflowExecutionId":"e-2"}}],
+             "upcoming":[],"recentMemory":[],"runContexts":{},"agents":[],"recentRuns":[]}
+            """);
+        _api.Respond("/workflow-executions/e-1", """
+            {"id":"e-1","workflowName":"Blog","stepExecutions":[
+              {"stepId":"s-1","order":0,"stepName":"Write","status":"completed","kind":"agent","outputDriveItemId":"d-1"},
+              {"stepId":"s-2","order":1,"stepName":"Approve","status":"awaiting-approval","kind":"approval","outputDriveItemId":null,
+               "approval":{"instructions":"Check the tone","approverRole":"member","onTimeout":"reject","documentDriveItemId":"d-1"}}]}
+            """);
+        _api.Respond("/workflow-executions/e-2", """
+            {"id":"e-2","workflowName":"Deploy","stepExecutions":[
+              {"stepId":"s-9","order":0,"stepName":"Ship","status":"awaiting-approval","kind":"agent","pendingToolApprovalId":"t-1",
+               "toolApprovals":[{"id":"t-1","summary":"Bash: git push origin main","rule":"git push","approverRole":"admin","onTimeout":"deny","status":"pending"}]}]}
+            """);
+
+        Assert.Equal(0, await ApprovalCommands.ListAsync(_client, [], json: false));
+        Assert.Equal([$"/api/cockpit/now?workspaceId={WorkspaceId}", "/api/workflow-executions/e-1", "/api/workflow-executions/e-2"], _api.Requests);
+    }
+
+    [Fact]
+    public async Task Queue_show_reads_the_agent_of_the_session()
+    {
+        _api.Respond("/task-queue", """
+            {"agentId":"agent-1","state":"paused","pauseReason":"blocker","pausedAt":"2026-10-13T08:00:00Z",
+             "current":{"id":"i-0","taskId":"t-0","taskTitle":"Login","cli":"claude","commit":true,"ptySessionId":"task-1","startedAt":"2026-10-13T07:00:00Z"},
+             "items":[{"id":"i-1","taskId":"t-1","taskTitle":"Signup","cli":"codex","commit":false,"addedAt":"2026-10-13T07:00:00Z"}],"supported":true}
+            """);
+
+        Assert.Equal(0, await QueueCommands.ShowAsync(_client, [], json: false));
+        Assert.Equal("/api/agents/agent-1/task-queue", Assert.Single(_api.Requests));
+    }
+
+    [Fact]
+    public async Task Outgoing_show_reads_the_given_agent()
+    {
+        _api.Respond("/outgoing", """
+            {"agentId":"agent-2","agentName":"vps","online":true,"canPush":true,"branch":"main","remote":"origin","remoteBranch":"main",
+             "hasUpstream":true,"head":"abc","ahead":1,"behind":0,"error":null,"updatedAt":"2026-10-13T08:00:00Z",
+             "commits":[{"sha":"abc","subject":"Fix","review":{"id":"rv-1","status":"validated","title":"Fix login"}}],
+             "commitsTruncated":false,"queueIdle":true,"ready":true}
+            """);
+
+        Assert.Equal(0, await OutgoingCommands.ShowAsync(_client, ["--agent", "agent-2"], json: false));
+        Assert.Equal("/api/agents/agent-2/outgoing", Assert.Single(_api.Requests));
+    }
+
+    [Fact]
+    public async Task Secret_list_reads_the_names_of_the_workspace()
+    {
+        _api.Respond("/secrets", """
+            [{"name":"GSC_KEY","createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z","lastUsedAt":null,
+              "usedBy":[{"kind":"workflow","id":"wf-1","name":"SEO"}]}]
+            """);
+
+        Assert.Equal(0, await SecretCommands.ListAsync(_client, json: false));
+        Assert.Equal($"/api/workspaces/{WorkspaceId}/secrets", Assert.Single(_api.Requests));
+    }
+
+    [Fact]
+    public void Task_description_html_becomes_plain_text()
+    {
+        Assert.Equal("First line\nSecond & last", QueueCommands.HtmlToText("<p>First <b>line</b></p><p>Second &amp; last</p>"));
+    }
+
     [Fact]
     public async Task A_refusal_points_to_whoami()
     {
@@ -159,68 +314,5 @@ public sealed class CliReadCommandsTests : IDisposable
 
         Assert.Contains("not allowed with a run token", error.Message);
         Assert.Contains("sidehub-cli whoami", error.Message);
-    }
-
-    /// <summary>
-    /// An API on the loopback interface: answers the longest path suffix registered with <see cref="Respond"/> (the
-    /// path without its query string) and records each request.
-    /// </summary>
-    private sealed class FakeApi : IDisposable
-    {
-        private readonly HttpListener _listener = new();
-        private readonly ConcurrentDictionary<string, (string Body, HttpStatusCode Status)> _responses = new();
-        private readonly ConcurrentQueue<string> _requests = new();
-        private readonly ConcurrentQueue<string> _methods = new();
-
-        public string Url { get; }
-        public IReadOnlyList<string> Requests => _requests.ToList();
-        public IReadOnlyList<string> Methods => _methods.ToList();
-
-        public FakeApi()
-        {
-            var port = FreePort();
-            Url = $"http://127.0.0.1:{port}/";
-            _listener.Prefixes.Add(Url);
-            _listener.Start();
-            _ = ServeAsync();
-        }
-
-        public void Respond(string pathSuffix, string body, HttpStatusCode status = HttpStatusCode.OK) =>
-            _responses[pathSuffix] = (body, status);
-
-        private async Task ServeAsync()
-        {
-            while (_listener.IsListening)
-            {
-                HttpListenerContext context;
-                try { context = await _listener.GetContextAsync(); }
-                catch (Exception) { return; }
-
-                var pathAndQuery = context.Request.Url!.PathAndQuery;
-                var path = context.Request.Url.AbsolutePath;
-                _requests.Enqueue(pathAndQuery);
-                _methods.Enqueue($"{context.Request.HttpMethod} {path}");
-
-                var match = _responses.Keys.Where(path.EndsWith).OrderByDescending(k => k.Length).FirstOrDefault();
-                var (body, status) = match is null ? ("""{"error":"not found"}""", HttpStatusCode.NotFound) : _responses[match];
-                context.Response.StatusCode = (int)status;
-                if (body.Length > 0)
-                {
-                    context.Response.ContentType = "application/json";
-                    var bytes = Encoding.UTF8.GetBytes(body);
-                    await context.Response.OutputStream.WriteAsync(bytes);
-                }
-                context.Response.Close();
-            }
-        }
-
-        private static int FreePort()
-        {
-            using var socket = new TcpListener(IPAddress.Loopback, 0);
-            socket.Start();
-            return ((IPEndPoint)socket.LocalEndpoint).Port;
-        }
-
-        public void Dispose() => _listener.Close();
     }
 }

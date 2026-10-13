@@ -54,7 +54,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
     Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|agy|copilot|gemini> [args...]");
     Console.Error.WriteLine("       sidehub-cli whoami [--json]");
-    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, scheduler, workflow");
+    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, scheduler, workflow, review, approval, queue, outgoing, secret");
     Console.Error.WriteLine("  cockpit now");
     Console.Error.WriteLine("  run list [--status <status>] [--runtime <cli>] [--agent <id>] [--since <24h|7d|date>] [--until <date>] [--limit N] [--page N]");
     Console.Error.WriteLine("  run get <runId>");
@@ -121,8 +121,34 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow execution-get <executionId>");
     Console.Error.WriteLine("  workflow execution-runs <executionId>");
     Console.Error.WriteLine("  workflow export <wfId> [--output <file>]");
+    Console.Error.WriteLine("  workflow import --file <path> [--name \"...\"]");
+    Console.Error.WriteLine("  workflow duplicate <wfId> [--name \"...\"]");
+    Console.Error.WriteLine("  workflow cancel <executionId> [--reason \"...\"]");
+    Console.Error.WriteLine("  workflow retry <executionId> <stepId>");
+    Console.Error.WriteLine("  workflow step-override <executionId> <stepId> complete --output-id <driveItemId>");
+    Console.Error.WriteLine("  workflow step-override <executionId> <stepId> fail [--reason \"...\"]");
+    Console.Error.WriteLine("  workflow validate-step <executionId> <stepId>");
     Console.Error.WriteLine("  workflow step-complete --output-id <guid> [--value key=value]*");
     Console.Error.WriteLine("  workflow step-fail \"<reason>\"");
+    Console.Error.WriteLine("  review list [--status pending|validated|fix-requested|dismissed] [--task <id>] [--run <id>] [--limit N]");
+    Console.Error.WriteLine("  review get <reviewId>");
+    Console.Error.WriteLine("  review diff <reviewId> [--round N] [--path <file>]");
+    Console.Error.WriteLine("  review decide <reviewId> validate|dismiss [--comment \"...\"]");
+    Console.Error.WriteLine("  review decide <reviewId> request-fix --comment \"...\"");
+    Console.Error.WriteLine("  review peer <reviewId> [--round N] --cli claude|codex [--model <model>]");
+    Console.Error.WriteLine("  approval list");
+    Console.Error.WriteLine("  approval approve <executionId> <stepId> [--comment \"...\"]");
+    Console.Error.WriteLine("  approval reject <executionId> <stepId> [--comment \"...\"]");
+    Console.Error.WriteLine("  approval request-changes <executionId> <stepId> --comment \"...\"");
+    Console.Error.WriteLine("  approval tool approve|deny <toolApprovalId> [--comment \"...\"]");
+    Console.Error.WriteLine("  queue show [--agent <id>]");
+    Console.Error.WriteLine("  queue add <taskId>... [--cli claude|codex|agy|copilot|gemini] [--prompt \"...\"] [--no-commit] [--agent <id>]");
+    Console.Error.WriteLine("  queue remove <itemId> [--agent <id>]");
+    Console.Error.WriteLine("  queue move <itemId> --to <index> [--agent <id>]");
+    Console.Error.WriteLine("  queue pause|resume|skip [--agent <id>]");
+    Console.Error.WriteLine("  outgoing show [--agent <id>]");
+    Console.Error.WriteLine("  outgoing push [--agent <id>]");
+    Console.Error.WriteLine("  secret list");
     return 1;
 }
 
@@ -139,7 +165,10 @@ var writeActions = new HashSet<string>
     "move", "mkdir", "upload", "restore",
     "add-step", "update-step", "delete-step", "reorder-steps", "run",
     "status", "drive-link-add", "drive-link-remove", "resolve-blocker",
-    "exec"
+    "exec",
+    "import", "duplicate", "cancel", "retry", "step-override", "validate-step",
+    "decide", "peer", "approve", "reject", "request-changes", "tool",
+    "add", "remove", "skip", "push"
 };
 if (pipelineMode == "plan" && writeActions.Contains(action))
 {
@@ -222,6 +251,32 @@ try
         ("workflow", "export") => await WorkflowCommands.ExportAsync(client, restArgs, jsonOutput),
         ("workflow", "step-complete") => await WorkflowCommands.StepCompleteAsync(client, restArgs, jsonOutput),
         ("workflow", "step-fail") => await WorkflowCommands.StepFailAsync(client, restArgs, jsonOutput),
+        ("workflow", "import") => await WorkflowCommands.ImportAsync(client, restArgs, jsonOutput),
+        ("workflow", "duplicate") => await WorkflowCommands.DuplicateAsync(client, restArgs, jsonOutput),
+        ("workflow", "cancel") => await WorkflowCommands.CancelAsync(client, restArgs, jsonOutput),
+        ("workflow", "retry") => await WorkflowCommands.RetryAsync(client, restArgs, jsonOutput),
+        ("workflow", "step-override") => await WorkflowCommands.StepOverrideAsync(client, restArgs, jsonOutput),
+        ("workflow", "validate-step") => await WorkflowCommands.ValidateStepAsync(client, restArgs, jsonOutput),
+        ("review", "list") => await ReviewCommands.ListAsync(client, restArgs, jsonOutput),
+        ("review", "get") => await ReviewCommands.GetAsync(client, restArgs, jsonOutput),
+        ("review", "diff") => await ReviewCommands.DiffAsync(client, restArgs, jsonOutput),
+        ("review", "decide") => await ReviewCommands.DecideAsync(client, restArgs, jsonOutput),
+        ("review", "peer") => await ReviewCommands.PeerAsync(client, restArgs, jsonOutput),
+        ("approval", "list") => await ApprovalCommands.ListAsync(client, restArgs, jsonOutput),
+        ("approval", "approve") => await ApprovalCommands.ApproveAsync(client, restArgs, jsonOutput),
+        ("approval", "reject") => await ApprovalCommands.RejectAsync(client, restArgs, jsonOutput),
+        ("approval", "request-changes") => await ApprovalCommands.RequestChangesAsync(client, restArgs, jsonOutput),
+        ("approval", "tool") => await ApprovalCommands.ToolAsync(client, restArgs, jsonOutput),
+        ("queue", "show") => await QueueCommands.ShowAsync(client, restArgs, jsonOutput),
+        ("queue", "add") => await QueueCommands.AddAsync(client, restArgs, jsonOutput),
+        ("queue", "remove") => await QueueCommands.RemoveAsync(client, restArgs, jsonOutput),
+        ("queue", "move") => await QueueCommands.MoveAsync(client, restArgs, jsonOutput),
+        ("queue", "pause") => await QueueCommands.PauseAsync(client, restArgs, jsonOutput),
+        ("queue", "resume") => await QueueCommands.ResumeAsync(client, restArgs, jsonOutput),
+        ("queue", "skip") => await QueueCommands.SkipAsync(client, restArgs, jsonOutput),
+        ("outgoing", "show") => await OutgoingCommands.ShowAsync(client, restArgs, jsonOutput),
+        ("outgoing", "push") => await OutgoingCommands.PushAsync(client, restArgs, jsonOutput),
+        ("secret", "list") => await SecretCommands.ListAsync(client, jsonOutput),
         _ => Error($"Unknown command: {domain} {action}")
     };
 }

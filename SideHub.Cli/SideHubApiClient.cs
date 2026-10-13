@@ -706,6 +706,147 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    /// <summary>Creates a workflow in the workspace from a <c>sidehub.workflow/v1</c> document (what export writes).</summary>
+    public async Task<JsonElement> ImportWorkflowAsync(JsonElement document, string? name)
+    {
+        var body = new Dictionary<string, object?> { ["document"] = document };
+        if (name is not null) body["name"] = name;
+        var resp = await _http.PostAsJsonAsync($"api/workspaces/{_workspaceId}/workflows/import", body);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> DuplicateWorkflowAsync(string workflowId, string name)
+    {
+        var resp = await _http.PostAsJsonAsync($"api/workflows/{workflowId}/duplicate", new { name });
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    // --- Workflow execution control (people, or a terminal they opened) ---
+
+    public Task<JsonElement> CancelWorkflowExecutionAsync(string executionId, string? reason) =>
+        PostAsync($"api/workflow-executions/{executionId}/cancel", new { reason });
+
+    public Task<JsonElement> RetryWorkflowFromStepAsync(string executionId, string stepId) =>
+        PostAsync($"api/workflow-executions/{executionId}/steps/{stepId}/retry", new { });
+
+    public Task<JsonElement> ManualCompleteWorkflowStepAsync(string executionId, string stepId, string outputDriveItemId) =>
+        PostAsync($"api/workflow-executions/{executionId}/steps/{stepId}/manual-complete", new { outputDriveItemId });
+
+    public Task<JsonElement> ManualFailWorkflowStepAsync(string executionId, string stepId, string reason) =>
+        PostAsync($"api/workflow-executions/{executionId}/steps/{stepId}/manual-fail", new { reason });
+
+    public Task<JsonElement> ValidateWorkflowStepAsync(string executionId, string stepId) =>
+        PostAsync($"api/workflow-executions/{executionId}/steps/{stepId}/validate", new { });
+
+    /// <summary>Decides an approval step: <paramref name="decision"/> is <c>approve</c>, <c>reject</c> or <c>request-changes</c>.</summary>
+    public Task<JsonElement> DecideWorkflowStepAsync(string executionId, string stepId, string decision, string? comment) =>
+        PostAsync($"api/workflow-executions/{executionId}/steps/{stepId}/{decision}", new { comment });
+
+    /// <summary>Decides a tool call a step stopped for: <paramref name="decision"/> is <c>approve</c> or <c>deny</c>.</summary>
+    public Task<JsonElement> DecideToolApprovalAsync(string toolApprovalId, string decision, string? comment) =>
+        PostAsync($"api/tool-approvals/{toolApprovalId}/{decision}", new { comment });
+
+    // --- Work reviews ---
+
+    public record ReviewFilter(string? Status, string? TaskId, string? RunId, int? Take);
+
+    public async Task<JsonElement> GetReviewsAsync(ReviewFilter filter)
+    {
+        var query = new List<string>();
+        if (filter.Status is not null) query.Add($"status={Uri.EscapeDataString(filter.Status)}");
+        if (filter.TaskId is not null) query.Add($"taskId={Uri.EscapeDataString(filter.TaskId)}");
+        if (filter.RunId is not null) query.Add($"runId={Uri.EscapeDataString(filter.RunId)}");
+        if (filter.Take is { } take) query.Add($"take={take}");
+
+        var url = $"api/workspaces/{_workspaceId}/reviews" + (query.Count > 0 ? "?" + string.Join("&", query) : "");
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetReviewAsync(string reviewId)
+    {
+        var resp = await _http.GetAsync($"api/reviews/{reviewId}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>The diff of one round (or of one file of it), read live from the agent: plain text, never stored.</summary>
+    public async Task<string> GetReviewDiffAsync(string reviewId, int round, string? path)
+    {
+        var url = $"api/reviews/{reviewId}/diff?round={round}";
+        if (!string.IsNullOrEmpty(path)) url += $"&path={Uri.EscapeDataString(path)}";
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadAsStringAsync();
+    }
+
+    /// <summary><paramref name="action"/>: validate, dismiss or request-fix (the comment is then required).</summary>
+    public Task<JsonElement> DecideReviewAsync(string reviewId, string action, string? comment) =>
+        PostAsync($"api/reviews/{reviewId}/decision", new { action, comment });
+
+    public Task<JsonElement> RequestPeerReviewAsync(string reviewId, int round, string provider, string? model) =>
+        PostAsync($"api/reviews/{reviewId}/peer-reviews", new { round, provider, model });
+
+    // --- Agent task queue ---
+
+    public async Task<JsonElement> GetTaskQueueAsync(string agentId)
+    {
+        var resp = await _http.GetAsync($"api/agents/{agentId}/task-queue");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public Task<JsonElement> EnqueueTaskAsync(string agentId, string taskId, string cli, string prompt, bool commit) =>
+        PostAsync($"api/agents/{agentId}/task-queue/items", new { taskId, cli, prompt, commit });
+
+    public async Task<JsonElement> RemoveQueuedTaskAsync(string agentId, string itemId)
+    {
+        var resp = await _http.DeleteAsync($"api/agents/{agentId}/task-queue/items/{itemId}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> MoveQueuedTaskAsync(string agentId, string itemId, int index)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Patch, $"api/agents/{agentId}/task-queue/items/{itemId}/position")
+        {
+            Content = JsonContent.Create(new { index })
+        };
+        var resp = await _http.SendAsync(req);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary><paramref name="action"/>: pause, resume or skip.</summary>
+    public Task<JsonElement> ChangeTaskQueueAsync(string agentId, string action) =>
+        PostAsync($"api/agents/{agentId}/task-queue/{action}", null);
+
+    // --- Outgoing commits ---
+
+    public async Task<JsonElement> GetOutgoingCommitsAsync(string agentId)
+    {
+        var resp = await _http.GetAsync($"api/agents/{agentId}/outgoing");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>Pushes the agent's branch up to <paramref name="head"/>, the commit shown: the agent refuses if it moved since.</summary>
+    public Task<JsonElement> PushOutgoingCommitsAsync(string agentId, string head) =>
+        PostAsync($"api/agents/{agentId}/push", new { head });
+
+    // --- Workspace secrets ---
+
+    /// <summary>Names and usage of the workspace's secrets: the API never returns a value.</summary>
+    public async Task<JsonElement> GetSecretsAsync()
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/secrets");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     // --- Runs ---
 
     public record RunFilter(string? Status, string? Runtime, string? AgentId, DateTime? From, DateTime? To, int Page, int PageSize);
@@ -754,6 +895,15 @@ public class SideHubApiClient : IDisposable
         _ => throw new InvalidOperationException($"Unknown input kind: {input.Kind}")
     };
 
+    /// <summary>POSTs <paramref name="body"/> as JSON (none when null) and returns the answer; default when it is empty.</summary>
+    private async Task<JsonElement> PostAsync(string url, object? body)
+    {
+        var resp = body is null ? await _http.PostAsync(url, null) : await _http.PostAsJsonAsync(url, body);
+        await EnsureSuccessAsync(resp);
+        var content = await resp.Content.ReadAsStringAsync();
+        return string.IsNullOrWhiteSpace(content) ? default : JsonSerializer.Deserialize<JsonElement>(content);
+    }
+
     public void Dispose() => _http.Dispose();
 
     public static string Serialize(JsonElement element) =>
@@ -788,6 +938,6 @@ public class SideHubApiClient : IDisposable
             _ => serverMessage ?? $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}"
         };
 
-        throw new HttpRequestException(message);
+        throw new HttpRequestException(message, null, response.StatusCode);
     }
 }
