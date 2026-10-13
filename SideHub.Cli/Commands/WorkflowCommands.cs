@@ -404,6 +404,112 @@ public static class WorkflowCommands
         return 0;
     }
 
+    public static async Task<int> ExecutionsAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var wfId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        var limitArg = GetOption(args, "--limit");
+        var limit = 20;
+        if (string.IsNullOrEmpty(wfId) || (limitArg is not null && (!int.TryParse(limitArg, out limit) || limit < 1)))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow executions <wfId> [--limit N]");
+            return 1;
+        }
+
+        var result = await client.GetWorkflowExecutionsAsync(wfId, limit);
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        if (result.ValueKind != JsonValueKind.Array || result.GetArrayLength() == 0)
+        {
+            Console.WriteLine("No executions found.");
+            return 0;
+        }
+
+        Console.WriteLine($"{"ID",-38} {"STATUS",-18} {"TRIGGER",-10} {"STARTED",-22} {"COMPLETED",-22} {"STEPS"}");
+        Console.WriteLine(new string('-', 125));
+        foreach (var e in result.EnumerateArray())
+        {
+            var steps = e.TryGetProperty("stepExecutions", out var s) && s.ValueKind == JsonValueKind.Array
+                ? s.EnumerateArray().ToList() : [];
+            var done = steps.Count(step => Prop(step, "status") is "completed" or "skipped");
+            Console.WriteLine($"{Prop(e, "id"),-38} {Prop(e, "status"),-18} {Prop(e, "trigger"),-10} " +
+                $"{PropDate(e, "startedAt"),-22} {PropDate(e, "completedAt"),-22} {done}/{steps.Count}");
+            if (Prop(e, "errorMessage") is { } error)
+                Console.WriteLine($"  {Truncate(error.ReplaceLineEndings(" "), 120)}");
+        }
+        return 0;
+    }
+
+    public static async Task<int> ExecutionRunsAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var execId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        if (string.IsNullOrEmpty(execId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow execution-runs <executionId>");
+            return 1;
+        }
+
+        var runs = await client.GetWorkflowExecutionRunsAsync(execId);
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(runs));
+            return 0;
+        }
+
+        if (runs.ValueKind != JsonValueKind.Array || runs.GetArrayLength() == 0)
+        {
+            Console.WriteLine("No runs for this execution yet.");
+            return 0;
+        }
+
+        // Runs only carry their step id: name them from the execution.
+        var execution = await client.GetWorkflowExecutionAsync(execId);
+        var stepNames = execution.TryGetProperty("stepExecutions", out var steps) && steps.ValueKind == JsonValueKind.Array
+            ? steps.EnumerateArray()
+                .Where(step => Prop(step, "stepId") is not null)
+                .ToDictionary(step => Prop(step, "stepId")!, step => Prop(step, "stepName") ?? "")
+            : [];
+
+        Console.WriteLine($"{"STEP",-30} {"TRY",-4} {"RUN",-38} {"STATUS",-10} {"END REASON",-17} {"CLI",-8} {"STARTED"}");
+        Console.WriteLine(new string('-', 125));
+        foreach (var run in runs.EnumerateArray())
+        {
+            var step = Prop(run, "stepId") is { } stepId && stepNames.TryGetValue(stepId, out var name) ? name : "-";
+            var attempt = run.TryGetProperty("attempt", out var a) && a.ValueKind == JsonValueKind.Number ? a.GetInt32() : 1;
+            Console.WriteLine($"{Truncate(step, 30),-30} {attempt,-4} {Prop(run, "id"),-38} {Prop(run, "status"),-10} " +
+                $"{Prop(run, "endReason") ?? "-",-17} {Prop(run, "runtime"),-8} {PropDate(run, "startedAt")}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("Details of a run (exit code, last output, usage): sidehub-cli run get <runId>");
+        return 0;
+    }
+
+    public static async Task<int> ExportAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var wfId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        if (string.IsNullOrEmpty(wfId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli workflow export <wfId> [--output <file>]");
+            return 1;
+        }
+
+        var document = SideHubApiClient.Serialize(await client.ExportWorkflowAsync(wfId));
+        if (GetOption(args, "--output") is not { } output)
+        {
+            Console.WriteLine(document);
+            return 0;
+        }
+
+        await File.WriteAllTextAsync(output, document + Environment.NewLine);
+        Console.WriteLine(json ? $"{{\"output\":{JsonSerializer.Serialize(Path.GetFullPath(output))}}}" : $"Exported to {Path.GetFullPath(output)}");
+        return 0;
+    }
+
     private static List<SideHubApiClient.StepInputArg> CollectInputs(string[] args)
     {
         var inputs = new List<SideHubApiClient.StepInputArg>();

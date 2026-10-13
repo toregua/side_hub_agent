@@ -47,6 +47,7 @@ Environment variables are already configured in your session.
 - `sidehub-cli drive create --title "..." --content "..."`: Create a page
 - `sidehub-cli drive update <pageId> --title "..." --content "..."`: Update a page
 - `sidehub-cli drive upload <localPath> [--parent <id>] [--name "..."] [--markdown]`: Upload a local file (screenshot, chart, PDF...; 20 MB max) and print its id. With `--markdown`, prints only the Markdown line that shows the image in a page.
+- `sidehub-cli drive archived`: List archived (deleted) pages and folders; `sidehub-cli drive restore <id>` brings one back
 
 #### Images in a page
 
@@ -77,6 +78,14 @@ any other reference appears as its caption, so write a caption that still makes 
 Read-only from this terminal: Side Hub refuses to create, update, delete, pause, resume or trigger a scheduler
 with a terminal or run token, so a prompt cannot schedule unattended sessions on its own. When a scheduler is
 needed, give the user its title, workflow or prompt, agent and cron (UTC) so they create it on the Schedulers page.
+
+### Runs and what needs attention
+- `sidehub-cli cockpit now`: What waits for someone (approvals, works to review, failed runs, blocked tasks), the next scheduled runs, the agents and the latest runs, with the ids to pass to the commands below
+- `sidehub-cli run list [--status failed] [--runtime <cli>] [--agent <id>] [--since 24h|7d|<date>] [--limit N]`: Runs SideHub launched on agents (workflow steps, schedulers...), newest first
+- `sidehub-cli run get <runId>`: How a run ended: status, end reason, exit code, last terminal lines, token usage
+- `sidehub-cli workflow executions <wfId>`: Executions of a workflow; `workflow execution-get <executionId>` shows its steps, `workflow execution-runs <executionId>` the runs of each step (retries included)
+- `sidehub-cli workflow export <wfId> [--output <file>]`: The workflow as a JSON document the Workflows page can import
+- `sidehub-cli whoami`: Who your SideHub token acts for: the agent, a run, or the user who opened this terminal. Run it when a command is refused (HTTP 403)
 
 ### SQLite databases (shared structured memory)
 

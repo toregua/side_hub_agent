@@ -811,6 +811,52 @@ public static class DriveCommands
         return 0;
     }
 
+    public static async Task<int> ArchivedAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var result = await client.GetArchivedDriveItemsAsync();
+
+        if (json)
+        {
+            Console.WriteLine(SideHubApiClient.Serialize(result));
+            return 0;
+        }
+
+        if (result.ValueKind != JsonValueKind.Array || result.GetArrayLength() == 0)
+        {
+            Console.WriteLine("No archived items.");
+            return 0;
+        }
+
+        Console.WriteLine($"{"ID",-38} {"TYPE",-12} {"TITLE",-40} {"ARCHIVED"}");
+        Console.WriteLine(new string('-', 110));
+        foreach (var item in result.EnumerateArray())
+        {
+            var id = item.GetProperty("id").GetString() ?? "";
+            var type = item.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
+            var title = item.TryGetProperty("title", out var ti) ? ti.GetString() ?? "" : "";
+            var archived = item.TryGetProperty("archivedAt", out var a) ? a.GetString()?[..10] ?? "" : "";
+            Console.WriteLine($"{id,-38} {type,-12} {Truncate(title, 40),-40} {archived}");
+        }
+        Console.WriteLine();
+        Console.WriteLine("Bring one back with: sidehub-cli drive restore <id>");
+        return 0;
+    }
+
+    public static async Task<int> RestoreAsync(SideHubApiClient client, string[] args, bool json)
+    {
+        var itemId = args.FirstOrDefault(a => !a.StartsWith("--"));
+        if (string.IsNullOrEmpty(itemId))
+        {
+            Console.Error.WriteLine("Usage: sidehub-cli drive restore <id>");
+            return 1;
+        }
+
+        await client.RestoreDriveItemAsync(itemId);
+        if (json) Console.WriteLine($"{{\"restored\":\"{itemId}\"}}");
+        else Console.WriteLine($"Restored drive item: {itemId}");
+        return 0;
+    }
+
     public static async Task<int> UsageAsync(SideHubApiClient client, string[] args, bool json)
     {
         var result = await client.GetStorageUsageAsync();

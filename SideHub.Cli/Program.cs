@@ -47,11 +47,17 @@ if (!agentToken.StartsWith("sh_agent_") && !agentToken.StartsWith("sh_run_") && 
     return 1;
 }
 
-if (args.Length < 2)
+// `whoami` is the one command without an action.
+var isWhoami = args.Length > 0 && args[0] == "whoami";
+if (args.Length < 2 && !isWhoami)
 {
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
-    Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|gemini|copilot> [args...]");
-    Console.Error.WriteLine("Domains: drive, sqlite, table, task, repository, scheduler, workflow");
+    Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|agy|copilot|gemini> [args...]");
+    Console.Error.WriteLine("       sidehub-cli whoami [--json]");
+    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, scheduler, workflow");
+    Console.Error.WriteLine("  cockpit now");
+    Console.Error.WriteLine("  run list [--status <status>] [--runtime <cli>] [--agent <id>] [--since <24h|7d|date>] [--until <date>] [--limit N] [--page N]");
+    Console.Error.WriteLine("  run get <runId>");
     Console.Error.WriteLine("  drive list [--parent <id>]");
     Console.Error.WriteLine("  drive read <pageId>");
     Console.Error.WriteLine("  drive download <pageId> [--output <path>] [--stdout] [--url-only]");
@@ -63,6 +69,8 @@ if (args.Length < 2)
     Console.Error.WriteLine("  drive upload <localPath> [--parent <id>] [--name \"...\"] [--markdown]");
     Console.Error.WriteLine("  drive recent [--limit N]");
     Console.Error.WriteLine("  drive usage");
+    Console.Error.WriteLine("  drive archived");
+    Console.Error.WriteLine("  drive restore <id>");
     Console.Error.WriteLine("  drive search <query>");
     Console.Error.WriteLine("  drive create-json --title \"file.json\" [--content '<json>' | --file <path>] [--parent <id>]");
     Console.Error.WriteLine("  drive query <id> --path \"$.foo.bar\" [--raw]");
@@ -109,15 +117,18 @@ if (args.Length < 2)
     Console.Error.WriteLine("  workflow delete-step <wfId> <stepId> [--yes]");
     Console.Error.WriteLine("  workflow reorder-steps <wfId> <stepId1> <stepId2> [...]");
     Console.Error.WriteLine("  workflow run <wfId> [--agent <id>] [--provider <p>] [--input key=value]*");
+    Console.Error.WriteLine("  workflow executions <wfId> [--limit N]");
     Console.Error.WriteLine("  workflow execution-get <executionId>");
+    Console.Error.WriteLine("  workflow execution-runs <executionId>");
+    Console.Error.WriteLine("  workflow export <wfId> [--output <file>]");
     Console.Error.WriteLine("  workflow step-complete --output-id <guid> [--value key=value]*");
     Console.Error.WriteLine("  workflow step-fail \"<reason>\"");
     return 1;
 }
 
 var domain = args[0].ToLowerInvariant();
-var action = args[1].ToLowerInvariant();
-var restArgs = args[2..];
+var action = isWhoami ? "" : args[1].ToLowerInvariant();
+var restArgs = isWhoami ? args[1..] : args[2..];
 var jsonOutput = restArgs.Contains("--json");
 
 // Defense-in-depth: block write commands in plan mode
@@ -125,7 +136,7 @@ var writeActions = new HashSet<string>
 {
     "create", "update", "comment", "blocker", "done", "delete", "pause", "resume", "trigger",
     "append-row", "set-cell", "delete-row", "add-column",
-    "move", "mkdir", "upload",
+    "move", "mkdir", "upload", "restore",
     "add-step", "update-step", "delete-step", "reorder-steps", "run",
     "status", "drive-link-add", "drive-link-remove", "resolve-blocker",
     "exec"
@@ -142,6 +153,10 @@ try
 {
     return (domain, action) switch
     {
+        ("whoami", "") => await CockpitCommands.WhoamiAsync(client, jsonOutput),
+        ("cockpit", "now") => await CockpitCommands.NowAsync(client, jsonOutput),
+        ("run", "list") => await RunCommands.ListAsync(client, restArgs, jsonOutput),
+        ("run", "get") => await RunCommands.GetAsync(client, restArgs, jsonOutput),
         ("drive", "list") => await DriveCommands.ListAsync(client, restArgs, jsonOutput),
         ("drive", "read") => await DriveCommands.ReadAsync(client, restArgs, jsonOutput),
         ("drive", "download") => await DriveCommands.DownloadAsync(client, restArgs, jsonOutput),
@@ -153,6 +168,8 @@ try
         ("drive", "upload") => await DriveCommands.UploadAsync(client, restArgs, jsonOutput),
         ("drive", "recent") => await DriveCommands.RecentAsync(client, restArgs, jsonOutput),
         ("drive", "usage") => await DriveCommands.UsageAsync(client, restArgs, jsonOutput),
+        ("drive", "archived") => await DriveCommands.ArchivedAsync(client, restArgs, jsonOutput),
+        ("drive", "restore") => await DriveCommands.RestoreAsync(client, restArgs, jsonOutput),
         ("drive", "search") => await DriveCommands.SearchAsync(client, restArgs, jsonOutput),
         ("drive", "create-json") => await DriveCommands.CreateJsonAsync(client, restArgs, jsonOutput),
         ("drive", "query") => await DriveCommands.QueryAsync(client, restArgs, jsonOutput),
@@ -199,7 +216,10 @@ try
         ("workflow", "delete-step") => await WorkflowCommands.DeleteStepAsync(client, restArgs, jsonOutput),
         ("workflow", "reorder-steps") => await WorkflowCommands.ReorderStepsAsync(client, restArgs, jsonOutput),
         ("workflow", "run") => await WorkflowCommands.RunAsync(client, restArgs, jsonOutput),
+        ("workflow", "executions") => await WorkflowCommands.ExecutionsAsync(client, restArgs, jsonOutput),
         ("workflow", "execution-get") => await WorkflowCommands.ExecutionGetAsync(client, restArgs, jsonOutput),
+        ("workflow", "execution-runs") => await WorkflowCommands.ExecutionRunsAsync(client, restArgs, jsonOutput),
+        ("workflow", "export") => await WorkflowCommands.ExportAsync(client, restArgs, jsonOutput),
         ("workflow", "step-complete") => await WorkflowCommands.StepCompleteAsync(client, restArgs, jsonOutput),
         ("workflow", "step-fail") => await WorkflowCommands.StepFailAsync(client, restArgs, jsonOutput),
         _ => Error($"Unknown command: {domain} {action}")

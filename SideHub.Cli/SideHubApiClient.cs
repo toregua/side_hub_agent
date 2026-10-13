@@ -197,6 +197,19 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    public async Task<JsonElement> GetArchivedDriveItemsAsync()
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/drive/archived");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task RestoreDriveItemAsync(string itemId)
+    {
+        var resp = await _http.PostAsync($"api/drive/{itemId}/restore", null);
+        await EnsureSuccessAsync(resp);
+    }
+
     public async Task<JsonElement> GetStorageUsageAsync()
     {
         var resp = await _http.GetAsync("api/drive/storage/usage");
@@ -670,6 +683,70 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    public async Task<JsonElement> GetWorkflowExecutionsAsync(string workflowId, int? limit)
+    {
+        var url = $"api/workflows/{workflowId}/executions";
+        if (limit is not null) url += $"?limit={limit.Value}";
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetWorkflowExecutionRunsAsync(string executionId)
+    {
+        var resp = await _http.GetAsync($"api/workflow-executions/{executionId}/runs");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> ExportWorkflowAsync(string workflowId)
+    {
+        var resp = await _http.GetAsync($"api/workflows/{workflowId}/export");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    // --- Runs ---
+
+    public record RunFilter(string? Status, string? Runtime, string? AgentId, DateTime? From, DateTime? To, int Page, int PageSize);
+
+    public async Task<JsonElement> GetRunsAsync(RunFilter filter)
+    {
+        var query = new List<string> { $"page={filter.Page}", $"pageSize={filter.PageSize}" };
+        if (filter.Status is not null) query.Add($"status={Uri.EscapeDataString(filter.Status)}");
+        if (filter.Runtime is not null) query.Add($"runtime={Uri.EscapeDataString(filter.Runtime)}");
+        if (filter.AgentId is not null) query.Add($"agentId={Uri.EscapeDataString(filter.AgentId)}");
+        if (filter.From is { } from) query.Add($"from={Uri.EscapeDataString(from.ToString("O"))}");
+        if (filter.To is { } to) query.Add($"to={Uri.EscapeDataString(to.ToString("O"))}");
+
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/runs?{string.Join("&", query)}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetRunAsync(string runId)
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/runs/{runId}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    // --- Cockpit and identity ---
+
+    public async Task<JsonElement> GetCockpitNowAsync()
+    {
+        var resp = await _http.GetAsync($"api/cockpit/now?workspaceId={_workspaceId}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetIdentityAsync()
+    {
+        var resp = await _http.GetAsync("api/agent/me");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     private static Dictionary<string, object?> SerializeInput(StepInputArg input) => input.Kind switch
     {
         "drive" => new() { ["type"] = "drive_document", ["driveItemId"] = input.Id },
@@ -705,7 +782,8 @@ public class SideHubApiClient : IDisposable
             401 => "Authentication failed (HTTP 401): the SideHub token of this session is expired or revoked"
                 + (serverMessage is null ? "" : $" ({serverMessage})")
                 + ". Do not retry sidehub-cli commands: they will all fail. Report the problem and stop using sidehub-cli.",
-            403 => serverMessage ?? "Access denied.",
+            // Most refusals depend on who the token speaks for (agent, run, or the user of a terminal they opened).
+            403 => (serverMessage ?? "Access denied.") + " To see who this session acts for: sidehub-cli whoami.",
             404 => serverMessage ?? "Resource not found.",
             _ => serverMessage ?? $"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}"
         };
