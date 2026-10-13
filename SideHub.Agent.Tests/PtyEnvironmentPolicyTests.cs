@@ -1,3 +1,5 @@
+using SideHub.Cli.Launch;
+
 namespace SideHub.Agent.Tests;
 
 public class PtyEnvironmentPolicyTests : IDisposable
@@ -68,6 +70,7 @@ public class PtyEnvironmentPolicyTests : IDisposable
     [InlineData("SIDEHUB_PTY_NOTIFY_SECRET")]
     [InlineData("SIDEHUB_WORKSPACE_ID")]
     [InlineData("SIDEHUB_QUESTION_COMMIT")]
+    [InlineData(LaunchCommand.LaunchedCliVariable)]
     [InlineData("SIDEHUB-BAD")]
     public void Sensitive_or_unknown_keys_are_rejected(string key)
     {

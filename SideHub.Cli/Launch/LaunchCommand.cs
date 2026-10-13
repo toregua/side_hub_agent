@@ -19,6 +19,10 @@ public static class LaunchCommand
     public const string PromptVariable = "SIDEHUB_PTY_PROMPT";
     private const string WrappersVariable = "SIDEHUB_CLI_WRAPPERS";
 
+    /// <summary>Set in the environment of the CLI a launch starts (to its name): a launch that finds it was started
+    /// by that CLI, or by a process of it (see <see cref="CliEnvironment"/>).</summary>
+    public const string LaunchedCliVariable = "SIDEHUB_LAUNCHED_CLI";
+
     public static int Run(string[] args)
     {
         if (!TryReadPrompt(ref args, out var prompt, out var problem))
@@ -32,6 +36,9 @@ public static class LaunchCommand
             return 2;
         }
         var cli = args[0];
+        // Started by the CLI of this terminal (a sub-agent, a review it asks another CLI for): the terminal's CLI
+        // stays the one SideHub follows, this one is neither announced nor reports its state.
+        var nested = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(LaunchedCliVariable));
 
         var target = RealCli.Resolve(cli, Environment.GetEnvironmentVariable("PATH"), WrapperDirectories());
         if (target is null)
@@ -48,7 +55,7 @@ public static class LaunchCommand
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.RunIdVariable),
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable));
         var declinedMcp = unattended ? DeclinedProjectMcpServers() : null;
-        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, StateReporting(cli), McpSetup(cli, warnings),
+        var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, nested ? null : StateReporting(cli), McpSetup(cli, warnings),
             ToolPolicy(), declinedMcp);
         if (plan.Refusal is { } refusal)
         {
@@ -67,19 +74,18 @@ public static class LaunchCommand
         if (plan.AntigravityHooks && HookProgram() is { } hookProgram)
             InstallAntigravityHooks(hookProgram);
 
-        if (plan.SessionId is { } sessionId)
+        if (plan.SessionId is { } sessionId && !nested)
             AgentNotifier.SessionStarted(cli, sessionId);
 
         var startInfo = new ProcessStartInfo(target.FileName) { UseShellExecute = false };
         foreach (var arg in target.LeadingArguments.Concat(plan.Arguments))
             startInfo.ArgumentList.Add(arg);
-        // The CLI must not see the prompt twice (some read their environment into sub-processes).
-        startInfo.Environment.Remove(PromptVariable);
+        CliEnvironment(startInfo.Environment, cli, nested);
 
         var geminiSettingsDirectory = plan.GeminiSystemSettings is { } settings ? WriteGeminiSettings(settings, startInfo) : null;
         try
         {
-            return Start(cli, startInfo, target, plan);
+            return Start(cli, startInfo, target, plan, announce: !nested);
         }
         finally
         {
@@ -88,7 +94,7 @@ public static class LaunchCommand
         }
     }
 
-    private static int Start(string cli, ProcessStartInfo startInfo, RealCli.Target target, CliLaunchPlan plan)
+    private static int Start(string cli, ProcessStartInfo startInfo, RealCli.Target target, CliLaunchPlan plan, bool announce)
     {
         // Ctrl+C reaches every process of the terminal: it is the CLI's to handle, the launcher waits.
         using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, context => context.Cancel = true);
@@ -106,13 +112,33 @@ public static class LaunchCommand
             return 126;
         }
         using var _ = process;
-        if (plan.ReportLaunch)
+        if (plan.ReportLaunch && announce)
             AgentNotifier.Launched(cli, Directory.GetCurrentDirectory(), process.Id);
         process.WaitForExit();
         // The session's files are complete: the agent reports its final usage.
-        if (plan.SessionId is not null || plan.ReportLaunch)
+        if (announce && (plan.SessionId is not null || plan.ReportLaunch))
             AgentNotifier.Exited(cli, plan.SessionId);
         return process.ExitCode;
+    }
+
+    /// <summary>
+    /// The environment the CLI starts with. The terminal's CLI is marked (<see cref="LaunchedCliVariable"/>): whatever it
+    /// launches in turn knows it is nested. A nested CLI loses the way to the agent, so nothing it runs (agy's global
+    /// hooks, a CLI it launches itself) speaks for the terminal's CLI: its session, state, usage and exit stay that one's.
+    /// </summary>
+    public static void CliEnvironment(IDictionary<string, string?> environment, string cli, bool nested)
+    {
+        // The CLI must not see the prompt twice (some read their environment into sub-processes).
+        environment.Remove(PromptVariable);
+        if (nested)
+        {
+            environment.Remove(AgentNotifier.ChannelVariable);
+            environment.Remove(AgentNotifier.SecretVariable);
+        }
+        else
+        {
+            environment[LaunchedCliVariable] = cli;
+        }
     }
 
     /// <summary>Best effort: without it, claude asks about each of them and someone answers in the terminal.</summary>

@@ -301,6 +301,42 @@ public class CliLaunchTests : IDisposable
         Assert.NotNull(problem);
     }
 
+    [Fact]
+    public void The_terminal_cli_is_marked_and_keeps_its_way_to_the_agent()
+    {
+        var env = new Dictionary<string, string?>
+        {
+            [LaunchCommand.PromptVariable] = "do it",
+            [AgentNotifier.ChannelVariable] = "/tmp/fifo",
+            [AgentNotifier.SecretVariable] = "s3cret",
+        };
+
+        LaunchCommand.CliEnvironment(env, "claude", nested: false);
+
+        Assert.False(env.ContainsKey(LaunchCommand.PromptVariable));
+        Assert.Equal("claude", env[LaunchCommand.LaunchedCliVariable]);
+        Assert.Equal("/tmp/fifo", env[AgentNotifier.ChannelVariable]);
+        Assert.Equal("s3cret", env[AgentNotifier.SecretVariable]);
+    }
+
+    [Fact]
+    public void A_cli_started_by_the_terminal_cli_cannot_speak_for_it()
+    {
+        // e.g. the run's claude runs `codex exec`: codex's session, state and exit must not replace claude's.
+        var env = new Dictionary<string, string?>
+        {
+            [LaunchCommand.LaunchedCliVariable] = "claude",
+            [AgentNotifier.ChannelVariable] = "/tmp/fifo",
+            [AgentNotifier.SecretVariable] = "s3cret",
+        };
+
+        LaunchCommand.CliEnvironment(env, "codex", nested: true);
+
+        Assert.False(env.ContainsKey(AgentNotifier.ChannelVariable));
+        Assert.False(env.ContainsKey(AgentNotifier.SecretVariable));
+        Assert.Equal("claude", env[LaunchCommand.LaunchedCliVariable]);
+    }
+
     private string Executable(string folder, string name)
     {
         var dir = Directory.CreateDirectory(Path.Combine(_dir, folder)).FullName;
