@@ -54,8 +54,10 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
     Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|agy|copilot|gemini> [args...]");
     Console.Error.WriteLine("       sidehub-cli whoami [--json]");
-    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, scheduler, workflow, review, approval, queue, outgoing, secret");
+    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, scheduler, workflow, review, approval, queue, outgoing, secret, mcp");
     Console.Error.WriteLine("  cockpit now");
+    Console.Error.WriteLine("  cockpit usage [--since <30d|date>] [--until <date>] [--by day|workspace|repository|agent|model|user|origin] [--split origin|workspace|provider] [--tz <IANA zone>]");
+    Console.Error.WriteLine("  cockpit reliability [--since <7d|date>] [--until <date>]");
     Console.Error.WriteLine("  run list [--status <status>] [--runtime <cli>] [--agent <id>] [--since <24h|7d|date>] [--until <date>] [--limit N] [--page N]");
     Console.Error.WriteLine("  run get <runId>");
     Console.Error.WriteLine("  drive list [--parent <id>]");
@@ -98,6 +100,9 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  task drive-link-remove <taskId> --item <driveItemId>");
     Console.Error.WriteLine("  task search --query \"...\" [--status <s>] [--type <t>]");
     Console.Error.WriteLine("  repository list");
+    Console.Error.WriteLine("  repository ask <repository id|name> \"question\" [--no-wait] [--timeout <minutes>]");
+    Console.Error.WriteLine("  repository question <questionId>");
+    Console.Error.WriteLine("  repository questions [--limit N]");
     Console.Error.WriteLine("  scheduler list [--active | --paused]");
     Console.Error.WriteLine("  scheduler get <id>");
     Console.Error.WriteLine("  scheduler create --title \"...\" (--prompt \"...\" | --workflow <id>) --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
@@ -130,6 +135,10 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow validate-step <executionId> <stepId>");
     Console.Error.WriteLine("  workflow step-complete --output-id <guid> [--value key=value]*");
     Console.Error.WriteLine("  workflow step-fail \"<reason>\"");
+    Console.Error.WriteLine("  workflow triggers <wfId>");
+    Console.Error.WriteLine("  workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--agent <id>] [--provider <p>] [--folder <id> [--subfolders] | --to-status completed|in-progress | --source-workflow <id> | --filter-file <json>] [--map param=path]*");
+    Console.Error.WriteLine("  workflow trigger-update <wfId> <triggerId> [--active true|false] [--agent <id>] [--provider <p>] [--folder <id> [--subfolders] | --to-status <s> | --source-workflow <id> | --filter-file <json>] [--map param=path]* [--clear-map]");
+    Console.Error.WriteLine("  workflow trigger-delete <wfId> <triggerId> [--yes]");
     Console.Error.WriteLine("  review list [--status pending|validated|fix-requested|dismissed] [--task <id>] [--run <id>] [--limit N]");
     Console.Error.WriteLine("  review get <reviewId>");
     Console.Error.WriteLine("  review diff <reviewId> [--round N] [--path <file>]");
@@ -149,6 +158,11 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  outgoing show [--agent <id>]");
     Console.Error.WriteLine("  outgoing push [--agent <id>]");
     Console.Error.WriteLine("  secret list");
+    Console.Error.WriteLine("  mcp list");
+    Console.Error.WriteLine("  mcp set <name> --command <cmd> [--arg <a>]* [--env KEY=VALUE]* [--secret NAME]* [--secrets-file dotenv|raw] [--description \"...\"]");
+    Console.Error.WriteLine("  mcp set <name> --url <url> [--header KEY=VALUE]* [--description \"...\"]");
+    Console.Error.WriteLine("  mcp set <name> --file <json>   (values reference workspace secrets as ${NAME}, never a literal secret)");
+    Console.Error.WriteLine("  mcp delete <name> [--yes]");
     return 1;
 }
 
@@ -168,7 +182,8 @@ var writeActions = new HashSet<string>
     "exec",
     "import", "duplicate", "cancel", "retry", "step-override", "validate-step",
     "decide", "peer", "approve", "reject", "request-changes", "tool",
-    "add", "remove", "skip", "push"
+    "add", "remove", "skip", "push",
+    "ask", "set", "trigger-add", "trigger-update", "trigger-delete"
 };
 if (pipelineMode == "plan" && writeActions.Contains(action))
 {
@@ -184,6 +199,8 @@ try
     {
         ("whoami", "") => await CockpitCommands.WhoamiAsync(client, jsonOutput),
         ("cockpit", "now") => await CockpitCommands.NowAsync(client, jsonOutput),
+        ("cockpit", "usage") => await CostCommands.UsageAsync(client, restArgs, jsonOutput),
+        ("cockpit", "reliability") => await CostCommands.ReliabilityAsync(client, restArgs, jsonOutput),
         ("run", "list") => await RunCommands.ListAsync(client, restArgs, jsonOutput),
         ("run", "get") => await RunCommands.GetAsync(client, restArgs, jsonOutput),
         ("drive", "list") => await DriveCommands.ListAsync(client, restArgs, jsonOutput),
@@ -226,6 +243,9 @@ try
         ("task", "drive-link-remove") => await TaskCommands.DriveLinkRemoveAsync(client, restArgs, jsonOutput),
         ("task", "search") => await TaskCommands.SearchAsync(client, restArgs, jsonOutput),
         ("repository", "list") => await RepositoryCommands.ListAsync(client, jsonOutput),
+        ("repository", "ask") => await RepositoryCommands.AskAsync(client, restArgs, jsonOutput),
+        ("repository", "question") => await RepositoryCommands.QuestionAsync(client, restArgs, jsonOutput),
+        ("repository", "questions") => await RepositoryCommands.QuestionsAsync(client, restArgs, jsonOutput),
         ("scheduler", "list") => await SchedulerCommands.ListAsync(client, restArgs, jsonOutput),
         ("scheduler", "get") => await SchedulerCommands.GetAsync(client, restArgs, jsonOutput),
         ("scheduler", "create") => await SchedulerCommands.CreateAsync(client, restArgs, jsonOutput),
@@ -257,6 +277,10 @@ try
         ("workflow", "retry") => await WorkflowCommands.RetryAsync(client, restArgs, jsonOutput),
         ("workflow", "step-override") => await WorkflowCommands.StepOverrideAsync(client, restArgs, jsonOutput),
         ("workflow", "validate-step") => await WorkflowCommands.ValidateStepAsync(client, restArgs, jsonOutput),
+        ("workflow", "triggers") => await WorkflowTriggerCommands.ListAsync(client, restArgs, jsonOutput),
+        ("workflow", "trigger-add") => await WorkflowTriggerCommands.AddAsync(client, restArgs, jsonOutput),
+        ("workflow", "trigger-update") => await WorkflowTriggerCommands.UpdateAsync(client, restArgs, jsonOutput),
+        ("workflow", "trigger-delete") => await WorkflowTriggerCommands.DeleteAsync(client, restArgs, jsonOutput),
         ("review", "list") => await ReviewCommands.ListAsync(client, restArgs, jsonOutput),
         ("review", "get") => await ReviewCommands.GetAsync(client, restArgs, jsonOutput),
         ("review", "diff") => await ReviewCommands.DiffAsync(client, restArgs, jsonOutput),
@@ -277,6 +301,9 @@ try
         ("outgoing", "show") => await OutgoingCommands.ShowAsync(client, restArgs, jsonOutput),
         ("outgoing", "push") => await OutgoingCommands.PushAsync(client, restArgs, jsonOutput),
         ("secret", "list") => await SecretCommands.ListAsync(client, jsonOutput),
+        ("mcp", "list") => await McpCommands.ListAsync(client, jsonOutput),
+        ("mcp", "set") => await McpCommands.SetAsync(client, restArgs, jsonOutput),
+        ("mcp", "delete") => await McpCommands.DeleteAsync(client, restArgs, jsonOutput),
         _ => Error($"Unknown command: {domain} {action}")
     };
 }

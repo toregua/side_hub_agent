@@ -316,6 +316,27 @@ public class SideHubApiClient : IDisposable
         return match.GetProperty("id").GetString()!;
     }
 
+    // --- Repository questions ---
+
+    /// <summary>202 <c>{ question, agentName }</c>: a read-only run of the repository's agent looks for the answer.</summary>
+    public Task<JsonElement> AskRepositoryQuestionAsync(string repository, string question) =>
+        PostAsync($"api/workspaces/{_workspaceId}/repository-questions", new { repository, question });
+
+    public async Task<JsonElement> GetRepositoryQuestionAsync(string questionId)
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/repository-questions/{questionId}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetRepositoryQuestionsAsync(int? limit)
+    {
+        var url = $"api/workspaces/{_workspaceId}/repository-questions" + (limit is { } l ? $"?limit={l}" : "");
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
     // --- Tasks ---
 
     public async Task<JsonElement> GetTasksAsync(string? status)
@@ -847,6 +868,62 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
+    // --- Workspace MCP servers ---
+
+    public async Task<JsonElement> GetMcpServersAsync()
+    {
+        var resp = await _http.GetAsync($"api/workspaces/{_workspaceId}/mcp-servers");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>Creates the server or replaces its definition (<paramref name="definition"/> is the request body as is).</summary>
+    public async Task<(JsonElement Server, bool Created)> SetMcpServerAsync(string name, object definition)
+    {
+        var resp = await _http.PutAsJsonAsync($"api/workspaces/{_workspaceId}/mcp-servers/{Uri.EscapeDataString(name)}", definition);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<JsonElement>(), resp.StatusCode == System.Net.HttpStatusCode.Created);
+    }
+
+    public async Task DeleteMcpServerAsync(string name)
+    {
+        var resp = await _http.DeleteAsync($"api/workspaces/{_workspaceId}/mcp-servers/{Uri.EscapeDataString(name)}");
+        await EnsureSuccessAsync(resp);
+    }
+
+    // --- Workflow event triggers ---
+
+    public async Task<JsonElement> GetWorkflowEventTriggersAsync(string workflowId)
+    {
+        var resp = await _http.GetAsync($"api/workflows/{workflowId}/event-triggers");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public Task<JsonElement> CreateWorkflowEventTriggerAsync(
+        string workflowId, string type, object? filter, string agentId, string? provider, IReadOnlyDictionary<string, string>? inputMapping) =>
+        PostAsync($"api/workflows/{workflowId}/event-triggers", new { type, filter, agentId, provider, inputMapping });
+
+    /// <summary>Null fields are kept; <paramref name="filter"/> and <paramref name="inputMapping"/> replace the whole value.</summary>
+    public async Task<JsonElement> UpdateWorkflowEventTriggerAsync(
+        string workflowId, string triggerId, object? filter, string? agentId, string? provider,
+        IReadOnlyDictionary<string, string>? inputMapping, bool? isActive)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Patch, $"api/workflows/{workflowId}/event-triggers/{triggerId}")
+        {
+            Content = JsonContent.Create(new { filter, agentId, provider, inputMapping, isActive })
+        };
+        var resp = await _http.SendAsync(req);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task DeleteWorkflowEventTriggerAsync(string workflowId, string triggerId)
+    {
+        var resp = await _http.DeleteAsync($"api/workflows/{workflowId}/event-triggers/{triggerId}");
+        await EnsureSuccessAsync(resp);
+    }
+
     // --- Runs ---
 
     public record RunFilter(string? Status, string? Runtime, string? AgentId, DateTime? From, DateTime? To, int Page, int PageSize);
@@ -880,6 +957,27 @@ public class SideHubApiClient : IDisposable
         await EnsureSuccessAsync(resp);
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
+
+    /// <summary>Usage and costs of this workspace's CLI sessions in <c>[from, to)</c>, grouped by <paramref name="groupBy"/>.</summary>
+    public async Task<JsonElement> GetCockpitUsageAsync(DateTime from, DateTime to, string groupBy, string? split, string? tz)
+    {
+        var url = $"api/cockpit/usage?{RangeQuery(from, to)}&groupBy={Uri.EscapeDataString(groupBy)}";
+        if (split is not null) url += $"&split={Uri.EscapeDataString(split)}";
+        if (tz is not null) url += $"&tz={Uri.EscapeDataString(tz)}";
+        var resp = await _http.GetAsync(url);
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public async Task<JsonElement> GetCockpitReliabilityAsync(DateTime from, DateTime to)
+    {
+        var resp = await _http.GetAsync($"api/cockpit/reliability?{RangeQuery(from, to)}");
+        await EnsureSuccessAsync(resp);
+        return await resp.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    private string RangeQuery(DateTime from, DateTime to) =>
+        $"from={Uri.EscapeDataString(from.ToString("O"))}&to={Uri.EscapeDataString(to.ToString("O"))}&workspaceId={_workspaceId}";
 
     public async Task<JsonElement> GetIdentityAsync()
     {

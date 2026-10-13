@@ -90,6 +90,7 @@ SideHub launched (workflow step, scheduler) or a queued task, they are refused: 
 - `sidehub-cli workflow run <wfId> [--agent <id>] [--input key=value]*`: Launch it (user: on any agent of the workspace)
 - `sidehub-cli scheduler list [--active | --paused]`, `scheduler get <id>`, `scheduler executions <id>`: Scheduled prompts and workflows
 - `sidehub-cli scheduler create --title "..." (--prompt "..." | --workflow <id>) --cron "..." [--agent <id>]`, `scheduler update <id> ...`, `scheduler pause|resume|trigger|delete <id>`: Manage them (user; cron in UTC, at most 5 creations or triggers per hour from a terminal)
+- `sidehub-cli workflow triggers <wfId>`, `workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--folder <id> | --to-status <s> | --source-workflow <id>] [--map param=path]*`, `workflow trigger-update <wfId> <triggerId> [--active true|false] ...`, `workflow trigger-delete <wfId> <triggerId>`: Launch a workflow on a workspace event (user, Owner or Admin)
 
 ### Runs and what needs attention
 - `sidehub-cli cockpit now`: What waits for someone (approvals, works to review, failed runs, blocked tasks), the next scheduled runs, the agents and the latest runs, with the ids to pass to the commands below
@@ -116,8 +117,13 @@ Reviewing an article a workflow wrote: `approval list`, `drive read <pageId>`, c
 - `sidehub-cli queue add <taskId>... [--agent <id>] [--cli claude|codex|agy|copilot|gemini]`, `queue remove <itemId>`, `queue move <itemId> --to <index>`, `queue pause|resume|skip`: Chain tasks on an agent
 - `sidehub-cli outgoing show [--agent <id>]`, `outgoing push [--agent <id>]`: Unpushed commits of an agent's branch and their reviews, then push them
 
-### Secrets
+### Secrets and MCP servers
 - `sidehub-cli secret list`: Names of the workspace secrets and what uses them, to grant one to a workflow or a scheduler (user, Owner or Admin; values are never shown nor written from a terminal)
+- `sidehub-cli mcp list`, `mcp set <name> (--command <cmd> [--arg <a>]* [--env KEY=VALUE]* [--secret NAME]* | --url <url> [--header KEY=VALUE]*)`, `mcp delete <name>`: The workspace MCP servers workflows may use (user, Owner or Admin). Reference secrets as `{"${NAME}"}`, never write a key in clear
+
+### Other repositories and costs
+- `sidehub-cli repository ask <repository> "question"`: Ask the agent of another repository of the workspace a question about its code (read-only run, one to a few minutes); prints its answer and the commit it read. `repository questions`, `repository question <id>` for past ones (user)
+- `sidehub-cli cockpit usage [--since 30d] [--by day|agent|model|origin|repository|user]`, `cockpit reliability [--since 7d]`: Tokens and estimated costs of the workspace, how runs end, failing schedulers (user, with the costs permission)
 
 ### SQLite databases (shared structured memory)
 
