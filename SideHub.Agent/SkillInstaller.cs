@@ -90,6 +90,7 @@ SideHub launched (workflow step, scheduler) or a queued task, they are refused: 
 - `sidehub-cli workflow run <wfId> [--agent <id>] [--input key=value]*`: Launch it (user: on any agent of the workspace)
 - `sidehub-cli scheduler list [--active | --paused]`, `scheduler get <id>`, `scheduler executions <id>`: Scheduled prompts and workflows
 - `sidehub-cli scheduler create --title "..." (--prompt "..." | --workflow <id>) --cron "..." [--agent <id>]`, `scheduler update <id> ...`, `scheduler pause|resume|trigger|delete <id>`: Manage them (user; cron in UTC, at most 5 creations or triggers per hour from a terminal)
+- `sidehub-cli workflow update <wfId> --work-review off`, `scheduler update <id> --work-review off`: Its runs no longer go "To review" (user). For a workflow or prompt scheduler that only writes to the Drive or a report: otherwise what another session changes in the agent's folder during the run lands in its review. `on` turns it back on; a workflow scheduler follows its workflow
 - `sidehub-cli workflow triggers <wfId>`, `workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--folder <id> | --to-status <s> | --source-workflow <id>] [--map param=path]*`, `workflow trigger-update <wfId> <triggerId> [--active true|false] ...`, `workflow trigger-delete <wfId> <triggerId>`: Launch a workflow on a workspace event (user, Owner or Admin)
 
 ### Runs and what needs attention

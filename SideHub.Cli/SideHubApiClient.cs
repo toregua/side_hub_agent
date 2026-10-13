@@ -513,7 +513,7 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> UpdateSchedulerAsync(string id, string? title, string? prompt, string? cron, string? description, string? provider, string? agentId, string? workflowId)
+    public async Task<JsonElement> UpdateSchedulerAsync(string id, string? title, string? prompt, string? cron, string? description, string? provider, string? agentId, string? workflowId, bool? skipWorkReview = null)
     {
         var body = new Dictionary<string, object?>();
         if (title is not null) body["title"] = title;
@@ -523,6 +523,7 @@ public class SideHubApiClient : IDisposable
         if (provider is not null) body["provider"] = provider;
         if (agentId is not null) body["agentId"] = agentId;
         if (workflowId is not null) body["workflowId"] = workflowId;
+        if (skipWorkReview is not null) body["skipWorkReview"] = skipWorkReview;
 
         var resp = await _http.PutAsJsonAsync($"api/workspaces/{_workspaceId}/scheduled-prompts/{id}", body);
         await EnsureSuccessAsync(resp);
@@ -605,13 +606,14 @@ public class SideHubApiClient : IDisposable
         return await resp.Content.ReadFromJsonAsync<JsonElement>();
     }
 
-    public async Task<JsonElement> UpdateWorkflowAsync(string workflowId, string? name, string? description, int? defaultStepTimeoutMinutes, bool clearDefaultStepTimeout)
+    public async Task<JsonElement> UpdateWorkflowAsync(string workflowId, string? name, string? description, int? defaultStepTimeoutMinutes, bool clearDefaultStepTimeout, bool? skipWorkReview = null)
     {
         var body = new Dictionary<string, object?>();
         if (name is not null) body["name"] = name;
         if (description is not null) body["description"] = description;
         if (defaultStepTimeoutMinutes is not null) body["defaultStepTimeoutMinutes"] = defaultStepTimeoutMinutes;
         if (clearDefaultStepTimeout) body["clearDefaultStepTimeout"] = true;
+        if (skipWorkReview is not null) body["skipWorkReview"] = skipWorkReview;
 
         var req = new HttpRequestMessage(HttpMethod.Patch, $"api/workflows/{workflowId}")
         {

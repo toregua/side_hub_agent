@@ -106,7 +106,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  scheduler list [--active | --paused]");
     Console.Error.WriteLine("  scheduler get <id>");
     Console.Error.WriteLine("  scheduler create --title \"...\" (--prompt \"...\" | --workflow <id>) --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
-    Console.Error.WriteLine("  scheduler update <id> [--title] [--prompt | --workflow <id>] [--cron] [--description] [--agent] [--provider]");
+    Console.Error.WriteLine("  scheduler update <id> [--title] [--prompt | --workflow <id>] [--cron] [--description] [--agent] [--provider] [--work-review on|off]");
     Console.Error.WriteLine("  scheduler delete <id> [--yes]");
     Console.Error.WriteLine("  scheduler pause <id>");
     Console.Error.WriteLine("  scheduler resume <id>");
@@ -115,7 +115,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow list");
     Console.Error.WriteLine("  workflow get <id>");
     Console.Error.WriteLine("  workflow create --name \"...\" [--description \"...\"] [--timeout <min>]");
-    Console.Error.WriteLine("  workflow update <id> [--name] [--description] [--timeout <min> | --clear-timeout]");
+    Console.Error.WriteLine("  workflow update <id> [--name] [--description] [--timeout <min> | --clear-timeout] [--work-review on|off]");
     Console.Error.WriteLine("  workflow delete <id> [--yes]");
     Console.Error.WriteLine("  workflow add-step <wfId> --name \"...\" --prompt \"...\" --output-path \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
     Console.Error.WriteLine("  workflow update-step <wfId> <stepId> [--name] [--prompt] [--input-drive]* [--input-step]* [--clear-inputs] [--output-path] [--output-drive | --clear-output-drive] [--timeout]");

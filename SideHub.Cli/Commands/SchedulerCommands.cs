@@ -78,6 +78,11 @@ public static class SchedulerCommands
         if (!string.IsNullOrEmpty(workflowId))
             Console.WriteLine($"Workflow:    {workflowId}");
         Console.WriteLine($"Provider:    {provider}");
+        if (string.IsNullOrEmpty(workflowId)) // a workflow scheduler follows its workflow's setting
+        {
+            var skipReview = result.TryGetProperty("skipWorkReview", out var sr) && sr.ValueKind == JsonValueKind.True;
+            Console.WriteLine($"Work review: {WorkReviewOption.Describe(skipReview)}");
+        }
         Console.WriteLine($"Next:        {next}");
         Console.WriteLine($"Last:        {last}");
         Console.WriteLine($"Executions:  {count}");
@@ -149,11 +154,17 @@ public static class SchedulerCommands
 
         if (string.IsNullOrEmpty(id))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--workflow <id>] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>]");
+            Console.Error.WriteLine("Usage: sidehub-cli scheduler update <id> [--title \"...\"] [--prompt \"...\"] [--workflow <id>] [--cron \"...\"] [--description \"...\"] [--agent <id>] [--provider <provider>] [--work-review on|off]");
             return 1;
         }
 
-        if (title is null && prompt is null && workflowId is null && cron is null && description is null && provider is null && agentId is null)
+        if (!WorkReviewOption.TryParse(GetOption(args, WorkReviewOption.Flag), out var skipWorkReview, out var reviewError))
+        {
+            Console.Error.WriteLine(reviewError);
+            return 1;
+        }
+
+        if (title is null && prompt is null && workflowId is null && cron is null && description is null && provider is null && agentId is null && skipWorkReview is null)
         {
             Console.Error.WriteLine("Error: at least one field to update is required.");
             return 1;
@@ -165,7 +176,7 @@ public static class SchedulerCommands
             return 1;
         }
 
-        var result = await client.UpdateSchedulerAsync(id, title, prompt, cron, description, provider, agentId, workflowId);
+        var result = await client.UpdateSchedulerAsync(id, title, prompt, cron, description, provider, agentId, workflowId, skipWorkReview);
 
         if (json)
         {

@@ -58,6 +58,8 @@ public static class WorkflowCommands
         var defaultTimeout = result.TryGetProperty("defaultStepTimeoutMinutes", out var dt) && dt.ValueKind == JsonValueKind.Number
             ? dt.GetInt32() + " min" : "-";
         Console.WriteLine($"Default timeout: {defaultTimeout}");
+        var skipReview = result.TryGetProperty("skipWorkReview", out var sr) && sr.ValueKind == JsonValueKind.True;
+        Console.WriteLine($"Work review: {WorkReviewOption.Describe(skipReview)}");
         if (result.TryGetProperty("parameters", out var parameters) && parameters.ValueKind == JsonValueKind.Array && parameters.GetArrayLength() > 0)
         {
             Console.WriteLine("Parameters (workflow run --input name=value):");
@@ -153,11 +155,17 @@ public static class WorkflowCommands
 
         if (string.IsNullOrEmpty(id))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli workflow update <id> [--name \"...\"] [--description \"...\"] [--timeout <min> | --clear-timeout]");
+            Console.Error.WriteLine("Usage: sidehub-cli workflow update <id> [--name \"...\"] [--description \"...\"] [--timeout <min> | --clear-timeout] [--work-review on|off]");
             return 1;
         }
 
-        if (name is null && description is null && timeoutStr is null && !clearTimeout)
+        if (!WorkReviewOption.TryParse(GetOption(args, WorkReviewOption.Flag), out var skipWorkReview, out var reviewError))
+        {
+            Console.Error.WriteLine(reviewError);
+            return 1;
+        }
+
+        if (name is null && description is null && timeoutStr is null && !clearTimeout && skipWorkReview is null)
         {
             Console.Error.WriteLine("Error: at least one field to update is required.");
             return 1;
@@ -174,7 +182,7 @@ public static class WorkflowCommands
             timeout = n;
         }
 
-        var result = await client.UpdateWorkflowAsync(id, name, description, timeout, clearTimeout);
+        var result = await client.UpdateWorkflowAsync(id, name, description, timeout, clearTimeout, skipWorkReview);
 
         if (json)
         {
