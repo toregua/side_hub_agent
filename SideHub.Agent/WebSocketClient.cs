@@ -62,7 +62,6 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly CodexRolloutHarvester? _codexRollouts;
     private readonly AntigravityTranscriptHarvester? _antigravity;
     private sealed record PtyCliSession(string Provider, string CliSessionId, string? Title = null);
-    private const int PtyIdleTimeoutMinutes = 30;
 
     /// <summary>Folder of the working directory where terminal image attachments are saved.</summary>
     private const string AttachmentsDirectory = ".sidehub-images";
@@ -1143,13 +1142,16 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 {
                     if (IsBackendManagedPtySession(sid))
                         continue;
-                    if ((now - lastActivity).TotalMinutes > PtyIdleTimeoutMinutes)
+                    DateTime? lastOutput = _ptyLastOutput.TryGetValue(sid, out var output) ? output : null;
+                    var cliState = _cliStates.Current(sid)?.State;
+                    if (IdlePtyPolicy.ShouldReap(now, lastActivity, lastOutput, cliState, _reviews.HasOpenRound(sid)))
                     {
                         if (_ptySessions.TryRemove(sid, out var session))
                         {
                             _ptyLastActivity.TryRemove(sid, out DateTime _);
                             _ptyLastOutput.TryRemove(sid, out DateTime _);
-                            Log($"Reaping idle PTY session {sid} (inactive for >{PtyIdleTimeoutMinutes}min)");
+                            Log($"Reaping idle PTY session {sid} (last input {MinutesAgo(now, lastActivity)}, "
+                                + $"last output {(lastOutput is { } o ? MinutesAgo(now, o) : "never")}, CLI state {cliState ?? "none"})");
                             try { await session.Executor.DisposeAsync(); } catch { }
                             CleanupNotifyFifo(sid);
                             // DisposeAsync doesn't fire the executor's exit callback, so tell the
@@ -1166,6 +1168,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             TimeSpan.FromMinutes(5)
         );
     }
+
+    private static string MinutesAgo(DateTime now, DateTime at) => $"{(int)(now - at).TotalMinutes}min ago";
 
     private void StopPtyReaper()
     {
