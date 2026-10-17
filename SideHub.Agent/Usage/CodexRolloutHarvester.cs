@@ -26,7 +26,8 @@ namespace SideHub.Agent.Usage;
 /// the cached part (as Claude does), reasoning as a subset of output.
 /// </para>
 /// </summary>
-public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester, ICliSessionUsageHarvester, IFinalMessageReader
+public sealed class CodexRolloutHarvester(string sessionsRoot)
+    : IUsageHarvester, ICliSessionUsageHarvester, IFinalMessageReader, ICliLimitReader
 {
     public const string SourceName = "codex-rollout";
 
@@ -147,6 +148,99 @@ public sealed class CodexRolloutHarvester(string sessionsRoot) : IUsageHarvester
 
         return owned.Values.ToList();
     }
+
+    /// <summary>The limit reached by the run's most recently written rollout (see <see cref="RateLimitOf"/>).</summary>
+    public CliLimitReport? ReadLimit(RunUsageContext run) =>
+        OwnedRollouts(run)?
+            .Select(o => o.Path)
+            .OrderBy(File.GetLastWriteTimeUtc)
+            .LastOrDefault() is { } path
+            ? RateLimitOf(path)
+            : null;
+
+    /// <summary>The limit an interactive session reached, as of its rollout's last snapshot (see <see cref="RateLimitOf"/>).</summary>
+    public CliLimitReport? ReadSessionLimit(string cliSessionId) =>
+        FindRollout(cliSessionId) is { } path ? RateLimitOf(path) : null;
+
+    /// <summary>
+    /// Whether a rollout's last <c>rate_limits</c> snapshot says a limit is reached. Codex writes one with each
+    /// <c>token_count</c>: <c>{"limit_id","primary":{"used_percent","window_minutes","resets_at"},"secondary",…,
+    /// "rate_limit_reached_type"}</c> (codex-cli 0.162; not documented by OpenAI). <c>rate_limit_reached_type</c> is null
+    /// until a limit is reached. The format is codex's own: a missing field gives an unknown window or reset, an
+    /// unknown shape concludes nothing.
+    /// </summary>
+    public static CliLimitReport? RateLimitOf(string path)
+    {
+        string? last = null;
+        try
+        {
+            using var reader = TranscriptLines.Open(path);
+            foreach (var line in TranscriptLines.Read(reader))
+            {
+                if (line.Contains("\"rate_limits\"", StringComparison.Ordinal) && line.Contains("\"token_count\"", StringComparison.Ordinal))
+                    last = line;
+            }
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+        if (last is null)
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(last);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object
+                || !payload.TryGetProperty("rate_limits", out var limits))
+                return null;
+            return FromRateLimits(limits, SessionIdOf(path));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A <c>rate_limits</c> snapshot (see <see cref="RateLimitOf"/>) as a limit; null when none is reached.</summary>
+    public static CliLimitReport? FromRateLimits(JsonElement limits, string? cliSessionId)
+    {
+        if (limits.ValueKind != JsonValueKind.Object
+            || !limits.TryGetProperty("rate_limit_reached_type", out var reached)
+            || reached.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined or JsonValueKind.False)
+            return null;
+
+        // The window that ran out: the one the reached type names, else the fullest
+        var reachedText = reached.ValueKind == JsonValueKind.String ? reached.GetString() ?? "" : reached.GetRawText();
+        var windows = new[] { "primary", "secondary" }
+            .Where(name => limits.TryGetProperty(name, out var w) && w.ValueKind == JsonValueKind.Object)
+            .Select(name => (Name: name, Window: limits.GetProperty(name)))
+            .ToList();
+        var named = windows.Where(w => reachedText.Contains(w.Name, StringComparison.OrdinalIgnoreCase)).ToList();
+        var window = (named.Count == 1 ? named : windows)
+            .OrderByDescending(w => Double(w.Window, "used_percent") ?? -1)
+            .Select(w => (JsonElement?)w.Window)
+            .FirstOrDefault();
+
+        string kind = CliLimitWindows.Unknown;
+        DateTimeOffset? resetsAt = null;
+        if (window is { } full)
+        {
+            kind = Double(full, "window_minutes") switch
+            {
+                300 => CliLimitWindows.FiveHour,
+                10080 => CliLimitWindows.Weekly,
+                >= 40320 and <= 44640 => CliLimitWindows.Monthly,
+                _ => CliLimitWindows.Unknown,
+            };
+            if (Double(full, "resets_at") is { } epoch && epoch > 0 && epoch < 253402300799)
+                resetsAt = DateTimeOffset.FromUnixTimeSeconds((long)epoch);
+        }
+        return new CliLimitReport("codex", kind, resetsAt, CliLimitSources.Rollout, null, cliSessionId);
+    }
+
+    private static double? Double(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? d : null;
 
     // Session id → its rollout: found by walking the day directories, which a periodic report must not redo.
     private readonly ConcurrentDictionary<string, string> _rolloutsById = new();

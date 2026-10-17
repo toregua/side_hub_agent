@@ -61,6 +61,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
     private readonly ConcurrentDictionary<string, byte> _announcedCodexRollouts = new();
     private readonly CodexRolloutHarvester? _codexRollouts;
     private readonly AntigravityTranscriptHarvester? _antigravity;
+    // The last usage limit reported for each PTY's CLI (cli.limit), so a repeated one is not sent again.
+    private readonly ConcurrentDictionary<string, CliLimitReport> _cliLimits = new();
     private sealed record PtyCliSession(string Provider, string CliSessionId, string? Title = null);
 
     /// <summary>Folder of the working directory where terminal image attachments are saved.</summary>
@@ -552,6 +554,8 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         Provider = exited.Provider,
                         CliSessionId = exited.CliSessionId,
                     }, ct);
+                    if (exited.Provider == "codex" && exited.CliSessionId is { } exitedSession)
+                        RunInBackground("codex limit", () => CheckCodexLimitAsync(ptySessionId, exitedSession, ct));
                     RunInBackground("cli-session.usage", () => _cliSessionUsage.CliExitedAsync(
                         ptySessionId, exited.Provider, exited.CliSessionId, CancellationToken.None));
                     return;
@@ -559,6 +563,13 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // Written by the CLI's hooks through `sidehub-cli cli-state` (see CliStateHooks).
                 case FifoNotification.CliStateChanged changed:
                     await ReportCliStateAsync(ptySessionId, changed, ct);
+                    return;
+
+                // Written by Claude's StopFailure hook through `sidehub-cli cli-state claude limit`: its plan ran out.
+                case FifoNotification.CliLimitReached limit:
+                    if (_ptySessions.ContainsKey(ptySessionId))
+                        await ReportCliLimitAsync(ptySessionId,
+                            ClaudeLimitText.Report(limit.Message, limit.CliSessionId, DateTimeOffset.UtcNow, TimeZoneInfo.Local), ct);
                     return;
             }
         }
@@ -584,7 +595,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             var cliSessionId = changed.CliSessionId
                 ?? (_ptyCliSessions.TryGetValue(ptySessionId, out var known) && known.Provider == changed.Provider ? known.CliSessionId : null);
             RunInBackground("cli-message", () => ReportLastMessageAsync(ptySessionId, changed.Provider, cliSessionId, ct));
+            if (changed.Provider == "codex" && cliSessionId is not null)
+                RunInBackground("codex limit", () => CheckCodexLimitAsync(ptySessionId, cliSessionId, ct));
         }
+        // A new turn: a limit reported before is behind it, the next one is sent even if it reads the same
+        if (changed.State == CliStates.Working)
+            _cliLimits.TryRemove(ptySessionId, out _);
         if (_cliStates.Record(ptySessionId, changed.Provider, changed.State, changed.CliSessionId, DateTime.UtcNow, changed.Prompt) is not { } message)
             return;
         // The prompt's content stays out of the log (it can hold a command line): only its kind
@@ -593,6 +609,70 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             _reviews.NoteCliWorking(ptySessionId, workingIn);
         // Even when the send fails (backend away), the state stays cached and is replayed at the next connection.
         await TrySendAsync(message, ct);
+    }
+
+    /// <summary>
+    /// Sends <c>cli.limit</c> for the PTY (doc 60), unless it repeats the last one sent for it. The message is masked with
+    /// the PTY's secrets while it is open (a run's last lines already are).
+    /// </summary>
+    private async Task ReportCliLimitAsync(string ptySessionId, CliLimitReport limit, CancellationToken ct)
+    {
+        if (limit.SameAs(_cliLimits.GetValueOrDefault(ptySessionId)))
+            return;
+        _cliLimits[ptySessionId] = limit;
+        Func<string, string>? mask = null;
+        Dictionary<string, string>? env = null;
+        if (_ptySecrets.TryGetValue(ptySessionId, out var secrets))
+        {
+            env = secrets.Env;
+            mask = text => SecretMasker.For(secrets.Env, secrets.Keys) is { } masker ? masker.Process(text) + masker.Flush() : text;
+        }
+        var runId = RunUsageCollector.ResolveRunId(ptySessionId, env);
+        // The message stays out of the log: it is whatever the CLI printed
+        Log($"CLI limit in PTY {ptySessionId}: provider={limit.Provider} window={limit.Window} "
+            + $"resetsAt={limit.ResetsAt?.UtcDateTime.ToString("u") ?? "(unknown)"} source={limit.Source}{(runId is { } id ? $" run={id}" : "")}");
+        await TrySendAsync(limit.ToMessage(ptySessionId, runId, mask, DateTime.UtcNow), ct);
+    }
+
+    /// <summary>Whether the codex session of a PTY reached a limit, as of its rollout (doc 60).</summary>
+    private async Task CheckCodexLimitAsync(string ptySessionId, string cliSessionId, CancellationToken ct)
+    {
+        if (_codexRollouts is null)
+            return;
+        // The rollout's last lines may land just after codex's notify
+        await Task.Delay(500, ct);
+        if (!_ptySessions.ContainsKey(ptySessionId) || _codexRollouts.ReadSessionLimit(cliSessionId) is not { } limit)
+            return;
+        // A snapshot from before the last reset says nothing about now
+        if (limit.ResetsAt is { } resetsAt && resetsAt <= DateTimeOffset.UtcNow)
+            return;
+        await ReportCliLimitAsync(ptySessionId, limit, ct);
+    }
+
+    /// <summary>
+    /// A run's PTY exited: whether its CLI stopped on a limit not reported yet, from codex's rollout, or for a CLI without
+    /// a structured signal from its last lines (<see cref="CliLimitPatterns"/>). Sent before the run's <c>pty.exited</c>.
+    /// </summary>
+    private async Task ReportRunLimitAsync(string ptySessionId, int exitCode, string? lastOutput, CancellationToken ct)
+    {
+        try
+        {
+            if (exitCode == 0 || _cliLimits.ContainsKey(ptySessionId))
+                return;
+            var limit = _usageCollector.ReadRunLimit(ptySessionId)
+                ?? _usageCollector.RunProviders(ptySessionId)
+                    .Select(provider => CliLimitPatterns.FromOutput(provider, exitCode, lastOutput, null))
+                    .FirstOrDefault(found => found is not null);
+            if (limit is null || limit.ResetsAt is { } resetsAt && resetsAt <= DateTimeOffset.UtcNow)
+                return;
+            if (limit.Message is null && CliLimitPatterns.FindLine(limit.Provider, lastOutput) is { } line)
+                limit = limit with { Message = line };
+            await ReportCliLimitAsync(ptySessionId, limit, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log($"CLI limit check failed for PTY {ptySessionId}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -896,7 +976,14 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         var reconnectAttempts = 0;
         // Connected or not: a snapshot taken while disconnected is queued and replayed at the next connection.
         _cliSessionUsageTimer ??= new Timer(
-            _ => RunInBackground("periodic cli-session.usage", () => _cliSessionUsage.ReportChangedAsync(ct)),
+            _ =>
+            {
+                RunInBackground("periodic cli-session.usage", () => _cliSessionUsage.ReportChangedAsync(ct));
+                // codex says nothing when a turn stops on its limit: its rollout does
+                foreach (var (sid, session) in _ptyCliSessions)
+                    if (session.Provider == "codex")
+                        RunInBackground("codex limit", () => CheckCodexLimitAsync(sid, session.CliSessionId, ct));
+            },
             null, CliSessionUsageCollector.ReportInterval, CliSessionUsageCollector.ReportInterval);
         RunInBackground("startup checks", () => ReportStartupProblemsAsync(ct));
 
@@ -1035,6 +1122,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             CliAuth = VersionInfo.CachedCliAuth,
             CliAccounts = VersionInfo.CachedCliAccounts,
             CliBilling = VersionInfo.CachedCliBilling,
+            CliAccountKeys = VersionInfo.CachedCliAccountKeys,
             DefaultBranch = await ReadDefaultBranchAsync(),
             InstallId = SelfUpdate.InstallId(SelfUpdate.Support.InstallDirectory ?? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)),
             Os = SelfUpdate.Os,
@@ -1876,9 +1964,12 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         _ptyLastOutput.TryRemove(ptySessionId, out _);
                         CleanupNotifyFifo(ptySessionId);
                         // A run's last lines say why it failed (not logged in, command not found…); never logged here.
-                        var lastOutput = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null
-                            ? TerminalText.LastLines(executor.GetBufferedOutput())
-                            : null;
+                        var isRun = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null;
+                        var lastOutput = isRun ? TerminalText.LastLines(executor.GetBufferedOutput()) : null;
+                        // Its plan ran out: the backend learns it before the exit (doc 60)
+                        if (isRun)
+                            await ReportRunLimitAsync(ptySessionId, exitCode, lastOutput, ct);
+                        _cliLimits.TryRemove(ptySessionId, out _);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput }, ct);
                         HarvestFinalUsage(ptySessionId, "exit");
                         RefreshCliAuthAfterTerminal(ct);

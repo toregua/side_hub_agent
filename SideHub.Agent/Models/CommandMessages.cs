@@ -446,6 +446,48 @@ public class PtyCliExitedMessage
 }
 
 /// <summary>
+/// The CLI of a PTY stopped because its plan's usage window ran out (doc 60), see <see cref="CliLimitReport"/>. For a
+/// run, sent before its <c>pty.exited</c>: the backend knows why the run stopped when the exit arrives.
+/// </summary>
+public class CliLimitMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "cli.limit";
+
+    [JsonPropertyName("provider")]
+    public required string Provider { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    /// <summary>The run of a <c>run-*</c> PTY; null for a terminal.</summary>
+    [JsonPropertyName("runId")]
+    public Guid? RunId { get; init; }
+
+    [JsonPropertyName("cliSessionId")]
+    public string? CliSessionId { get; init; }
+
+    /// <summary>One of <see cref="CliLimitWindows"/>.</summary>
+    [JsonPropertyName("window")]
+    public required string Window { get; init; }
+
+    /// <summary>When the window resets (UTC); null when the CLI did not say.</summary>
+    [JsonPropertyName("resetsAt")]
+    public DateTime? ResetsAt { get; init; }
+
+    /// <summary>One of <see cref="CliLimitSources"/>.</summary>
+    [JsonPropertyName("source")]
+    public required string Source { get; init; }
+
+    /// <summary>What the CLI said, secrets masked, at most <see cref="CliLimitReport.MaxMessageLength"/> characters.</summary>
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+
+    [JsonPropertyName("at")]
+    public required DateTime At { get; init; }
+}
+
+/// <summary>
 /// Emitted when the agent observes that Claude has generated a conversation
 /// title for a running CLI session (the "ai-title" line Claude writes to its
 /// project JSONL). The backend forwards this over SSE so the UI can suggest it

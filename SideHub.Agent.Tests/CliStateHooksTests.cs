@@ -61,7 +61,8 @@ public class CliStateHooksTests : IDisposable
         Assert.Equal(("permission_prompt|elicitation_dialog|elicitation_url_dialog", "waiting-input"), states["Notification"]);
         Assert.Equal((null, "waiting-input"), states["PermissionRequest"]);
         Assert.Equal((null, "idle"), states["Stop"]);
-        Assert.Equal(6, states.Count);
+        Assert.Equal(("rate_limit|billing_error", "limit"), states["StopFailure"]);
+        Assert.Equal(7, states.Count);
     }
 
     [Theory]

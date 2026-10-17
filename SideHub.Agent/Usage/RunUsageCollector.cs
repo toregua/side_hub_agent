@@ -177,6 +177,34 @@ public sealed class RunUsageCollector
     }
 
     /// <summary>The harvester of each CLI the run started, with what it needs to find the run's sessions.</summary>
+    /// <summary>
+    /// The limit a tracked run's CLI wrote in its own files that it reached (codex, see <see cref="ICliLimitReader"/>);
+    /// null for none or an unknown run. Read before the run's final harvest, which stops tracking it.
+    /// </summary>
+    public CliLimitReport? ReadRunLimit(string ptySessionId)
+    {
+        if (!_runs.TryGetValue(ptySessionId, out var run))
+            return null;
+        foreach (var (harvester, context) in Contexts(run))
+        {
+            if (harvester is ICliLimitReader reader && reader.ReadLimit(context) is { } limit)
+                return limit;
+        }
+        return null;
+    }
+
+    /// <summary>The CLIs a tracked run started (as announced in its terminal), empty for an unknown run.</summary>
+    public IReadOnlyList<string> RunProviders(string ptySessionId)
+    {
+        if (!_runs.TryGetValue(ptySessionId, out var run))
+            return [];
+        lock (_launches)
+            return run.CliSessions.Values
+                .Concat(_launches.Where(l => l.PtySessionId == ptySessionId).Select(l => l.Provider))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+    }
+
     private IEnumerable<(IUsageHarvester Harvester, RunUsageContext Context)> Contexts(TrackedRun run) =>
         Contexts(run.PtySessionId, run.RunId, run.Cwd, run.CliSessions.ToArray(), run.StartedAt);
 

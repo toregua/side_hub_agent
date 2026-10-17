@@ -1,0 +1,8 @@
+# Claude Code 2.1.301 composes its limit message as `You've hit your ${limit}${reset}`, the limit being one of
+# "session limit", "weekly limit", "Opus limit", "Sonnet limit", "Fable limit", "usage credit limit", the reset
+# " · resets <time> (<zone>)" (time: "3pm" or "3:30pm" within a day, "Oct 20, 9am" beyond). Lines composed from that
+# code (read in the installed binary on 2026-10-16), not captured from a real limit: replace them with one as soon as a
+# plan of the VPS reaches its limit.
+You've hit your session limit · resets 3pm (Europe/Paris)
+You've hit your weekly limit · resets Oct 20, 9am (Europe/Paris)
+You've hit your Opus limit · resets 3:30pm (UTC)

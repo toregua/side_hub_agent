@@ -35,11 +35,16 @@ public static partial class CliStateHooks
     /// input. <c>idle_prompt</c> (waiting for the next prompt after a while) is not one: the turn already ended.</summary>
     public const string WaitingInputNotifications = "permission_prompt|elicitation_dialog|elicitation_url_dialog";
 
+    /// <summary>Claude's <c>StopFailure</c> errors that mean the plan ran out: the turn ended on them once the CLI's own
+    /// retries gave up (https://code.claude.com/docs/en/hooks). <c>rate_limit</c> also covers an organization's limit: it
+    /// is treated the same.</summary>
+    public const string LimitErrors = "rate_limit|billing_error";
+
     /// <summary>
     /// The <c>--settings</c> JSON for claude. UserPromptSubmit and PostToolUse: working (PostToolUse also ends a
     /// permission wait once the tool ran); Notification on a permission or input request, PermissionRequest and
     /// PreToolUse of AskUserQuestion: waiting-input (the last two also say what is asked, see <see cref="CliPrompt"/>);
-    /// Stop: idle. With a tool policy, a PreToolUse group also runs
+    /// Stop: idle; StopFailure on a usage limit: limit (doc 60). With a tool policy, a PreToolUse group also runs
     /// <c>sidehub-cli policy check</c> (<see cref="PolicyCheckCommand"/>) on the tools it matches.
     /// </summary>
     /// <param name="program">This program's absolute path (<c>sidehub-cli</c>).</param>
@@ -78,6 +83,7 @@ public static partial class CliStateHooks
             // Before a permission dialog: same state, with the tool and what it would run (CliPrompt)
             Add("PermissionRequest", Group(CliStateCommand.WaitingInput));
             Add("Stop", Group(CliStateCommand.Idle));
+            Add("StopFailure", Group(CliStateCommand.Limit, LimitErrors));
         }
         if (toolPolicyMatcher is not null)
         {

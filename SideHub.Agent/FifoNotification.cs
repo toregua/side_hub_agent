@@ -47,6 +47,14 @@ public abstract record FifoNotification
     /// <paramref name="Prompt"/>: what a waiting CLI asks, when its hook said (a malformed one is dropped, the state kept).</summary>
     public sealed record CliStateChanged(string Provider, string State, string? CliSessionId, PtyCliPrompt? Prompt = null) : FifoNotification;
 
+    /// <summary><c>sidehub-cli cli-state claude limit</c>, run by Claude's <c>StopFailure</c> hook: the turn stopped on the
+    /// plan's usage limit. <paramref name="Error"/>: <c>rate_limit</c> or <c>billing_error</c>; <paramref name="Message"/>: what
+    /// Claude said, null when it said nothing.</summary>
+    public sealed record CliLimitReached(string Provider, string? CliSessionId, string Error, string? Message) : FifoNotification;
+
+    /// <summary>Longest limit message accepted, in characters (what <c>sidehub-cli</c> sends at most).</summary>
+    public const int MaxLimitMessageLength = 1000;
+
     /// <summary>
     /// A CLI session id is accepted only as a canonical UUID (<c>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</c>): hex digits
     /// and dashes, so it is safe in a file name.
@@ -173,6 +181,30 @@ public abstract record FifoNotification
                         ? ParsePrompt(promptProperty)
                         : null;
                     return new CliStateChanged(provider!, state, cliSessionId, prompt);
+                }
+
+                case "cli-limit":
+                {
+                    var provider = String(root, "provider");
+                    if (!IsKnownProvider(provider, out rejection)) return null;
+                    if (!TryOptionalCliSessionId(root, out var cliSessionId))
+                    {
+                        rejection = "invalid cliSessionId";
+                        return null;
+                    }
+                    var error = String(root, "error");
+                    if (error is not ("rate_limit" or "billing_error"))
+                    {
+                        rejection = "unknown error";
+                        return null;
+                    }
+                    var message = Text(root, "message", MaxLimitMessageLength, required: false, out var messageOk);
+                    if (!messageOk)
+                    {
+                        rejection = "invalid message";
+                        return null;
+                    }
+                    return new CliLimitReached(provider!, cliSessionId, error, message);
                 }
 
                 default:

@@ -26,6 +26,16 @@ public interface IFinalMessageReader
 }
 
 /// <summary>
+/// Reads, from the files a run's CLI leaves on disk, whether it stopped on its plan's usage limit (doc 60): only for CLIs
+/// that write it there (codex).
+/// </summary>
+public interface ICliLimitReader
+{
+    /// <summary>The limit the run's CLI reached, null when it reached none (or its files cannot be found).</summary>
+    CliLimitReport? ReadLimit(RunUsageContext run);
+}
+
+/// <summary>
 /// Reads the usage of one CLI session, whoever started it (an interactive terminal): the whole session,
 /// cumulative, located by its id alone.
 /// </summary>

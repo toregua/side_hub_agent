@@ -53,6 +53,10 @@ public static class AgentNotifier
         Send(notification);
     }
 
+    /// <summary>The CLI's turn stopped on its plan's usage limit (see <see cref="CliStateCommand.LimitReport"/>).</summary>
+    public static void Limit(string provider, string? cliSessionId, string error, string? message) =>
+        Send(new { @event = "cli-limit", provider, cliSessionId, error, message });
+
     public static void StepEnded() => Send(new { @event = "run-step-ended" });
 
     public static void TaskDone() => Send(new { @event = "task-done" });

@@ -8,6 +8,8 @@ namespace SideHub.Cli.Launch;
 /// gives the session), <c>sidehub-cli cli-state agy &lt;working|idle&gt;</c> (an agy hook, same stdin with
 /// <c>conversationId</c>) and <c>sidehub-cli cli-state codex &lt;event-json&gt;</c> (codex's <c>notify</c> program):
 /// tells the agent hosting the terminal what the CLI is doing. Installed by <see cref="CliStateHooks"/>.
+/// <c>sidehub-cli cli-state claude limit</c> (Claude's <c>StopFailure</c> hook) tells that the turn stopped on the plan's
+/// usage limit, with what Claude said (doc 60).
 /// <para>
 /// It runs inside the CLI's turn, so it must never slow it down nor fail it: it writes nothing to stdout (Claude
 /// would add it to the conversation on UserPromptSubmit) or stderr, gives up quickly, and always exits 0.
@@ -21,6 +23,12 @@ public static class CliStateCommand
     public const string WaitingInput = "waiting-input";
     public const string Idle = "idle";
 
+    /// <summary>Not a state: the turn stopped on a usage limit (<see cref="LimitReport"/>).</summary>
+    public const string Limit = "limit";
+
+    /// <summary>Longest message passed on to the agent: it keeps <c>MaxMessageLength</c> (300) once masked.</summary>
+    public const int MaxLimitMessageLength = 1000;
+
     private static readonly HashSet<string> States = [Working, WaitingInput, Idle];
 
     /// <summary>The hook JSON read from stdin at most (tool results can be large; session_id comes first).</summary>
@@ -32,7 +40,9 @@ public static class CliStateCommand
     {
         try
         {
-            if (Report(args, ReadHookInput) is { } report)
+            if (LimitReport(args, ReadHookInput) is { } limit)
+                AgentNotifier.Limit(limit.Provider, limit.CliSessionId, limit.Error, limit.Message);
+            else if (Report(args, ReadHookInput) is { } report)
                 AgentNotifier.State(report.Provider, report.State, report.CliSessionId, report.Prompt);
         }
         catch
@@ -44,6 +54,49 @@ public static class CliStateCommand
 
     /// <param name="Prompt">What a waiting CLI asks (see <see cref="CliPrompt"/>), null when unknown.</param>
     public sealed record StateReport(string Provider, string State, string? CliSessionId, JsonObject? Prompt = null);
+
+    /// <param name="Error">Claude's error category (<c>rate_limit</c>, <c>billing_error</c>).</param>
+    /// <param name="Message">What Claude said (its last assistant message, else the error's details), cut to
+    /// <see cref="MaxLimitMessageLength"/>; null when it said nothing.</param>
+    public sealed record LimitReportData(string Provider, string? CliSessionId, string Error, string? Message);
+
+    /// <summary>
+    /// The limit to report for <c>claude limit</c> (a <c>StopFailure</c> hook), null for other arguments or another error
+    /// (the hook's matcher already filters them, this guards a CLI that would not).
+    /// </summary>
+    public static LimitReportData? LimitReport(string[] args, Func<byte[]?> hookInput)
+    {
+        if (args is not ["claude", Limit])
+            return null;
+        var input = hookInput();
+        string? error = null, message = null;
+        if (input is { Length: > 0 })
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(input);
+                var root = doc.RootElement;
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    error = Str(root, "error");
+                    message = Str(root, "last_assistant_message") is { Length: > 0 } last ? last : Str(root, "error_details");
+                }
+            }
+            catch (JsonException)
+            {
+                // Cut short (MaxHookInputBytes) or malformed: nothing tells it is a limit
+            }
+        }
+        if (error is not ("rate_limit" or "billing_error"))
+            return null;
+        message = message?.Trim();
+        if (message is { Length: > MaxLimitMessageLength })
+            message = message[..MaxLimitMessageLength];
+        return new LimitReportData("claude", SessionIdFromHookInput(input), error, string.IsNullOrEmpty(message) ? null : message);
+    }
+
+    private static string? Str(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     /// <summary>What to report for the arguments, or null when there is nothing to report.</summary>
     /// <param name="hookInput">Reads the hook's stdin (claude and agy), null when there is none.</param>

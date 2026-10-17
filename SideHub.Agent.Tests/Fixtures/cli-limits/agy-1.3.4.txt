@@ -1,0 +1,3 @@
+# agy 1.3.4: its quota error, as found in the installed binary on 2026-10-16. Not captured from a real limit: replace it
+# with one as soon as a plan of the VPS reaches its limit.
+You have exhausted your quota on this model.

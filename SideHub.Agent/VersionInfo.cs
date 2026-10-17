@@ -33,6 +33,7 @@ public static partial class VersionInfo
     private static IReadOnlyDictionary<string, bool> _cliAuth = new Dictionary<string, bool>();
     private static IReadOnlyDictionary<string, CliAccount> _cliAccounts = new Dictionary<string, CliAccount>();
     private static IReadOnlyDictionary<string, CliBilling> _cliBilling = new Dictionary<string, CliBilling>();
+    private static IReadOnlyDictionary<string, string> _cliAccountKeys = new Dictionary<string, string>();
     private static DateTime _probedAt;
 
     public static string AgentVersion { get; } = ReadAgentVersion();
@@ -59,6 +60,10 @@ public static partial class VersionInfo
     /// <summary>How each logged-in CLI that tells is paid for (claude, codex), from the same probe as <see cref="CachedCliAuth"/>.</summary>
     public static IReadOnlyDictionary<string, CliBilling>? CachedCliBilling => CachedCliVersions is null ? null : _cliBilling;
 
+    /// <summary>The plan each installed CLI runs on, as a fingerprint (<see cref="CliAccountKeys"/>), from the same probe
+    /// as <see cref="CachedCliAuth"/>.</summary>
+    public static IReadOnlyDictionary<string, string>? CachedCliAccountKeys => CachedCliVersions is null ? null : _cliAccountKeys;
+
     /// <summary>
     /// Detected CLI versions, keyed by runtime. Probed at most once per <see cref="CacheTtl"/> so that
     /// reconnections don't spawn the CLIs again; a CLI that is missing or times out is simply absent.
@@ -78,7 +83,7 @@ public static partial class VersionInfo
             var versions = results
                 .Where(r => r.version is not null)
                 .ToDictionary(r => r.cli, r => r.version!);
-            (_cliAuth, _cliAccounts, _cliBilling) = await ProbeAuthAsync(versions, ct);
+            (_cliAuth, _cliAccounts, _cliBilling, _cliAccountKeys) = await ProbeAuthAsync(versions, ct);
             _cliVersions = versions;
             _probedAt = DateTime.UtcNow;
             return _cliVersions;
@@ -101,10 +106,10 @@ public static partial class VersionInfo
         await ProbeLock.WaitAsync(ct);
         try
         {
-            var (previousAuth, previousAccounts, previousBilling) = (_cliAuth, _cliAccounts, _cliBilling);
-            (_cliAuth, _cliAccounts, _cliBilling) = await ProbeAuthAsync(versions, ct);
+            var (previousAuth, previousAccounts, previousBilling, previousKeys) = (_cliAuth, _cliAccounts, _cliBilling, _cliAccountKeys);
+            (_cliAuth, _cliAccounts, _cliBilling, _cliAccountKeys) = await ProbeAuthAsync(versions, ct);
             return !SameEntries(previousAuth, _cliAuth) || !SameEntries(previousAccounts, _cliAccounts)
-                || !SameEntries(previousBilling, _cliBilling);
+                || !SameEntries(previousBilling, _cliBilling) || !SameEntries(previousKeys, _cliAccountKeys);
         }
         finally
         {
@@ -117,7 +122,7 @@ public static partial class VersionInfo
         && previous.All(entry => now.TryGetValue(entry.Key, out var value) && EqualityComparer<T>.Default.Equals(value, entry.Value));
 
     private static async Task<(IReadOnlyDictionary<string, bool> Auth, IReadOnlyDictionary<string, CliAccount> Accounts,
-        IReadOnlyDictionary<string, CliBilling> Billing)> ProbeAuthAsync(
+        IReadOnlyDictionary<string, CliBilling> Billing, IReadOnlyDictionary<string, string> AccountKeys)> ProbeAuthAsync(
         IReadOnlyDictionary<string, string> versions, CancellationToken ct)
     {
         var copilot = versions.ContainsKey("copilot") ? ProbeCopilotAsync(ct) : Task.FromResult<CopilotAuth?>(null);
@@ -146,7 +151,16 @@ public static partial class VersionInfo
             if (copilotAuth.Account is { } account)
                 accounts["copilot"] = account;
         }
-        return (auth, accounts, billing);
+        var identities = new Dictionary<string, string?>
+        {
+            ["claude"] = auth.GetValueOrDefault("claude")
+                ? CliAccountKeys.ClaudeIdentity(results.FirstOrDefault(r => r.cli == "claude").text)
+                : null,
+            ["copilot"] = CliAccountKeys.CopilotIdentity(accounts.GetValueOrDefault("copilot")),
+        };
+        var keys = CliAccountKeys.For(versions.Keys, identities,
+            CliAccountKeys.MachineIdentity(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
+        return (auth, accounts, billing, keys);
     }
 
     /// <summary>

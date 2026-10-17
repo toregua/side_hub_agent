@@ -56,6 +56,13 @@ public class AgentConnectedMessage
     [JsonPropertyName("cliBilling")]
     public IReadOnlyDictionary<string, CliBilling>? CliBilling { get; init; }
 
+    /// <summary>
+    /// The plan each installed CLI runs on, as a fingerprint (<see cref="CliAccountKeys"/>): a usage limit applies to every
+    /// agent with the same key (doc 60). Null while not probed yet, like <see cref="CliAuth"/>.
+    /// </summary>
+    [JsonPropertyName("cliAccountKeys")]
+    public IReadOnlyDictionary<string, string>? CliAccountKeys { get; init; }
+
     /// <summary>The branch <c>origin/HEAD</c> of the agent's repository points to; null when unknown.</summary>
     [JsonPropertyName("defaultBranch")]
     public string? DefaultBranch { get; init; }
