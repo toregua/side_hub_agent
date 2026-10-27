@@ -218,14 +218,16 @@ public static class WorkflowCommands
         var workflowId = args.FirstOrDefault(a => !a.StartsWith("--"));
         var name = GetOption(args, "--name");
         var prompt = GetOption(args, "--prompt");
-        var outputPath = GetOption(args, "--output-path") ?? "";
+        // A step that completes on exit ends with its CLI, its last answer as the result: no document to name.
+        var completesOnExit = args.Contains("--completes-on-exit");
+        var outputPath = GetOption(args, "--output-path") ?? (completesOnExit ? name ?? "" : "");
         var outputDrive = GetOption(args, "--output-drive");
         var timeoutStr = GetOption(args, "--timeout");
 
-        // Every step writes its result to a document: SideHub refuses a step without an output path.
+        // Every other step writes its result to a document: SideHub refuses a step without an output path.
         if (string.IsNullOrEmpty(workflowId) || string.IsNullOrEmpty(name) || string.IsNullOrEmpty(prompt) || string.IsNullOrEmpty(outputPath))
         {
-            Console.Error.WriteLine("Usage: sidehub-cli workflow add-step <workflowId> --name \"...\" --prompt \"...\" --output-path \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
+            Console.Error.WriteLine("Usage: sidehub-cli workflow add-step <workflowId> --name \"...\" --prompt \"...\" (--output-path \"...\" | --completes-on-exit) [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
             return 1;
         }
 
@@ -242,7 +244,8 @@ public static class WorkflowCommands
 
         var inputs = CollectInputs(args);
 
-        var result = await client.AddWorkflowStepAsync(workflowId, name, prompt, inputs, outputPath, timeout, outputDrive);
+        var result = await client.AddWorkflowStepAsync(workflowId, name, prompt, inputs, outputPath, timeout, outputDrive,
+            completesOnExit: completesOnExit);
 
         if (json)
         {

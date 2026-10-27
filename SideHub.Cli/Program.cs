@@ -54,7 +54,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("Usage: sidehub-cli <domain> <action> [options]");
     Console.Error.WriteLine("       sidehub-cli launch [--prompt-env | --prompt-base64 <b64>] <claude|codex|agy|copilot|gemini> [args...]");
     Console.Error.WriteLine("       sidehub-cli whoami [--json]");
-    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, scheduler, workflow, review, approval, queue, outgoing, secret, mcp");
+    Console.Error.WriteLine("Domains: cockpit, run, drive, sqlite, table, task, repository, automation, scheduler, workflow, review, approval, queue, outgoing, secret, mcp");
     Console.Error.WriteLine("  cockpit now");
     Console.Error.WriteLine("  cockpit usage [--since <30d|date>] [--until <date>] [--by day|workspace|repository|agent|model|user|origin] [--split origin|workspace|provider] [--tz <IANA zone>]");
     Console.Error.WriteLine("  cockpit reliability [--since <7d|date>] [--until <date>]");
@@ -103,6 +103,16 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  repository ask <repository id|name> \"question\" [--no-wait] [--timeout <minutes>]");
     Console.Error.WriteLine("  repository question <questionId>");
     Console.Error.WriteLine("  repository questions [--limit N]");
+    Console.Error.WriteLine("  automation list");
+    Console.Error.WriteLine("  automation get <id>");
+    Console.Error.WriteLine("  automation create --name \"...\" --prompt \"...\" [--cron \"...\" [--description \"...\"]] [--agent <id>] [--provider <cli>] [--model <model>]");
+    Console.Error.WriteLine("  automation run <id> [--agent <id>] [--provider <p>] [--input key=value]*");
+    Console.Error.WriteLine("  automation pause <id> | resume <id>");
+    Console.Error.WriteLine("  automation delete <id> [--yes]");
+    Console.Error.WriteLine("  automation schedule add <id> --cron \"...\" [--description \"...\"] [--agent <id>]");
+    Console.Error.WriteLine("  automation schedule update <scheduleId> [--cron] [--description] [--agent] | remove <scheduleId> [--yes]");
+    Console.Error.WriteLine("  automation executions <id> [--limit N]");
+    Console.Error.WriteLine("  (an automation is a workflow and its schedules are schedulers: the workflow and scheduler commands below act on them too)");
     Console.Error.WriteLine("  scheduler list [--active | --paused]");
     Console.Error.WriteLine("  scheduler get <id>");
     Console.Error.WriteLine("  scheduler create --title \"...\" (--prompt \"...\" | --workflow <id>) --cron \"...\" [--agent <id>] [--description \"...\"] [--provider <provider>]");
@@ -117,7 +127,7 @@ if (args.Length < 2 && !isWhoami)
     Console.Error.WriteLine("  workflow create --name \"...\" [--description \"...\"] [--timeout <min>]");
     Console.Error.WriteLine("  workflow update <id> [--name] [--description] [--timeout <min> | --clear-timeout] [--work-review on|off]");
     Console.Error.WriteLine("  workflow delete <id> [--yes]");
-    Console.Error.WriteLine("  workflow add-step <wfId> --name \"...\" --prompt \"...\" --output-path \"...\" [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
+    Console.Error.WriteLine("  workflow add-step <wfId> --name \"...\" --prompt \"...\" (--output-path \"...\" | --completes-on-exit) [--input-drive <itemId>]* [--input-step <stepId>]* [--output-drive <itemId>] [--timeout <min>]");
     Console.Error.WriteLine("  workflow update-step <wfId> <stepId> [--name] [--prompt] [--input-drive]* [--input-step]* [--clear-inputs] [--output-path] [--output-drive | --clear-output-drive] [--timeout]");
     Console.Error.WriteLine("  workflow delete-step <wfId> <stepId> [--yes]");
     Console.Error.WriteLine("  workflow reorder-steps <wfId> <stepId1> <stepId2> [...]");
@@ -246,6 +256,15 @@ try
         ("repository", "ask") => await RepositoryCommands.AskAsync(client, restArgs, jsonOutput),
         ("repository", "question") => await RepositoryCommands.QuestionAsync(client, restArgs, jsonOutput),
         ("repository", "questions") => await RepositoryCommands.QuestionsAsync(client, restArgs, jsonOutput),
+        ("automation", "list") => await AutomationCommands.ListAsync(client, restArgs, jsonOutput),
+        ("automation", "get") => await AutomationCommands.GetAsync(client, restArgs, jsonOutput),
+        ("automation", "create") => await AutomationCommands.CreateAsync(client, restArgs, jsonOutput),
+        ("automation", "run") => await AutomationCommands.RunAsync(client, restArgs, jsonOutput),
+        ("automation", "pause") => await AutomationCommands.SetSchedulesActiveAsync(client, restArgs, jsonOutput, active: false),
+        ("automation", "resume") => await AutomationCommands.SetSchedulesActiveAsync(client, restArgs, jsonOutput, active: true),
+        ("automation", "delete") => await AutomationCommands.DeleteAsync(client, restArgs, jsonOutput),
+        ("automation", "schedule") => await AutomationCommands.ScheduleAsync(client, restArgs, jsonOutput),
+        ("automation", "executions") => await AutomationCommands.ExecutionsAsync(client, restArgs, jsonOutput),
         ("scheduler", "list") => await SchedulerCommands.ListAsync(client, restArgs, jsonOutput),
         ("scheduler", "get") => await SchedulerCommands.GetAsync(client, restArgs, jsonOutput),
         ("scheduler", "create") => await SchedulerCommands.CreateAsync(client, restArgs, jsonOutput),

@@ -83,23 +83,26 @@ SideHub launched (workflow step, scheduler) or a queued task, they are refused: 
 - You cannot decide a review of the work done in this very terminal, read or type in other terminals, nor write
   secret values: the user does those in SideHub.
 
-### Workflows and schedulers
-- `sidehub-cli workflow list`, `workflow get <wfId>`: Workflows and their steps
-- `sidehub-cli workflow create --name "..."`, `workflow update <wfId> ...`, `workflow add-step|update-step|delete-step|reorder-steps ...`, `workflow delete <wfId>`: Edit a workflow (user; run `sidehub-cli` without arguments for the options)
+### Automations
+An automation is one or more steps that run on an agent. It always runs by hand; its triggers (schedules, workspace
+events) launch it on their own. A one-step automation runs a prompt and ends when the CLI exits. In the commands, an
+automation id is a workflow id and a schedule id a scheduler id: the `workflow` and `scheduler` commands act on them too.
+- `sidehub-cli automation list`, `automation get <id>`: Automations, their steps and triggers
+- `sidehub-cli automation create --name "..." --prompt "..." [--cron "..."] [--agent <id>] [--provider <cli>]`: A one-step automation, scheduled when `--cron` is given (user; cron in UTC, at most 5 creations or launches per hour from a terminal)
+- `sidehub-cli automation run <id> [--agent <id>] [--input key=value]*`: Launch it now (user: on any agent of the workspace)
+- `sidehub-cli automation schedule add <id> --cron "..."`, `automation schedule update <scheduleId> ...`, `automation schedule remove <scheduleId>`, `automation pause|resume <id>` (all its schedules), `automation delete <id>`: Manage its schedules and the automation (user)
+- `sidehub-cli workflow create --name "..."`, `workflow update <wfId> ...`, `workflow add-step|update-step|delete-step|reorder-steps ...`: Edit the steps of an automation (user; run `sidehub-cli` without arguments for the options)
 - `sidehub-cli workflow import --file <path> [--name "..."]`, `workflow duplicate <wfId> [--name "..."]`: From an exported JSON document, or a copy (user)
-- `sidehub-cli workflow run <wfId> [--agent <id>] [--input key=value]*`: Launch it (user: on any agent of the workspace)
-- `sidehub-cli scheduler list [--active | --paused]`, `scheduler get <id>`, `scheduler executions <id>`: Scheduled prompts and workflows
-- `sidehub-cli scheduler create --title "..." (--prompt "..." | --workflow <id>) --cron "..." [--agent <id>]`, `scheduler update <id> ...`, `scheduler pause|resume|trigger|delete <id>`: Manage them (user; cron in UTC, at most 5 creations or triggers per hour from a terminal)
-- `sidehub-cli workflow update <wfId> --work-review off`, `scheduler update <id> --work-review off`: Its runs no longer go "To review" (user). For a workflow or prompt scheduler that only writes to the Drive or a report: otherwise what another session changes in the agent's folder during the run lands in its review. `on` turns it back on; a workflow scheduler follows its workflow
-- `sidehub-cli workflow triggers <wfId>`, `workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--folder <id> | --to-status <s> | --source-workflow <id>] [--map param=path]*`, `workflow trigger-update <wfId> <triggerId> [--active true|false] ...`, `workflow trigger-delete <wfId> <triggerId>`: Launch a workflow on a workspace event (user, Owner or Admin)
+- `sidehub-cli workflow update <wfId> --work-review off`: Its runs no longer go "To review" (user). For an automation that only writes to the Drive or a report: otherwise what another session changes in the agent's folder during the run lands in its review. `on` turns it back on
+- `sidehub-cli workflow triggers <wfId>`, `workflow trigger-add <wfId> --type drive.item.created|task.status_changed|workflow.completed [--folder <id> | --to-status <s> | --source-workflow <id>] [--map param=path]*`, `workflow trigger-update <wfId> <triggerId> [--active true|false] ...`, `workflow trigger-delete <wfId> <triggerId>`: Launch an automation on a workspace event (user, Owner or Admin)
 
 ### Runs and what needs attention
 - `sidehub-cli cockpit now`: What waits for someone (approvals, works to review, failed runs, blocked tasks), the next scheduled runs, the agents and the latest runs, with the ids to pass to the commands below
-- `sidehub-cli run list [--status failed] [--runtime <cli>] [--agent <id>] [--since 24h|7d|<date>] [--limit N]`: Runs SideHub launched on agents (workflow steps, schedulers...), newest first
+- `sidehub-cli run list [--status failed] [--runtime <cli>] [--agent <id>] [--since 24h|7d|<date>] [--limit N]`: Runs SideHub launched on agents (automation steps, task queues...), newest first
 - `sidehub-cli run get <runId>`: How a run ended: status, end reason, exit code, last terminal lines, token usage
-- `sidehub-cli workflow executions <wfId>`: Executions of a workflow; `workflow execution-get <executionId>` shows its steps, `workflow execution-runs <executionId>` the runs of each step (retries included)
+- `sidehub-cli automation executions <id>`: Executions of an automation; `workflow execution-get <executionId>` shows its steps, `workflow execution-runs <executionId>` the runs of each step (retries included)
 - `sidehub-cli workflow cancel <executionId>`, `workflow retry <executionId> <stepId>`, `workflow validate-step <executionId> <stepId>` (interactive step), `workflow step-override <executionId> <stepId> complete --output-id <driveItemId> | fail [--reason "..."]`: Steer an execution (user)
-- `sidehub-cli workflow export <wfId> [--output <file>]`: The workflow as a JSON document the Workflows page can import
+- `sidehub-cli workflow export <wfId> [--output <file>]`: The automation as a JSON document the Automations page can import
 - `sidehub-cli whoami`: Who your SideHub token acts for: the agent, a run, or the user who opened this terminal. Run it when a command is refused (HTTP 403)
 
 ### Approvals and reviews (user)
@@ -119,8 +122,8 @@ Reviewing an article a workflow wrote: `approval list`, `drive read <pageId>`, c
 - `sidehub-cli outgoing show [--agent <id>]`, `outgoing push [--agent <id>]`: Unpushed commits of an agent's branch and their reviews, then push them
 
 ### Secrets and MCP servers
-- `sidehub-cli secret list`: Names of the workspace secrets and what uses them, to grant one to a workflow or a scheduler (user, Owner or Admin; values are never shown nor written from a terminal)
-- `sidehub-cli mcp list`, `mcp set <name> (--command <cmd> [--arg <a>]* [--env KEY=VALUE]* [--secret NAME]* | --url <url> [--header KEY=VALUE]*)`, `mcp delete <name>`: The workspace MCP servers workflows may use (user, Owner or Admin). Reference secrets as `{"${NAME}"}`, never write a key in clear
+- `sidehub-cli secret list`: Names of the workspace secrets and what uses them, to grant one to an automation (user, Owner or Admin; values are never shown nor written from a terminal)
+- `sidehub-cli mcp list`, `mcp set <name> (--command <cmd> [--arg <a>]* [--env KEY=VALUE]* [--secret NAME]* | --url <url> [--header KEY=VALUE]*)`, `mcp delete <name>`: The workspace MCP servers automations may use (user, Owner or Admin). Reference secrets as `{"${NAME}"}`, never write a key in clear
 
 ### Other repositories and costs
 - `sidehub-cli repository ask <repository> "question"`: Ask the agent of another repository of the workspace a question about its code (read-only run, one to a few minutes); prints its answer and the commit it read. `repository questions`, `repository question <id>` for past ones (user)
@@ -188,10 +191,15 @@ If env var `SIDEHUB_WORKFLOW_EXECUTION_ID` is set, you are in workflow mode. Fol
 
 ## Workflow mode
 
-You are running inside a workflow step. Your output must be deposited in the
-Drive (use `sidehub-cli drive create` and note the returned id).
+You are running inside a step of an automation (a workflow).
 
-When you finish successfully, you MUST run:
+If your prompt says the step ends when you finish, there is no step-complete:
+your last message is its result, so end with a short summary of what you did
+(and run `sidehub-cli workflow step-fail "short reason"` if you cannot do it).
+
+Otherwise your output must be deposited in the Drive (use
+`sidehub-cli drive create` and note the returned id), and when you finish
+successfully, you MUST run:
     sidehub-cli workflow step-complete --output-id <id>
 
 To hand values to the next steps (a score, a verdict, a URL...), add

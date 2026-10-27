@@ -634,7 +634,8 @@ public class SideHubApiClient : IDisposable
 
     public async Task<JsonElement> AddWorkflowStepAsync(
         string workflowId, string name, string prompt, IEnumerable<StepInputArg> inputs,
-        string outputPath, int? timeoutMinutes, string? outputDriveItemId)
+        string outputPath, int? timeoutMinutes, string? outputDriveItemId,
+        string? provider = null, string? model = null, bool completesOnExit = false)
     {
         var body = new Dictionary<string, object?>
         {
@@ -645,6 +646,10 @@ public class SideHubApiClient : IDisposable
         };
         if (timeoutMinutes is not null) body["timeoutMinutes"] = timeoutMinutes;
         if (outputDriveItemId is not null) body["outputDriveItemId"] = outputDriveItemId;
+        if (provider is not null) body["provider"] = provider;
+        if (model is not null) body["model"] = model;
+        // The step ends when its CLI exits, its last answer is the result (SideHub doc 61).
+        if (completesOnExit) body["completesOnExit"] = true;
 
         var resp = await _http.PostAsJsonAsync($"api/workflows/{workflowId}/steps", body);
         await EnsureSuccessAsync(resp);
