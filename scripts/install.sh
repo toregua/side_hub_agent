@@ -9,6 +9,7 @@ set -e
 #   configure this folder for the agent and start it
 #   --allow-root  configure and start it even as root (refused by default: the backend would control the machine)
 #   --user        install in ~/.local (no sudo); also the fallback when /usr/local isn't writable and sudo is missing
+#                 or refused (account not allowed to use it, wrong password, no terminal to ask it)
 #
 #   SIDEHUB_INSTALL_DIR  install folder (default /usr/local/lib/sidehub-agent, ~/.local/lib/sidehub-agent with --user);
 #   an existing folder is only replaced if it holds a previous agent install
@@ -156,8 +157,17 @@ can_create() {
     [ -w "$dir" ]
 }
 
-# System-wide in /usr/local (through sudo when it isn't writable), or in ~/.local with --user. Without sudo, and
-# with no folder chosen by the user, fall back to ~/.local rather than fail.
+# Whether sudo can be used: asks for the password now (through the terminal, even under `curl | bash`), before the
+# download, rather than failing at the copy. Fails for an account not allowed to use sudo (a standard account on a
+# managed Mac), a wrong password, or no terminal to ask it in.
+sudo_usable() {
+    sudo -n true 2> /dev/null && return 0
+    echo "🔐 $INSTALL_DIR isn't writable: sudo asks for your password."
+    sudo -v
+}
+
+# System-wide in /usr/local (through sudo when it isn't writable), or in ~/.local with --user. Without a usable sudo,
+# and with no folder chosen by the user, fall back to ~/.local rather than fail.
 resolve_install_target() {
     local user_install="$1"
     local default_lib="/usr/local/lib/sidehub-agent" default_bin="/usr/local/bin"
@@ -170,15 +180,15 @@ resolve_install_target() {
 
     SUDO=""
     if ! can_create "$INSTALL_DIR" || ! can_create "$BIN_DIR"; then
-        if command -v sudo &> /dev/null; then
+        if command -v sudo &> /dev/null && sudo_usable; then
             SUDO="sudo"
         elif [ -z "$user_install" ] && [ -z "${SIDEHUB_INSTALL_DIR:-}" ] && [ -z "${SIDEHUB_BIN_DIR:-}" ]; then
-            echo "ℹ️  /usr/local isn't writable and sudo isn't available: installing in ~/.local instead."
+            echo "ℹ️  /usr/local isn't writable and sudo isn't available to this account: installing in ~/.local instead."
             resolve_install_target user
             return
         else
-            echo "❌ Can't write to $INSTALL_DIR or $BIN_DIR, and sudo isn't available."
-            echo "   Install in your home folder instead: add --user (bash -s -- --user ...)."
+            echo "❌ Can't write to $INSTALL_DIR or $BIN_DIR, and sudo isn't available to this account."
+            echo "   Install in your home folder instead: replace the final bash of the command with bash -s -- --user."
             return 1
         fi
     fi
@@ -346,7 +356,7 @@ install() {
 
     TAG="$tag"
 
-    stage install-permission-denied "install folder not writable and sudo missing"
+    stage install-permission-denied "install folder not writable, and sudo missing or refused"
     resolve_install_target "$user_install" || exit 1
 
     stage install-failed "install folder exists and holds something else than an agent install"
@@ -391,7 +401,7 @@ install() {
     echo "✓ Node.js dependencies bundled in the archive"
     touch "$extract_dir/$INSTALL_MARKER"
 
-    stage install-permission-denied "couldn't write the install folder or the links in the bin folder"
+    stage install-permission-denied "couldn't write the install folder or the links in the bin folder ($([ -n "$SUDO" ] && echo with || echo without) sudo)"
     echo "🔧 Installing to ${INSTALL_DIR}${SUDO:+ (with sudo)}..."
     # $SUDO is empty when both folders are writable: the commands then run as is
     $SUDO rm -rf "$INSTALL_DIR"

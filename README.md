@@ -253,8 +253,9 @@ curl -fsSL https://api.sidehub.io/agent/install.sh | bash
 ```
 
 Installs the latest release in `/usr/local/lib/sidehub-agent/` and links `sidehub-agent` / `sidehub-cli`
-into `/usr/local/bin/`, through `sudo` when those folders aren't writable. Without `sudo`, or with
-`--user`, it installs in `~/.local/lib/sidehub-agent/` and `~/.local/bin/` instead. To install a
+into `/usr/local/bin/`, through `sudo` when those folders aren't writable (it asks for the password before
+downloading). Without a usable `sudo` (missing, account not allowed to use it, wrong password, no terminal),
+or with `--user`, it installs in `~/.local/lib/sidehub-agent/` and `~/.local/bin/` instead. To install a
 specific version:
 
 ```bash
