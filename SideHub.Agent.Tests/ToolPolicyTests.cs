@@ -326,4 +326,67 @@ public class ToolPolicyTests
             await PolicyCheckCommand.DecideAsync(BashInput, "https://api.sidehub.io", "sh_pty_abc", api));
         Assert.Empty(api.Requests);
     }
+
+    // ---- sidehub-cli policy allow: the machine's MCP tools in a permissionless run ----
+
+    private static CliLaunchPlan MachineMcpPlan(string cli, string[] args, CliLaunchPlan.StateReporting? reporting,
+        CliLaunchPlan.ToolPolicy? policy = null) =>
+        CliLaunchPlan.For(cli, args, "do it", new Version(0, 62, 0), () => Minted, reporting, null, policy, machineMcpHook: Program);
+
+    [Fact]
+    public void The_machine_mcp_hook_joins_the_state_hooks()
+    {
+        var plan = MachineMcpPlan("claude", ["-p", "--permission-mode", "default", "--allowedTools=Bash,Edit"], Reporting);
+
+        Assert.Null(plan.Refusal);
+        Assert.Equal("--settings", plan.Arguments[0]);
+        Assert.Equal(CliStateHooks.ClaudeSettings(Program, reportState: true, allowMachineMcp: true), plan.Arguments[1]);
+        Assert.Equal(
+            [("AskUserQuestion", "cli-state claude waiting-input", 5), ("mcp__.*", "policy allow", 10)],
+            Hooks(plan.Arguments[1])["PreToolUse"]);
+    }
+
+    [Fact]
+    public void The_machine_mcp_hook_is_installed_without_state_reporting()
+    {
+        var hooks = Hooks(MachineMcpPlan("claude", ["-p"], reporting: null).Arguments[1]);
+
+        Assert.Equal(["PreToolUse"], hooks.Keys);
+        Assert.Equal([("mcp__.*", "policy allow", 10)], hooks["PreToolUse"]);
+    }
+
+    [Fact]
+    public void A_tool_policy_keeps_the_mcp_tools_to_itself()
+    {
+        var plan = MachineMcpPlan("claude", ["-p"], Reporting, Policy);
+
+        Assert.Null(plan.Refusal);
+        Assert.Equal(CliStateHooks.ClaudeSettings(Program, reportState: true, Matcher), plan.Arguments[1]);
+        Assert.DoesNotContain(Hooks(plan.Arguments[1])["PreToolUse"], h => h.Args == "policy allow");
+    }
+
+    [Fact]
+    public void Without_the_right_no_machine_mcp_hook_is_installed() =>
+        Assert.Equal(CliStateHooks.ClaudeSettings(Program),
+            CliLaunchPlan.For("claude", ["-p"], null, null, () => Minted, Reporting).Arguments[1]);
+
+    [Fact]
+    public void Other_clis_get_no_machine_mcp_hook()
+    {
+        var plan = MachineMcpPlan("codex", ["exec", "--dangerously-bypass-approvals-and-sandbox"], reporting: null);
+
+        Assert.Null(plan.Refusal);
+        Assert.Equal(["exec", "--dangerously-bypass-approvals-and-sandbox", "do it"], plan.Arguments);
+    }
+
+    [Fact]
+    public void The_allow_hook_answers_allow()
+    {
+        using var doc = JsonDocument.Parse(PolicyAllowCommand.HookOutput());
+        var output = doc.RootElement.GetProperty("hookSpecificOutput");
+
+        Assert.Equal("PreToolUse", output.GetProperty("hookEventName").GetString());
+        Assert.Equal("allow", output.GetProperty("permissionDecision").GetString());
+        Assert.Equal("SideHub permissionless run", output.GetProperty("permissionDecisionReason").GetString());
+    }
 }

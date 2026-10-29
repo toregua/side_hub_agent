@@ -56,7 +56,7 @@ public static class LaunchCommand
             Environment.GetEnvironmentVariable(ClaudeWorkspaceTrust.TaskIdVariable));
         var declinedMcp = unattended ? DeclinedProjectMcpServers() : null;
         var plan = CliLaunchPlan.For(cli, args[1..], prompt, geminiVersion, Guid.NewGuid, nested ? null : StateReporting(cli), McpSetup(cli, warnings),
-            ToolPolicy(), declinedMcp);
+            ToolPolicy(), declinedMcp, MachineMcpHook());
         if (plan.Refusal is { } refusal)
         {
             Console.Error.WriteLine($"sidehub-cli launch: {refusal}");
@@ -216,6 +216,12 @@ public static class LaunchCommand
         Environment.GetEnvironmentVariable(PolicyCheckCommand.MatcherVariable) is { Length: > 0 } matcher
             ? new CliLaunchPlan.ToolPolicy(matcher, HookProgram())
             : null;
+
+    /// <summary>This program, to allow the machine's MCP tools in a permissionless claude run
+    /// (<c>$SIDEHUB_ALLOW_MACHINE_MCP</c>, set by the backend); null when the run has no such right or the hook cannot
+    /// be run. A tool policy wins over it (see <see cref="CliLaunchPlan.For"/>).</summary>
+    private static string? MachineMcpHook() =>
+        Environment.GetEnvironmentVariable(PolicyAllowCommand.Variable) == "1" ? HookProgram() : null;
 
     /// <summary>This program's absolute path, for the CLI's hooks to run it; null when it cannot be run by path.</summary>
     private static string? HookProgram() =>

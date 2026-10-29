@@ -11,6 +11,9 @@ if (args.Length > 0 && args[0] == CliStateCommand.Name)
 // Run by claude's PreToolUse hook when the run has a tool policy: it reads its own environment and always exits 0.
 if (args.Length == 2 && args[0] == PolicyCheckCommand.Domain && args[1] == PolicyCheckCommand.Action)
     return await PolicyCheckCommand.RunAsync();
+// Run by claude's PreToolUse hook on MCP tools when a permissionless run may use the machine's: always allows, exits 0.
+if (args.Length == 2 && args[0] == PolicyCheckCommand.Domain && args[1] == PolicyAllowCommand.Action)
+    return PolicyAllowCommand.Run();
 
 var apiUrl = Environment.GetEnvironmentVariable("SIDEHUB_API_URL");
 var agentToken = Environment.GetEnvironmentVariable("SIDEHUB_AGENT_TOKEN");

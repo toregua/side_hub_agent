@@ -23,7 +23,8 @@ namespace SideHub.Cli.Launch;
 /// </list>
 /// gemini and copilot read hooks from settings files only: they report no state.
 /// <para>
-/// A run's tool policy is enforced through the same claude <c>--settings</c> (see <see cref="PolicyCheckCommand"/>).
+/// A run's tool policy is enforced through the same claude <c>--settings</c> (see <see cref="PolicyCheckCommand"/>), and
+/// a permissionless run without one is allowed the machine's MCP tools there (see <see cref="PolicyAllowCommand"/>).
 /// </para>
 /// </summary>
 public static partial class CliStateHooks
@@ -45,15 +46,18 @@ public static partial class CliStateHooks
     /// permission wait once the tool ran); Notification on a permission or input request, PermissionRequest and
     /// PreToolUse of AskUserQuestion: waiting-input (the last two also say what is asked, see <see cref="CliPrompt"/>);
     /// Stop: idle; StopFailure on a usage limit: limit (doc 60). With a tool policy, a PreToolUse group also runs
-    /// <c>sidehub-cli policy check</c> (<see cref="PolicyCheckCommand"/>) on the tools it matches.
+    /// <c>sidehub-cli policy check</c> (<see cref="PolicyCheckCommand"/>) on the tools it matches; with
+    /// <paramref name="allowMachineMcp"/>, one runs <c>sidehub-cli policy allow</c> (<see cref="PolicyAllowCommand"/>)
+    /// on the MCP tools.
     /// </summary>
     /// <param name="program">This program's absolute path (<c>sidehub-cli</c>).</param>
     /// <param name="reportState">Whether to add the state hooks (false: no agent to report to).</param>
     /// <param name="toolPolicyMatcher">The run's tool policy (a regex over tool names), null for none.</param>
     /// <param name="declinedProjectMcpServers">Project MCP servers (<c>.mcp.json</c>) to start without, as answering "Continue
     /// without using this MCP server" would (see <see cref="ClaudeProjectMcp"/>); null or empty for none.</param>
+    /// <param name="allowMachineMcp">Whether to allow every MCP tool (a permissionless run without a tool policy).</param>
     public static string ClaudeSettings(string program, bool reportState = true, string? toolPolicyMatcher = null,
-        IReadOnlyList<string>? declinedProjectMcpServers = null)
+        IReadOnlyList<string>? declinedProjectMcpServers = null, bool allowMachineMcp = false)
     {
         object Hook(string state) => new
         {
@@ -85,23 +89,24 @@ public static partial class CliStateHooks
             Add("Stop", Group(CliStateCommand.Idle));
             Add("StopFailure", Group(CliStateCommand.Limit, LimitErrors));
         }
-        if (toolPolicyMatcher is not null)
+        object PolicyGroup(string matcher, string action, int timeout) => new
         {
-            Add("PreToolUse", new
+            matcher,
+            hooks = new[]
             {
-                matcher = toolPolicyMatcher,
-                hooks = new[]
+                new
                 {
-                    new
-                    {
-                        type = "command",
-                        command = program,
-                        args = new[] { PolicyCheckCommand.Domain, PolicyCheckCommand.Action },
-                        timeout = PolicyCheckCommand.HookTimeoutSeconds,
-                    },
+                    type = "command",
+                    command = program,
+                    args = new[] { PolicyCheckCommand.Domain, action },
+                    timeout,
                 },
-            });
-        }
+            },
+        };
+        if (toolPolicyMatcher is not null)
+            Add("PreToolUse", PolicyGroup(toolPolicyMatcher, PolicyCheckCommand.Action, PolicyCheckCommand.HookTimeoutSeconds));
+        if (allowMachineMcp)
+            Add("PreToolUse", PolicyGroup(PolicyAllowCommand.Matcher, PolicyAllowCommand.Action, PolicyAllowCommand.HookTimeoutSeconds));
 
         return declinedProjectMcpServers is { Count: > 0 } declined
             ? JsonSerializer.Serialize(new { hooks, disabledMcpjsonServers = declined })
