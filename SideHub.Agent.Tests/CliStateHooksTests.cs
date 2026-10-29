@@ -118,7 +118,7 @@ public class CliStateHooksTests : IDisposable
         var plan = Plan("codex", ["resume", "01a0f8a0-0e7f-7860-88b7-30a5ee25df7c"]);
 
         Assert.Equal("01a0f8a0-0e7f-7860-88b7-30a5ee25df7c", plan.SessionId);
-        Assert.Equal(["resume", "01a0f8a0-0e7f-7860-88b7-30a5ee25df7c"], plan.Arguments.Skip(2));
+        Assert.Equal(["resume", "01a0f8a0-0e7f-7860-88b7-30a5ee25df7c"], plan.Arguments.Skip(4));
     }
 
     [Fact]
@@ -135,7 +135,7 @@ public class CliStateHooksTests : IDisposable
     {
         string[] args = value is null ? [option] : [option, value];
 
-        Assert.Equal(args, Plan("codex", args).Arguments);
+        Assert.Equal(["-c", CliLaunchPlan.CodexInlineScreen, .. args], Plan("codex", args).Arguments);
     }
 
     [Fact]
@@ -144,7 +144,7 @@ public class CliStateHooksTests : IDisposable
 
     [Fact]
     public void Another_codex_override_does_not_count_as_notify() =>
-        Assert.Equal(4, Plan("codex", ["-c", "notify_level=1"]).Arguments.Count);
+        Assert.Equal(6, Plan("codex", ["-c", "notify_level=1"]).Arguments.Count);
 
     [Theory]
     [InlineData("model = \"o3\"\nnotify = [\"notify-send\"]\n", true)]

@@ -137,7 +137,7 @@ public class CliLaunchTests : IDisposable
     {
         var plan = Plan("codex", ["--model", "m"], "do it");
 
-        Assert.Equal(["--model", "m", "do it"], plan.Arguments);
+        Assert.Equal(["-c", CliLaunchPlan.CodexInlineScreen, "--model", "m", "do it"], plan.Arguments);
         Assert.Null(plan.SessionId);
         Assert.True(plan.ReportLaunch);
     }
@@ -147,10 +147,20 @@ public class CliLaunchTests : IDisposable
     {
         var plan = Plan("codex", ["resume", Existing]);
 
-        Assert.Equal(["resume", Existing], plan.Arguments);
+        Assert.Equal(["-c", CliLaunchPlan.CodexInlineScreen, "resume", Existing], plan.Arguments);
         Assert.Equal(Existing, plan.SessionId);
         Assert.True(plan.ReportLaunch);
     }
+
+    [Theory]
+    [InlineData("exec", "--json")]
+    [InlineData("e")]
+    [InlineData("review")]
+    [InlineData("--no-alt-screen")]
+    [InlineData("-c", "tui.alternate_screen=always")]
+    [InlineData("--config=tui.alternate_screen=auto")]
+    public void Codex_screen_mode_is_left_to_commands_without_a_tui_and_to_the_caller(params string[] args) =>
+        Assert.Equal(args, Plan("codex", args).Arguments);
 
     [Fact]
     public void An_id_that_is_not_a_uuid_is_never_announced()

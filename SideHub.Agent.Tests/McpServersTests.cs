@@ -252,7 +252,7 @@ public class McpServersTests
         var inUrl = new Server("url", McpServers.Http, Url: "https://x.example/mcp?key=${KEY}");
         var composedHeader = new Server("hdr", McpServers.Http, Url: "https://x.example/mcp",
             Headers: new Dictionary<string, string> { ["Authorization"] = "token ${KEY}" });
-        var plan = Plan("codex", [], [inUrl, composedHeader, Fs]);
+        var plan = Plan("codex", ["exec"], [inUrl, composedHeader, Fs]);
 
         Assert.Equal(["-c"], plan.Arguments.Where(a => a == "-c"));
         Assert.StartsWith("mcp_servers.fs=", plan.Arguments[1]);
@@ -265,9 +265,9 @@ public class McpServersTests
     public void Codex_on_Windows_leaves_out_a_server_needing_a_shell()
     {
         var server = Fs with { Args = ["--token", "${FS_KEY}"] };
-        var plan = Plan("codex", [], [server], posixShell: false);
+        var plan = Plan("codex", ["exec"], [server], posixShell: false);
 
-        Assert.Empty(plan.Arguments);
+        Assert.Equal(["exec"], plan.Arguments);
         Assert.Contains("'fs'", Assert.Single(plan.Warnings));
     }
 

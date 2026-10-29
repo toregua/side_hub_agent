@@ -38,6 +38,16 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
         ["codex"] = ["a", "app-server", "apply", "archive", "cloud", "completion", "debug", "features", "help", "login", "logout", "mcp", "mcp-server", "sandbox", "unarchive"],
     };
 
+    // codex subcommands without a TUI: no screen mode to choose.
+    private static readonly HashSet<string> HeadlessCodexSubcommands = ["exec", "e", "review"];
+
+    /// <summary>
+    /// codex's TUI runs inline, like claude's: in its alternate screen the terminal keeps no scrollback, so scrolling
+    /// in SideHub's terminal (wheel, or a swipe sent as arrow keys) walked through the prompt history instead of the
+    /// conversation. Inline, the conversation stays in the terminal's scrollback. Older codex ignore the unknown key.
+    /// </summary>
+    public const string CodexInlineScreen = "tui.alternate_screen=never";
+
     private static readonly HashSet<string> InfoOptions = ["--help", "-h", "--version", "-v", "-V"];
 
     // Options through which the caller already chose the session: the launcher leaves it alone.
@@ -85,6 +95,10 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
             sessionId = newSessionId().ToString("D");
             args.InsertRange(0, ["--session-id", sessionId]);
         }
+
+        if (cli == "codex" && startsConversation && !(args.Count > 0 && HeadlessCodexSubcommands.Contains(args[0]))
+            && !args.Contains("--no-alt-screen") && !SetsCodexConfig(args, "tui.alternate_screen"))
+            args.InsertRange(0, ["-c", CodexInlineScreen]);
 
         // A command that starts no conversation runs no tool: the policy has nothing to check.
         var refusal = startsConversation && toolPolicy is not null ? ToolPolicyRefusal(cli, args, toolPolicy) : null;
@@ -186,8 +200,10 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
 
     private static bool SetsClaudeSettings(List<string> args) => args.Any(a => SplitOption(a).Name == "--settings");
 
-    /// <summary>A <c>-c notify=…</c> / <c>--config notify=…</c> (or <c>--config=notify=…</c>) among the arguments.</summary>
-    private static bool SetsCodexNotify(List<string> args)
+    private static bool SetsCodexNotify(List<string> args) => SetsCodexConfig(args, "notify");
+
+    /// <summary>A <c>-c key=…</c> / <c>--config key=…</c> (or <c>--config=key=…</c>) among the arguments.</summary>
+    private static bool SetsCodexConfig(List<string> args, string key)
     {
         for (var i = 0; i < args.Count; i++)
         {
@@ -195,8 +211,8 @@ public sealed record CliLaunchPlan(string Cli, IReadOnlyList<string> Arguments, 
                 : args[i].StartsWith("--config=", StringComparison.Ordinal) ? args[i]["--config=".Length..]
                 : args[i].StartsWith("-c", StringComparison.Ordinal) && args[i].Length > 2 ? args[i][2..]
                 : null;
-            if (value is not null && value.TrimStart().StartsWith("notify", StringComparison.Ordinal)
-                && value.TrimStart()["notify".Length..].TrimStart().StartsWith('='))
+            if (value is not null && value.TrimStart().StartsWith(key, StringComparison.Ordinal)
+                && value.TrimStart()[key.Length..].TrimStart().StartsWith('='))
                 return true;
         }
         return false;
