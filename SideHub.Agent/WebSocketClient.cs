@@ -699,6 +699,48 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         await TrySendAsync(message, ct);
     }
 
+    /// <summary>Where a run's CLI wrote its last answer, and the answer already sent for it, captured as its PTY exits.</summary>
+    private sealed record RunAnswerSource(string Cwd, PtyCliSession Session, PtyCliMessage? Sent);
+
+    private RunAnswerSource? RunAnswerSourceOf(string ptySessionId) =>
+        _ptyCwd.TryGetValue(ptySessionId, out var cwd) && _ptyCliSessions.TryGetValue(ptySessionId, out var session)
+            ? new RunAnswerSource(cwd, session, _cliMessages.Current(ptySessionId))
+            : null;
+
+    /// <summary>
+    /// The last answer of a run's CLI, read once its PTY exited: a headless CLI exits right after its turn, often before
+    /// the answer of its <c>idle</c> was read, and <c>codex exec</c> reports no state at all. Sent before the run's
+    /// <c>pty.exited</c>, so that it is the output of a step that completes on exit (doc 61), unless already sent.
+    /// </summary>
+    private async Task ReportRunLastMessageAsync(string ptySessionId, RunAnswerSource source, SecretMasker? masker, CancellationToken ct)
+    {
+        var (provider, cliSessionId) = (source.Session.Provider, source.Session.CliSessionId);
+        try
+        {
+            if (!_lastMessageReaders.TryGetValue(provider, out var reader)
+                || reader.LastMessage(source.Cwd, cliSessionId) is not { } text || string.IsNullOrWhiteSpace(text))
+            {
+                Log($"No CLI answer for run PTY {ptySessionId} (provider={provider} cliSessionId={cliSessionId})");
+                return;
+            }
+            // Masked before being cut: a cut could leave the start of a secret
+            if (masker is not null)
+                text = masker.Process(text) + masker.Flush();
+            text = CliMessageTracker.Cap(text);
+            if (source.Sent is { } sent && sent.Text == text && sent.CliSessionId == cliSessionId)
+                return;
+            Log($"CLI answer in PTY {ptySessionId} at exit: {text.Length} chars (provider={provider} cliSessionId={cliSessionId})");
+            await TrySendAsync(new PtyCliMessage
+            {
+                PtySessionId = ptySessionId, Provider = provider, CliSessionId = cliSessionId, Text = text, At = DateTime.UtcNow,
+            }, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log($"CLI answer read failed for run PTY {ptySessionId}: {ex.Message}");
+        }
+    }
+
     /// <summary>agy titles a conversation once its first turn ended: sent once, like claude's ai-title.</summary>
     private async Task ReportAntigravityTitleAsync(string ptySessionId, string cliSessionId, CancellationToken ct)
     {
@@ -1962,13 +2004,18 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                         _ptySessions.TryRemove(ptySessionId, out _);
                         _ptyLastActivity.TryRemove(ptySessionId, out _);
                         _ptyLastOutput.TryRemove(ptySessionId, out _);
+                        var isRun = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null;
+                        // Taken before the cleanup forgets them: where the run's CLI wrote its last answer
+                        var answerSource = isRun ? RunAnswerSourceOf(ptySessionId) : null;
                         CleanupNotifyFifo(ptySessionId);
                         // A run's last lines say why it failed (not logged in, command not found…); never logged here.
-                        var isRun = RunUsageCollector.ResolveRunId(ptySessionId, message.AdditionalEnv) is not null;
                         var lastOutput = isRun ? TerminalText.LastLines(executor.GetBufferedOutput()) : null;
-                        // Its plan ran out: the backend learns it before the exit (doc 60)
+                        // Its plan ran out, and its CLI's last answer: the backend learns both before the exit (doc 60, 61)
                         if (isRun)
                             await ReportRunLimitAsync(ptySessionId, exitCode, lastOutput, ct);
+                        if (answerSource is not null)
+                            await ReportRunLastMessageAsync(ptySessionId, answerSource,
+                                SecretMasker.For(message.AdditionalEnv, message.SecretKeys), ct);
                         _cliLimits.TryRemove(ptySessionId, out _);
                         await SendAsync(new PtyExitedMessage { ExitCode = exitCode, PtySessionId = ptySessionId, LastOutput = lastOutput }, ct);
                         HarvestFinalUsage(ptySessionId, "exit");
