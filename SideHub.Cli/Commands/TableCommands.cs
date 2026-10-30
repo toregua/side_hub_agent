@@ -50,7 +50,6 @@ public static class TableCommands
             return 1;
         }
 
-        var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
         var schema = ParseSchema(item.GetProperty("content").GetString() ?? "");
         var columns = schema["columns"]!.AsArray();
         if (columns.Count == 0)
@@ -96,7 +95,7 @@ public static class TableCommands
         };
         schema["rows"]!.AsArray().Add(newRow);
 
-        await SaveAsync(client, pageId, title, schema);
+        await SaveAsync(client, pageId, item, schema);
 
         if (json) Console.WriteLine(newRow.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         else Console.WriteLine($"Row added: {newRow["id"]!.GetValue<string>()}");
@@ -123,7 +122,6 @@ public static class TableCommands
             return 1;
         }
 
-        var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
         var schema = ParseSchema(item.GetProperty("content").GetString() ?? "");
         var col = FindColumnByName(schema["columns"]!.AsArray(), colName);
         if (col is null) { Console.Error.WriteLine($"Error: unknown column '{colName}'."); return 1; }
@@ -144,7 +142,7 @@ public static class TableCommands
         var cells = row["cells"]!.AsObject();
         cells[col["id"]!.GetValue<string>()] = value;
 
-        await SaveAsync(client, pageId, title, schema);
+        await SaveAsync(client, pageId, item, schema);
 
         if (json) Console.WriteLine(row.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         else Console.WriteLine("Cell updated.");
@@ -169,7 +167,6 @@ public static class TableCommands
             return 1;
         }
 
-        var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
         var schema = ParseSchema(item.GetProperty("content").GetString() ?? "");
         var rows = schema["rows"]!.AsArray();
         int idx = -1;
@@ -180,7 +177,7 @@ public static class TableCommands
         if (idx < 0) { Console.Error.WriteLine($"Error: unknown row '{rowId}'."); return 1; }
 
         rows.RemoveAt(idx);
-        await SaveAsync(client, pageId, title, schema);
+        await SaveAsync(client, pageId, item, schema);
 
         if (json) Console.WriteLine($"{{\"deleted\":\"{rowId}\"}}");
         else Console.WriteLine($"Row deleted: {rowId}");
@@ -233,7 +230,6 @@ public static class TableCommands
             return 1;
         }
 
-        var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
         var schema = ParseSchema(item.GetProperty("content").GetString() ?? "");
         var columns = schema["columns"]!.AsArray();
         if (FindColumnByName(columns, name) is not null)
@@ -252,7 +248,7 @@ public static class TableCommands
         if (dropdownOptions is not null) newCol["options"] = dropdownOptions;
         columns.Add(newCol);
 
-        await SaveAsync(client, pageId, title, schema);
+        await SaveAsync(client, pageId, item, schema);
 
         if (json) Console.WriteLine(newCol.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         else Console.WriteLine($"Column added: {newCol["id"]!.GetValue<string>()} (\"{name}\", {type})");
@@ -305,16 +301,34 @@ public static class TableCommands
         ["rows"] = new JsonArray(),
     };
 
-    private static async Task SaveAsync(SideHubApiClient client, string pageId, string title, JsonObject schema)
+    private const int MaxContentLength = 100 * 1024;
+    private const int WarnContentLength = MaxContentLength * 8 / 10;
+
+    private static async Task SaveAsync(SideHubApiClient client, string pageId, JsonElement item, JsonObject schema)
     {
+        var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
         if (string.IsNullOrEmpty(title))
             throw new InvalidOperationException($"Drive item {pageId} has no title; refusing to save (backend would reject).");
 
         var content = schema.ToJsonString();
-        if (content.Length > 100 * 1024)
-            throw new InvalidOperationException("Spreadsheet content exceeds 100KB limit.");
+        var rowCount = schema["rows"]!.AsArray().Count;
+        // A change that does not grow the table always goes through, so a table already over the
+        // limit can still be shrunk with delete-row.
+        var previousLength = ParseSchema(item.GetProperty("content").GetString() ?? "").ToJsonString().Length;
+        if (content.Length > MaxContentLength && content.Length > previousLength)
+            throw new InvalidOperationException(
+                $"spreadsheet \"{title}\" would weigh {content.Length / 1024} KB with {rowCount} row(s), over the {MaxContentLength / 1024} KB limit, so nothing was saved. {SizeAdvice(pageId)}");
+
         await client.UpdateDriveItemAsync(pageId, title, content);
+
+        if (content.Length > WarnContentLength)
+            Console.Error.WriteLine(
+                $"Warning: spreadsheet \"{title}\" now weighs {content.Length / 1024} KB with {rowCount} row(s), {content.Length * 100 / MaxContentLength}% of the {MaxContentLength / 1024} KB limit. Past it, every change that grows it is refused. {SizeAdvice(pageId)}");
     }
+
+    private static string SizeAdvice(string pageId) =>
+        $"To make room, archive the oldest rows (the first ones, ids in `sidehub-cli table show {pageId} --json`) with `sidehub-cli table delete-row {pageId} --row <rowId>`, after copying them to another page if they must be kept. " +
+        "For a log that keeps growing (an automation adding rows every day), move it to a SQLite database instead: `sidehub-cli sqlite create --title \"...\" --schema \"CREATE TABLE ...\"`, then `sqlite exec` to insert.";
 
     private static JsonObject? FindColumnByName(JsonArray columns, string name) =>
         columns.OfType<JsonObject>().FirstOrDefault(c =>

@@ -48,6 +48,7 @@ Environment variables are already configured in your session.
 - `sidehub-cli drive update <pageId> --title "..." --content "..."`: Update a page
 - `sidehub-cli drive upload <localPath> [--parent <id>] [--name "..."] [--markdown]`: Upload a local file (screenshot, chart, PDF...; 20 MB max) and print its id. With `--markdown`, prints only the Markdown line that shows the image in a page.
 - `sidehub-cli drive archived`: List archived (deleted) pages and folders; `sidehub-cli drive restore <id>` brings one back
+- `sidehub-cli table show <pageId> [--json]`, `table append-row <pageId> --col "Name=Value" [--col ...]`, `table set-cell|delete-row|add-column`: Read and edit a spreadsheet page. A spreadsheet is capped at 100 KB (warning from 80 %): for a log an automation adds rows to every day, use a SQLite database instead (below)
 
 #### Images in a page
 
