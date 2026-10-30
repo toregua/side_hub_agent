@@ -222,6 +222,20 @@ public static class WorkReviewGit
 
     public static string RefName(Guid reviewId, int round, string side) => $"{RefPrefix}{reviewId:N}/{round}/{side}";
 
+    public const string SessionRefPrefix = "refs/sidehub/sessions/";
+
+    /// <summary>The ref that keeps a terminal's base (doc 63). A terminal id is a GUID or <c>run-&lt;hex&gt;</c>; anything else
+    /// a ref cannot hold is replaced.</summary>
+    public static string SessionRefName(string ptySessionId) =>
+        SessionRefPrefix + new string(ptySessionId.Select(c => char.IsAsciiLetterOrDigit(c) || c == '-' ? c : '_').ToArray());
+
+    /// <summary>Points <paramref name="refName"/> at <paramref name="commit"/>; false when git failed.</summary>
+    public static async Task<bool> SetRefAsync(string topLevel, string refName, string commit, CancellationToken ct) =>
+        await RunAsync(topLevel, QueryTimeout, ["update-ref", refName, commit], ct) is { Succeeded: true };
+
+    public static async Task DeleteRefAsync(string topLevel, string refName, CancellationToken ct) =>
+        await RunAsync(topLevel, QueryTimeout, ["update-ref", "-d", refName], ct);
+
     /// <summary><c>git diff --name-status -z</c>: <c>M\0path\0</c>, or <c>R100\0old\0new\0</c> for a rename or copy.</summary>
     public static List<ReviewFileChange> ParseNameStatus(string output)
     {

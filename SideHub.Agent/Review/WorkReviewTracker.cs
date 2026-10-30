@@ -43,6 +43,13 @@ public sealed class WorkReviewTracker
     private readonly ConcurrentDictionary<string, OpenRound> _open = new();
     // CLI sessions started in each terminal (cliSessionId → provider), in order: the last one is the round's CLI.
     private readonly ConcurrentDictionary<string, List<KeyValuePair<string, string>>> _cliSessions = new();
+    // The photo a round asked from each terminal starts from (doc 63): taken when its first CLI starts, then moved to the
+    // end of each of its rounds. Nothing is sent until someone asks for a review.
+    private readonly ConcurrentDictionary<string, SessionBase> _bases = new();
+    // Terminals whose base is being taken: Taking, or Dropped once the terminal ended meanwhile.
+    private readonly ConcurrentDictionary<string, int> _basing = new();
+    private const int Taking = 0;
+    private const int Dropped = 1;
     // Records are read and written by starts, ends and diffs of any terminal.
     private readonly SemaphoreSlim _lock = new(1, 1);
     private DateTimeOffset _lastPurge = DateTimeOffset.MinValue;
@@ -153,12 +160,130 @@ public sealed class WorkReviewTracker
 
     public bool HasOpenRound(string ptySessionId) => _open.ContainsKey(ptySessionId);
 
+    public bool HasBase(string ptySessionId) => _bases.ContainsKey(ptySessionId);
+
     /// <summary>The terminal could not start after all: its round is dropped without a report.</summary>
     public void Abandon(string ptySessionId)
     {
         _cliSessions.TryRemove(ptySessionId, out _);
         if (_open.TryRemove(ptySessionId, out var open))
             TryAppendActivity(open.ReviewId, open.Round, WorkReviewActivity.End, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// A CLI started in a terminal: the first one gives the terminal its base, the photo a review asked from it starts
+    /// from (doc 63). Not while a round goes on there (a task's starts with its own photo), nor once it has a base.
+    /// </summary>
+    public async Task NoteCliStartedAsync(string ptySessionId, string cwd, CancellationToken ct)
+    {
+        if (_bases.ContainsKey(ptySessionId) || _open.ContainsKey(ptySessionId) || !_basing.TryAdd(ptySessionId, Taking))
+            return;
+        try
+        {
+            if (await GitRepository.OpenAsync(cwd) is not { } repository)
+                return;
+            var head = await WorkReviewGit.HeadAsync(repository.TopLevel, ct);
+            var branch = await WorkReviewGit.BranchAsync(repository.TopLevel, ct);
+            var refName = WorkReviewGit.SessionRefName(ptySessionId);
+            var photo = await WorkReviewGit.SnapshotAsync(repository.TopLevel, refName, SnapshotTimeout, ct);
+            if (photo.Commit is null)
+            {
+                _log($"Session base of PTY {ptySessionId}: snapshot failed ({photo.Failure})");
+                return;
+            }
+            // The terminal ended while the photo was taken: nothing to keep.
+            if (_basing.TryGetValue(ptySessionId, out var state) && state == Dropped)
+            {
+                await WorkReviewGit.DeleteRefAsync(repository.TopLevel, refName, ct);
+                return;
+            }
+            _bases[ptySessionId] = new SessionBase(repository.TopLevel, cwd, photo.Commit, head, branch, DateTimeOffset.UtcNow);
+            _log($"Session base of PTY {ptySessionId}: {Short(photo.Commit)}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Never in the way of the CLI: the terminal just has no base, a review asked from it is refused.
+            _log($"Session base of PTY {ptySessionId} could not be taken: {ex.Message}");
+        }
+        finally
+        {
+            _basing.TryRemove(ptySessionId, out _);
+        }
+    }
+
+    public sealed record EndResult(int? Round, string? Error);
+
+    /// <summary>
+    /// Someone asked for a review of a terminal's work (doc 63): the round of <paramref name="reviewId"/> going on there
+    /// ends now, or one is made from the terminal's base to now. A round made from the base that changed nothing is
+    /// dropped (<see cref="ReviewErrors.NoChanges"/>): the base stays where it was.
+    /// </summary>
+    public async Task<EndResult> EndRoundOnRequestAsync(Guid reviewId, string ptySessionId, CancellationToken ct)
+    {
+        try
+        {
+            if (_open.TryGetValue(ptySessionId, out var open))
+            {
+                if (open.ReviewId != reviewId)
+                    return new EndResult(null, ReviewDiffErrors.RoundInProgress);
+                return await EndRoundCoreAsync(ptySessionId, "review-request", kind: null, dropIfEmpty: false, ct)
+                       ?? new EndResult(null, ReviewErrors.Failed);
+            }
+            if (!_bases.TryGetValue(ptySessionId, out var @base))
+                return new EndResult(null, ReviewErrors.NoBase);
+
+            await _lock.WaitAsync(ct);
+            try
+            {
+                if (_open.ContainsKey(ptySessionId))
+                    return new EndResult(null, ReviewDiffErrors.RoundInProgress);
+                await StartFromBaseLockedAsync(reviewId, ptySessionId, @base, ct);
+            }
+            finally
+            {
+                _lock.Release();
+            }
+            return await EndRoundCoreAsync(ptySessionId, "review-request", kind: null, dropIfEmpty: true, ct)
+                   ?? new EndResult(null, ReviewErrors.Failed);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log($"Review {reviewId} round could not end on request in PTY {ptySessionId}: {ex.Message}");
+            return new EndResult(null, ReviewErrors.Failed);
+        }
+    }
+
+    /// <summary>A round of <paramref name="reviewId"/> that started at the terminal's base: same photo, same time.</summary>
+    private async Task StartFromBaseLockedAsync(Guid reviewId, string ptySessionId, SessionBase @base, CancellationToken ct)
+    {
+        var record = Load(reviewId);
+        var previous = record?.Rounds.LastOrDefault();
+        var round = new WorkReviewRound
+        {
+            Round = (previous?.Round ?? 0) + 1,
+            Kind = previous?.Kind ?? ReviewKinds.Session,
+            PtySessionId = ptySessionId,
+            RunId = previous?.RunId,
+            TaskId = previous?.TaskId,
+            Agent = _agentKey,
+            StartedAt = @base.At,
+            Start = @base.Commit,
+            StartHead = @base.Head,
+            StartBranch = @base.Branch,
+        };
+        // The base is kept by the terminal's ref, which moves: the round keeps its own.
+        if (!await WorkReviewGit.SetRefAsync(@base.TopLevel, WorkReviewGit.RefName(reviewId, round.Round, "start"), @base.Commit, ct))
+        {
+            round.Start = null;
+            round.Error = ReviewErrors.SnapshotFailed;
+            _log($"Review {reviewId} round {round.Round}: the base of PTY {ptySessionId} could not be kept");
+        }
+        record ??= new WorkReviewRecord { ReviewId = reviewId, TopLevel = @base.TopLevel };
+        record.TopLevel = @base.TopLevel;
+        record.Rounds.Add(round);
+        Save(record);
+        _open[ptySessionId] = new OpenRound(reviewId, round.Round, record.TopLevel, @base.Cwd) { FromBase = true };
+        _log($"Review {reviewId} round {round.Round} started in PTY {ptySessionId} from its base {Short(round.Start)}");
     }
 
     public void RecordCliSession(string ptySessionId, string provider, string cliSessionId)
@@ -191,7 +316,7 @@ public sealed class WorkReviewTracker
     {
         try
         {
-            await EndRoundCoreAsync(ptySessionId, trigger, kind, ct);
+            await EndRoundCoreAsync(ptySessionId, trigger, kind, dropIfEmpty: false, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -200,10 +325,12 @@ public sealed class WorkReviewTracker
         }
     }
 
-    private async Task EndRoundCoreAsync(string ptySessionId, string trigger, string? kind, CancellationToken ct)
+    /// <param name="dropIfEmpty">A round that changed nothing is taken out of the review instead of being reported.</param>
+    /// <returns>Null when no round of <paramref name="kind"/> was going on in the terminal.</returns>
+    private async Task<EndResult?> EndRoundCoreAsync(string ptySessionId, string trigger, string? kind, bool dropIfEmpty, CancellationToken ct)
     {
         if (!_open.TryGetValue(ptySessionId, out var open))
-            return;
+            return null;
 
         ReviewChangesMessage report;
         await _lock.WaitAsync(ct);
@@ -213,7 +340,7 @@ public sealed class WorkReviewTracker
                 || record.Rounds.FirstOrDefault(r => r.Round == open.Round) is not { } round
                 || (kind is not null && round.Kind != kind)
                 || !_open.TryRemove(new KeyValuePair<string, OpenRound>(ptySessionId, open)))
-                return;
+                return null;
 
             round.EndedAt = DateTimeOffset.UtcNow;
             round.Overlapping |= open.OtherCliBusy;
@@ -237,10 +364,31 @@ public sealed class WorkReviewTracker
                     commits = await WorkReviewGit.CommitsAsync(record.TopLevel, round.StartHead, round.EndHead, ct) ?? [];
                 }
             }
+
+            if (dropIfEmpty && round.Error is null && files.Count == 0)
+            {
+                record.Rounds.Remove(round);
+                if (record.Rounds.Count == 0)
+                    File.Delete(RecordPath(record.ReviewId));
+                else
+                    Save(record);
+                foreach (var side in new[] { "start", "end" })
+                    await WorkReviewGit.DeleteRefAsync(record.TopLevel, WorkReviewGit.RefName(record.ReviewId, round.Round, side), ct);
+                _log($"Review {record.ReviewId} round {round.Round} ({trigger}) changed nothing: dropped");
+                return new EndResult(null, ReviewErrors.NoChanges);
+            }
+
             round.Overlapping |= _activity.Overlaps(record.ReviewId, round.Round, round.StartedAt, round.EndedAt.Value);
             Save(record);
+            // A round made from the base was never in the folder's activity: it ran from the base to now.
+            if (open.FromBase)
+                _activity.Append(new WorkReviewActivity.Entry(
+                    record.ReviewId, round.Round, _agentKey, WorkReviewActivity.Start, round.StartedAt));
             _activity.Append(new WorkReviewActivity.Entry(
                 record.ReviewId, round.Round, _agentKey, WorkReviewActivity.End, round.EndedAt.Value));
+            // The terminal's next round asked from it starts where this one ended.
+            if (round.End is { } end && round.Error is null)
+                await MoveBaseAsync(ptySessionId, record.TopLevel, open.Cwd, end, round.EndHead, round.EndBranch, round.EndedAt.Value, ct);
 
             var sessions = CliSessions(ptySessionId);
             var last = sessions.Count > 0 ? sessions[^1] : (KeyValuePair<string, string>?)null;
@@ -282,10 +430,39 @@ public sealed class WorkReviewTracker
             (report.Overlapping ? ", overlapping" : "")));
         await SendOrKeepAsync(report, ct);
         await PurgeIfDueAsync(ct);
+        return new EndResult(report.Round, report.Error ?? (report.FilesChanged == 0 ? ReviewErrors.NoChanges : null));
     }
 
-    /// <summary>The terminal is gone: forget its CLI sessions (after its round ended).</summary>
-    public void ForgetTerminal(string ptySessionId) => _cliSessions.TryRemove(ptySessionId, out _);
+    /// <summary>The terminal's base is now <paramref name="commit"/>, kept by its ref.</summary>
+    private async Task MoveBaseAsync(
+        string ptySessionId, string topLevel, string cwd, string commit, string? head, string? branch, DateTimeOffset at, CancellationToken ct)
+    {
+        if (!await WorkReviewGit.SetRefAsync(topLevel, WorkReviewGit.SessionRefName(ptySessionId), commit, ct))
+        {
+            _log($"Session base of PTY {ptySessionId} could not move to {Short(commit)}");
+            return;
+        }
+        _bases[ptySessionId] = new SessionBase(topLevel, cwd, commit, head, branch, at);
+    }
+
+    /// <summary>The terminal is gone: forget its CLI sessions and its base (after its round ended).</summary>
+    public async Task ForgetTerminalAsync(string ptySessionId, CancellationToken ct)
+    {
+        _cliSessions.TryRemove(ptySessionId, out _);
+        // A base being taken is dropped as soon as its photo is done.
+        _basing.TryUpdate(ptySessionId, Dropped, Taking);
+        if (_bases.TryRemove(ptySessionId, out var @base))
+        {
+            try
+            {
+                await WorkReviewGit.DeleteRefAsync(@base.TopLevel, WorkReviewGit.SessionRefName(ptySessionId), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log($"Session base of PTY {ptySessionId} could not be deleted: {ex.Message}");
+            }
+        }
+    }
 
     /// <summary>The diff of one round of a review, read from its photos.</summary>
     public async Task<ReviewDiffMessage> DiffAsync(string requestId, Guid reviewId, int round, string? path, CancellationToken ct)
@@ -522,8 +699,13 @@ public sealed class WorkReviewTracker
         public int Round { get; } = round;
         public string TopLevel { get; } = topLevel;
         public string Cwd { get; } = cwd;
+        /// <summary>Started at the terminal's base, on request: not in the folder's activity yet.</summary>
+        public bool FromBase { get; init; }
         public volatile bool OtherCliBusy;
     }
+
+    /// <summary>The photo the next round asked from a terminal starts from, with what it was taken on.</summary>
+    private sealed record SessionBase(string TopLevel, string Cwd, string Commit, string? Head, string? Branch, DateTimeOffset At);
 }
 
 /// <summary>What the agent keeps about a review on this machine (<c>.sidehub/run/reviews/{reviewId:N}.json</c>).</summary>

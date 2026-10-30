@@ -345,6 +345,119 @@ public sealed class WorkReviewTests : IDisposable
         Assert.True(counts["image.bin"].Binary);
     }
 
+    [Fact]
+    public async Task A_review_asked_from_a_terminal_covers_what_changed_since_its_first_cli_then_since_the_last_review()
+    {
+        if (!GitAvailable)
+            return;
+        InitRepository();
+        // Already in progress before the session: never part of its rounds.
+        File.WriteAllText(RepoPath("before.txt"), "mine");
+        var tracker = Tracker();
+        await tracker.NoteCliStartedAsync("pty-s", _repo.FullName, CancellationToken.None);
+        Assert.True(tracker.HasBase("pty-s"));
+        Assert.Contains(WorkReviewGit.SessionRefName("pty-s"), Git("for-each-ref", "--format=%(refname)"));
+        var reviewId = Guid.NewGuid();
+
+        File.AppendAllText(RepoPath("app.txt"), "three\n");
+        var first = await tracker.EndRoundOnRequestAsync(reviewId, "pty-s", CancellationToken.None);
+        File.WriteAllText(RepoPath("fix.txt"), "fix\n");
+        var second = await tracker.EndRoundOnRequestAsync(reviewId, "pty-s", CancellationToken.None);
+
+        Assert.Equal(new WorkReviewTracker.EndResult(1, null), first);
+        Assert.Equal(new WorkReviewTracker.EndResult(2, null), second);
+        Assert.Equal(2, _sent.Count);
+        Assert.All(_sent, r => Assert.Equal(ReviewKinds.Session, r.Kind));
+        Assert.Equal(["app.txt"], _sent[0].Files.Select(f => f.Path));
+        Assert.Equal(["fix.txt"], _sent[1].Files.Select(f => f.Path));
+        // The second round starts where the first one ended.
+        Assert.Equal(_sent[0].EndedAt, _sent[1].StartedAt);
+        var diff = await tracker.DiffAsync("req", reviewId, 2, path: null, CancellationToken.None);
+        Assert.Contains("+fix", diff.Diff);
+        Assert.DoesNotContain("three", diff.Diff);
+    }
+
+    [Fact]
+    public async Task A_review_asked_when_nothing_changed_is_dropped_and_keeps_the_base()
+    {
+        if (!GitAvailable)
+            return;
+        InitRepository();
+        var tracker = Tracker();
+        await tracker.NoteCliStartedAsync("pty-s", _repo.FullName, CancellationToken.None);
+        var reviewId = Guid.NewGuid();
+
+        var empty = await tracker.EndRoundOnRequestAsync(reviewId, "pty-s", CancellationToken.None);
+        File.WriteAllText(RepoPath("later.txt"), "later\n");
+        var later = await tracker.EndRoundOnRequestAsync(reviewId, "pty-s", CancellationToken.None);
+
+        Assert.Equal(new WorkReviewTracker.EndResult(null, ReviewErrors.NoChanges), empty);
+        Assert.Equal(new WorkReviewTracker.EndResult(1, null), later);
+        var report = Assert.Single(_sent);
+        Assert.Equal(1, report.Round);
+        Assert.Equal(["later.txt"], report.Files.Select(f => f.Path));
+        Assert.Equal(ReviewDiffErrors.UnknownRound, (await tracker.DiffAsync("req", reviewId, 2, path: null, CancellationToken.None)).Error);
+    }
+
+    [Fact]
+    public async Task A_review_asked_from_a_terminal_without_a_cli_is_refused()
+    {
+        if (!GitAvailable)
+            return;
+        InitRepository();
+        var tracker = Tracker();
+
+        var result = await tracker.EndRoundOnRequestAsync(Guid.NewGuid(), "pty-none", CancellationToken.None);
+
+        Assert.Equal(new WorkReviewTracker.EndResult(null, ReviewErrors.NoBase), result);
+        Assert.Empty(_sent);
+    }
+
+    [Fact]
+    public async Task A_review_asked_from_a_task_terminal_ends_its_round_early_then_continues_from_there()
+    {
+        if (!GitAvailable)
+            return;
+        InitRepository();
+        var tracker = Tracker();
+        var taskReview = Guid.NewGuid();
+        await StartAsync(tracker, taskReview, "pty-t");
+        // A CLI starting in a terminal with a round going on takes no base: the round has its own photo.
+        await tracker.NoteCliStartedAsync("pty-t", _repo.FullName, CancellationToken.None);
+        Assert.False(tracker.HasBase("pty-t"));
+        File.WriteAllText(RepoPath("task.txt"), "task\n");
+
+        var other = await tracker.EndRoundOnRequestAsync(Guid.NewGuid(), "pty-t", CancellationToken.None);
+        var first = await tracker.EndRoundOnRequestAsync(taskReview, "pty-t", CancellationToken.None);
+        // task done comes later: the round already ended.
+        await tracker.EndRoundAsync("pty-t", "task-done", ReviewKinds.Task, CancellationToken.None);
+        File.WriteAllText(RepoPath("more.txt"), "more\n");
+        var second = await tracker.EndRoundOnRequestAsync(taskReview, "pty-t", CancellationToken.None);
+
+        Assert.Equal(new WorkReviewTracker.EndResult(null, ReviewDiffErrors.RoundInProgress), other);
+        Assert.Equal(new WorkReviewTracker.EndResult(1, null), first);
+        Assert.Equal(new WorkReviewTracker.EndResult(2, null), second);
+        Assert.Equal(2, _sent.Count);
+        Assert.All(_sent, r => Assert.Equal(ReviewKinds.Task, r.Kind));
+        Assert.Equal(["more.txt"], _sent[1].Files.Select(f => f.Path));
+    }
+
+    [Fact]
+    public async Task The_base_of_a_terminal_goes_with_it()
+    {
+        if (!GitAvailable)
+            return;
+        InitRepository();
+        var tracker = Tracker();
+        await tracker.NoteCliStartedAsync("pty-s", _repo.FullName, CancellationToken.None);
+
+        await tracker.ForgetTerminalAsync("pty-s", CancellationToken.None);
+
+        Assert.False(tracker.HasBase("pty-s"));
+        Assert.DoesNotContain(WorkReviewGit.SessionRefPrefix, Git("for-each-ref", "--format=%(refname)"));
+        Assert.Equal(ReviewErrors.NoBase, (await tracker.EndRoundOnRequestAsync(Guid.NewGuid(), "pty-s", CancellationToken.None)).Error);
+    }
+
     private string Git(params string[] args)
     {
         var psi = new ProcessStartInfo(ExecutableResolver.Resolve("git")!)

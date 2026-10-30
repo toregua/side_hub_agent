@@ -536,6 +536,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                 // match gives the session id announced to the backend (RecordCliLaunch).
                 case FifoNotification.CliLaunched launched:
                     RecordCliLaunch(ptySessionId, launched);
+                    NoteSessionBase(ptySessionId);
                     return;
 
                 case FifoNotification.CliSessionStarted started:
@@ -844,6 +845,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
         _cliSessionUsage.SessionStarted(ptySessionId, provider, cliSessionId,
             _ptyCwd.TryGetValue(ptySessionId, out var cwd) ? cwd : _workingDirectory);
         _ptyCliSessions[ptySessionId] = new PtyCliSession(provider, cliSessionId);
+        NoteSessionBase(ptySessionId);
         await SendAsync(new PtyCliSessionStartedMessage
         {
             PtySessionId = ptySessionId,
@@ -1388,6 +1390,9 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
                     break;
                 case "review.round-start":
                     RunInBackground("review.round-start", () => HandleReviewRoundStartAsync(message, ct));
+                    break;
+                case "review.round-end":
+                    RunInBackground("review.round-end", () => HandleReviewRoundEndAsync(message, ct));
                     break;
                 case "review.diff.request":
                     RunInBackground("review.diff.request", () => HandleReviewDiffRequestAsync(message, ct));
@@ -2220,7 +2225,7 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             if (delay > TimeSpan.Zero) await Task.Delay(delay);
             // Before the usage: the review reads the CLI's last message while the run is still tracked.
             await _reviews.EndRoundAsync(ptySessionId, trigger, kind: null, CancellationToken.None);
-            _reviews.ForgetTerminal(ptySessionId);
+            await _reviews.ForgetTerminalAsync(ptySessionId, CancellationToken.None);
             await _outgoing.RefreshAsync(CancellationToken.None);
             if (_usageCollector.IsTracked(ptySessionId))
                 await _usageCollector.HarvestAsync(ptySessionId, trigger, final: true, CancellationToken.None);
@@ -2258,6 +2263,42 @@ public class WebSocketClient : IAsyncDisposable, IUpdateClient
             RequestId = message.RequestId, ReviewId = reviewId, PtySessionId = ptySessionId,
             Round = result.Round, Error = result.Error,
         }, ct);
+    }
+
+    /// <summary>
+    /// Someone asked for a review of a terminal's work (doc 63): its round ends now, or one is made from the terminal's
+    /// base. The answer goes after the round's <c>review.changes</c>, so the backend has recorded it.
+    /// </summary>
+    private async Task HandleReviewRoundEndAsync(IncomingMessage message, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(message.RequestId) || !Guid.TryParse(message.ReviewId, out var reviewId)
+            || string.IsNullOrEmpty(message.PtySessionId))
+        {
+            Log("review.round-end ignored: requestId, reviewId and ptySessionId are required");
+            return;
+        }
+        var ptySessionId = message.PtySessionId;
+        var result = _ptySessions.ContainsKey(ptySessionId)
+            ? await _reviews.EndRoundOnRequestAsync(reviewId, ptySessionId, ct)
+            : new WorkReviewTracker.EndResult(null, ReviewDiffErrors.UnknownTerminal);
+        Log($"Review {reviewId} round asked in PTY {ptySessionId}: " + (result.Error ?? $"round {result.Round}"));
+        await SendAsync(new ReviewRoundEndedMessage
+        {
+            RequestId = message.RequestId, ReviewId = reviewId, PtySessionId = ptySessionId,
+            Round = result.Round, Error = result.Error,
+        }, ct);
+    }
+
+    /// <summary>
+    /// A CLI started in a terminal opened by hand or for a task: its first one gives the terminal the base a review asked
+    /// from it starts from (doc 63). Not for a run, whose work is reviewed by the backend's own request.
+    /// </summary>
+    private void NoteSessionBase(string ptySessionId)
+    {
+        if (IsBackendManagedPtySession(ptySessionId) || _reviews.HasBase(ptySessionId)
+            || !_ptyCwd.TryGetValue(ptySessionId, out var cwd))
+            return;
+        RunInBackground("session base", () => _reviews.NoteCliStartedAsync(ptySessionId, cwd, CancellationToken.None));
     }
 
     /// <summary>The diff of a review round, read from the photos on this machine.</summary>

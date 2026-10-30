@@ -151,6 +151,30 @@ public class ReviewRoundStartedMessage
     public string? Error { get; init; }
 }
 
+/// <summary>Answer to <c>review.round-end</c>: the round a review asked from a terminal ended (doc 63), after its
+/// <c>review.changes</c>.</summary>
+public class ReviewRoundEndedMessage
+{
+    [JsonPropertyName("type")]
+    public string Type => "review.round-ended";
+
+    [JsonPropertyName("requestId")]
+    public required string RequestId { get; init; }
+
+    [JsonPropertyName("reviewId")]
+    public required Guid ReviewId { get; init; }
+
+    [JsonPropertyName("ptySessionId")]
+    public required string PtySessionId { get; init; }
+
+    /// <summary>The round reported; null when none was (see <see cref="Error"/>).</summary>
+    [JsonPropertyName("round")]
+    public int? Round { get; init; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
+}
+
 /// <summary>Answer to <c>review.diff.request</c>: the diff of one round, read from the photos on this machine.</summary>
 public class ReviewDiffMessage
 {
@@ -188,6 +212,8 @@ public static class ReviewKinds
     public const string Run = "run";
     /// <summary>A task given to the agent (task queue, or injected in a terminal).</summary>
     public const string Task = "task";
+    /// <summary>The work of a terminal, reviewed on request from its base (doc 63).</summary>
+    public const string Session = "session";
 }
 
 public static class ReviewErrors
@@ -200,6 +226,10 @@ public static class ReviewErrors
     public const string Interrupted = "interrupted";
     /// <summary>The agent could not follow the round (an error of its own, see its log).</summary>
     public const string Failed = "failed";
+    /// <summary>A round asked from a terminal: nothing changed since its base (round-end).</summary>
+    public const string NoChanges = "no-changes";
+    /// <summary>A round asked from a terminal that has no base: no CLI started in it since the agent runs (round-end).</summary>
+    public const string NoBase = "no-base";
 }
 
 public static class ReviewDiffErrors
